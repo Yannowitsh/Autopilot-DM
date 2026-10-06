@@ -1141,7 +1141,8 @@
       if (r) sel.set(r.key, Math.min(it.qty, r.qty));
     }
 
-    let f = { q: '', rarity: '', slot: '', min: '', max: '', hideBound: true, hideLocked: true };
+    const NO_FILTERS = { q: '', rarity: '', slot: '', min: '', max: '', hideBound: true, hideLocked: true };
+    let f = { ...NO_FILTERS };
     try { f = { ...f, ...JSON.parse(localStorage.getItem(PICK_FILTERS_KEY) || '{}'), q: '' }; } catch { /* stockage indisponible */ }
     const slots = [...new Set(rows.map((r) => r.slot))].filter(Boolean).sort();
     const inp = 'background:#2a231a;border:1px solid #5a4a33;border-radius:8px;color:#eee;padding:5px 8px;font:13px system-ui,sans-serif';
@@ -1161,6 +1162,7 @@
         <div style="display:flex;gap:6px;align-items:center">
           <button data-a="all" style="${btn};background:#3a3125" data-tip="Coche tous les objets visibles avec les filtres actuels (tous leurs exemplaires). Combine avec les filtres pour sélectionner en masse.">☑ Cocher les objets affichés</button>
           <button data-a="none" style="${btn};background:transparent">☐ Tout décocher</button>
+          <button data-a="reset" style="${btn};background:transparent" data-tip="Remet tous les filtres à zéro (recherche, rareté, emplacement, niveaux) pour réafficher tous tes objets.">↺ Filtres</button>
           <span data-k="count" style="flex:1;text-align:right;color:#bbb"></span>
         </div>
         <ul data-k="list" style="list-style:none;margin:0;padding:0;overflow:auto;flex:1;min-height:120px;border:1px solid #3a3125;border-radius:10px"></ul>
@@ -1173,14 +1175,25 @@
       </div>`;
     const $ = (s) => ov.querySelector(s);
     const list = $('[data-k="list"]');
+    const saveFilters = () => { try { localStorage.setItem(PICK_FILTERS_KEY, JSON.stringify(f)); } catch { /* stockage indisponible */ } };
+    // Affiche `f` dans les champs, puis relit les champs : un filtre mémorisé qui n'existe plus dans la liste
+    // (ex. emplacement « Dofus » alors qu'il n'y a plus de Dofus) retombe sur « Tous » au lieu de tout cacher en silence.
+    const syncFilters = () => {
+      for (const el of ov.querySelectorAll('[data-f]')) {
+        const k = el.dataset.f;
+        if (el.type === 'checkbox') el.checked = !!f[k]; else el.value = f[k] ?? '';
+        f[k] = el.type === 'checkbox' ? el.checked : el.value;
+      }
+      saveFilters();
+    };
     for (const el of ov.querySelectorAll('[data-f]')) {
-      if (el.type === 'checkbox') el.checked = !!f[el.dataset.f]; else el.value = f[el.dataset.f] ?? '';
       el.addEventListener('input', () => {
         f[el.dataset.f] = el.type === 'checkbox' ? el.checked : el.value;
-        try { localStorage.setItem(PICK_FILTERS_KEY, JSON.stringify(f)); } catch { /* stockage indisponible */ }
+        saveFilters();
         renderList();
       });
     }
+    syncFilters();
 
     let visible = [], lastIdx = null;
     const norm = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
@@ -1194,7 +1207,7 @@
     }
     function renderCount() {
       const n = [...sel.values()].reduce((a, b) => a + b, 0);
-      $('[data-k="count"]').textContent = `${sel.size} objet(s) · ${n} exemplaire(s) sélectionné(s) — ${visible.length} affiché(s)`;
+      $('[data-k="count"]').textContent = `${sel.size} objet(s) · ${n} exemplaire(s) sélectionné(s) — ${visible.length} affiché(s) sur ${rows.length}`;
     }
     function renderList() {
       visible = filtered();
@@ -1212,7 +1225,9 @@
           <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span class="rarity-${+r.rarity} rarity-text" style="font-weight:700">${esc(r.name)}</span>${tier}
             <span style="color:#999;font-size:11px">· niv. ${r.lvl} · ${esc(SLOT_NAMES[r.slot] || r.slot || '')}</span> ${note}</span>
           <span style="white-space:nowrap;color:#bbb">${qty}</span></li>`;
-      }).join('') || '<li style="padding:12px;color:#999;text-align:center">Aucun objet pour ces filtres.</li>';
+      }).join('') || `<li style="padding:12px;color:#999;text-align:center">${rows.length
+        ? `Aucun objet pour ces filtres (${rows.length} objet(s) masqué(s)). <button data-a="reset" style="${btn};background:#3a3125;margin-left:6px">↺ Réinitialiser les filtres</button>`
+        : 'Aucun objet vendable dans ton inventaire (les objets équipés ne peuvent pas être échangés).'}</li>`;
       renderCount();
     }
 
@@ -1258,6 +1273,7 @@
       if (a === 'x') close();
       else if (a === 'all') { for (const r of visible) if (!r.bound) sel.set(r.key, sel.get(r.key) || r.qty); renderList(); }
       else if (a === 'none') { sel.clear(); renderList(); }
+      else if (a === 'reset') { f = { ...NO_FILTERS }; syncFilters(); renderList(); }
       else if (a === 'save') { await commit(); close(); }
       else if (a === 'go') { const n = await commit(); close(); if (n) runQueue(); }
     });
