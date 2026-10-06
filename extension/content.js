@@ -2651,12 +2651,12 @@
   const BUILD_TARGETS = { krala: { name: 'Kralamoure Géant', resPct: [20, 20, 20, 30, 20] } };
   // Objectifs de l'optimiseur (menu « Objectif ») : dégâts par tour (éventuellement contre une cible à résistances),
   // ou une stat à maximiser (stat, valeur value(S), points de caractéristiques à y mettre : points) — les dégâts ne
-  // servent alors qu'à départager deux builds. Prospection : +1 par 10 de Chance (objets et points), vérifié en jeu.
+  // servent alors qu'à départager deux builds. Prospection : 100 de base, +1 par 10 de Chance (objets et points), vérifié en jeu.
   const BUILD_GOALS = {
     dps: { label: '⚔️ Dégâts par tour' },
     krala: { label: '🐙 Dégâts sur Kralamoure', target: BUILD_TARGETS.krala },
     prospection: { label: '💰 Prospection', stat: 'prospection', points: 'chance', also: ['chance'],
-      value: (S) => (S.prospection || 0) + Math.floor((S.chance || 0) / 10) },
+      value: (S) => 100 + (S.prospection || 0) + Math.floor((S.chance || 0) / 10) },
     sagesse: { label: '📚 Sagesse', stat: 'sagesse', points: 'sagesse', value: (S) => S.sagesse || 0 },
   };
   const PRESTIGE_EXCLUDED = new Set(['pa', 'pm', 'po', 'invocations']);
@@ -2756,6 +2756,26 @@
     }
     DM.log(`optimiseur : points répartis ${JSON.stringify(base)}`);
     return base;
+  }
+
+  // Multiplicateur réel de l'équipement : au Prestige 3, le jeu affiche « +75 % » mais applique ×1,8825 aux objets ET
+  // aux bonus de panoplie, arrondi objet par objet (relevé au point près sur la fiche, 2026-10-07). On le recale sur la
+  // fiche : bonus des points de caractéristiques = Σ arrondi(stat × m) des objets portés et des panoplies actives.
+  function fitGearMult(worn, setFx, sheet, guess) {
+    const vals = Object.fromEntries(POINT_STATS.map((k) => [k, []]));
+    const sets = {};
+    for (const c of worn) {
+      for (const k of POINT_STATS) if ((c.eff?.[k] || 0) > 0) vals[k].push(c.eff[k]);
+      if (c.setName) sets[c.setName] = (sets[c.setName] || 0) + 1;
+    }
+    for (const [n, cnt] of Object.entries(sets)) for (const { k, v } of setTier(setFx[n], cnt) || []) if (vals[k] && v > 0) vals[k].push(v);
+    const err = (m) => POINT_STATS.reduce((e, k) => e + Math.abs(vals[k].reduce((n, v) => n + Math.round(v * m), 0) - (sheet.bonus[k] || 0)), 0);
+    let best = guess, bestErr = err(guess);
+    for (let m = 1; m <= 1 + sheet.prestige * 0.5 + 1e-9; m += 0.0005) { const e = err(m); if (e < bestErr) { best = m; bestErr = e; } }
+    // écart restant important (parchemins d'arène, objet illisible…) : on garde la valeur affichée par le jeu
+    const ok = bestErr <= POINT_STATS.length * 2;
+    DM.log(`optimiseur : multiplicateur d'équipement ${best.toFixed(4)} (écart ${bestErr}${ok ? '' : ', rejeté'})`);
+    return ok ? best : guess;
   }
 
   const setTier = (fx, count) => (!fx?.length || count < 2 ? null : fx[Math.min(count, fx.length - 1)]);
@@ -2890,7 +2910,8 @@
     const state = await fetchEquipState();
     say('Lecture des sorts…');
     const sp = await fetchSpells();
-    const level = sheet.level, gearMult = 1 + sheet.prestige * PRESTIGE_GEAR_PCT / 100;
+    const level = sheet.level;
+    let gearMult = 1 + sheet.prestige * PRESTIGE_GEAR_PCT / 100;   // recalé plus bas sur la fiche (fitGearMult)
     const withPrestige = (eff) => {
       if (gearMult === 1) return eff;
       const o = {};
@@ -2914,11 +2935,12 @@
       say('Lecture de l’HDV…');
       pool.push(...await fetchHdvGear([...new Set(state.slots.map((s) => s.accepts))], level, hdvFailed));
     }
+    say('Bonus de panoplie (dofusdb)…');
+    const setFx = await fetchSetBonuses([...new Set(pool.map((c) => c.setName).filter(Boolean))]);
+    gearMult = fitGearMult(pool.filter((c) => c.src === 'worn'), setFx, sheet, gearMult);
     pool = pool.map((c, i) => ({ ...c, uid: i, eff: withPrestige(c.eff) }));
     const banned = new Set(Object.keys(buildBlacklist()).map(Number));
     const budget = opts.hdv && +opts.budget > 0 ? +opts.budget : 0;   // 0 = pas de limite
-    say('Bonus de panoplie (dofusdb)…');
-    const setFx = await fetchSetBonuses([...new Set(pool.map((c) => c.setName).filter(Boolean))]);
 
     // cible à résistances : chaque élément pèse (1 − % rés.) — les dégâts d'un élément étant linéaires en B et N,
     // réduire le profil du sort revient à appliquer la résistance à chaque coup
@@ -2955,7 +2977,7 @@
         const tier = setTier(setFx[n], cnt);
         if (!tier?.length) continue;
         active.push({ name: n, count: cnt, tier });
-        for (const { k, v } of tier) S[k] = (S[k] || 0) + v;
+        for (const { k, v } of tier) S[k] = (S[k] || 0) + (v > 0 && !PRESTIGE_EXCLUDED.has(k) ? Math.round(v * gearMult) : v);
       }
       return { S, active };
     };
