@@ -3,6 +3,8 @@
 // Une requête sans réponse est publiée dans <html data-dm-pending="nombre:début le plus ancien"> ;
 // content.js (monde isolé) la lit et recharge la page si elle traîne (voir stuckCheck).
 // <html data-dm-actions="n"> : nombre de server actions lancées par la page depuis son chargement.
+// <html data-dm-fight-end="won|lost:heure"> : une réponse de combat contient l'état final (le serveur joue tout le
+// combat Auto d'un coup ; la page ne fait ensuite que rejouer l'animation) → utilisé par le « combat rapide ».
 (() => {
   if (window.__dmNetwatch) return;
   window.__dmNetwatch = true;
@@ -35,6 +37,12 @@
     const done = () => { pending.delete(id); publish(); };
     const p = orig.apply(this, arguments);
     p.then(done, done);
+    if (kind === 'action') {
+      p.then((r) => r.clone().text()).then((t) => {
+        const m = t.match(/"logCount":\d+,"status":"(won|lost)"/);   // état final du combat (pas « ongoing »)
+        if (m && document.documentElement) document.documentElement.dataset.dmFightEnd = `${m[1]}:${Date.now()}`;
+      }).catch(() => {});
+    }
     return p;
   };
 })();

@@ -18,6 +18,11 @@
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const humanDelay = () => (cfg.delayMin + Math.random() * Math.max(0, cfg.delayMax - cfg.delayMin)) * 1000;
+  // Délai avant de relancer depuis l'écran de fin : en combat rapide, juste ce qu'il faut pour respecter
+  // fastFightMinSec depuis le lancement précédent (+ un petit aléa) ; sinon le délai « humain » habituel.
+  const relaunchDelay = () => (cfg.fastFight
+    ? Math.max(0, (+cfg.fastFightMinSec || 0) * 1000 - (Date.now() - (cfg.lastLaunchAt || 0))) + 300 + Math.random() * 700
+    : humanDelay());
   // ---------- Extension rechargée pendant que l'onglet reste ouvert ----------
   // Ce script devient « orphelin » : tout appel chrome.* lève « Extension context invalidated ».
   // On le détecte et on s'arrête proprement (plus d'erreurs, plus d'interface fantôme) ; la page rechargée repart à neuf.
@@ -72,6 +77,7 @@
   const HUNT_RETRY = /^(Refaire ce combat|Réessayer ce groupe)$/;
   const isHunt = () => cfg.mode === 'chasse' && !!cfg.huntZone;
   const isAsc = () => cfg.mode === 'ascension';
+  const maxRetries = () => (isHunt() ? Math.max(0, Math.round(+cfg.huntRetries || 0)) : MAX_PATH_RETRIES);
   // Fin d'un combat d'Ascension : boutons propres aux étages (« Suivant en auto » / « Réessayer en auto » existent aussi).
   const ASC_END = /^(Étage suivant|Réessayer l.étage|Voir l.Ascension)$/;
   const ASC_START = /^Affronter l.étage \d+$/;   // bouton de /ascension
@@ -463,28 +469,28 @@
         if (/^Défaite/.test(end)) {
           const hint = () => document.querySelector('p.text-gold.italic')?.textContent.trim();
           if (cfg.botFight) {
-            // Aventure : on réessaie l'étape jusqu'à MAX_PATH_RETRIES défaites d'affilée. Chasse : arrêt immédiat.
+            // On réessaie jusqu'à N défaites d'affilée : MAX_PATH_RETRIES (aventure, ascension), cfg.huntRetries (chasse).
             const streak = (cfg.lossStreak || 0) + 1;
-            const stop = isHunt() || streak > MAX_PATH_RETRIES;
+            const stop = streak > maxRetries();
             await save({ botFight: false, losses: (cfg.losses || 0) + 1, lossStreak: stop ? 0 : streak });
             if (stop) {
               await save({ enabled: false, paused: false, status: 'Arrêté : combat perdu' });
-              const where = isHunt() ? ` en chasse (${cfg.huntZoneName || 'zone ' + cfg.huntZone})`
-                : ` en ${isAsc() ? 'ascension' : 'aventure'} (${streak} défaites d’affilée)`;
+              const where = `${isHunt() ? ` en chasse (${cfg.huntZoneName || 'zone ' + cfg.huntZone})` : ` en ${isAsc() ? 'ascension' : 'aventure'}`}`
+                + (streak > 1 ? ` (${streak} défaites d’affilée)` : '');
               notify('defeat', `❌ **Combat perdu**${where} sur DofusMasters. Pilote auto arrêté.${hint() ? `\n> 💡 ${hint()}` : ''}\n${DM.ORIGIN}${home()}`);
               return;
             }
           }
-          if (isHunt() || !cfg.lossStreak) return;   // défaite d'un combat lancé à la main : on n'y touche pas
+          if (!cfg.lossStreak) return;   // défaite d'un combat lancé à la main : on n'y touche pas
 
-          // Réessai de l'étape (Auto de préférence)
+          // Réessai de l'étape / du groupe (Auto de préférence)
           if (!(await gate())) return progress();
-          if (++endRetries > 2) { endRetries = 0; return goHome(); }   // bouton sans effet : on repasse par /aventure
-          setStatus(`Défaite — nouvel essai ${cfg.lossStreak}/${MAX_PATH_RETRIES}…`);
-          await sleep(humanDelay());
+          if (++endRetries > 2) { endRetries = 0; return goHome(); }   // bouton sans effet : on repasse par l'accueil du mode
+          setStatus(`Défaite — nouvel essai ${cfg.lossStreak}/${maxRetries()}…`);
+          await sleep(relaunchDelay());
           if (!isOwner()) return;
           const autoRetry = findBtn(/^Réessayer en auto$/i);
-          const retry = autoRetry || findBtn(isAsc() ? /^Réessayer l.étage$/i : /^Réessayer l.étape$/i);
+          const retry = autoRetry || findBtn(isHunt() ? HUNT_RETRY : isAsc() ? /^Réessayer l.étage$/i : /^Réessayer l.étape$/i);
           if (!retry) return;
           await save({ botFight: true });
           spendEnergy();
@@ -502,7 +508,7 @@
         if (++endRetries > 2) { endRetries = 0; return goHome(); }
 
         setStatus(isHunt() ? 'Victoire ✔ — on relance le groupe en auto…' : isAsc() ? 'Victoire ✔ — étage suivant en auto…' : 'Victoire ✔ — combat suivant en auto…');
-        await sleep(humanDelay());
+        await sleep(relaunchDelay());
         if (!isOwner()) return;
         // Bouton « en auto » de préférence ; sinon relance simple, le mode Auto sera activé dans le combat.
         const autoNext = findBtn(AUTO_NEXT);
@@ -518,6 +524,16 @@
         return;
       }
 
+      // Combat rapide : le serveur a déjà renvoyé le résultat ; recharger affiche directement l'écran de fin.
+      const fightEnd = (document.documentElement.dataset.dmFightEnd || '').split(':');
+      if (cfg.fastFight && cfg.botFight && +fightEnd[1] >= pageLoadedAt && !presenceDialog()) {
+        DM.log(`combat rapide : résultat reçu (${fightEnd[0]}) ${((Date.now() - (cfg.lastLaunchAt || Date.now())) / 1000).toFixed(1)} s après le lancement → rechargement`);
+        setStatus(`Combat rapide : ${fightEnd[0] === 'won' ? 'victoire' : 'défaite'} reçue — affichage du résultat…`);
+        progress();
+        location.reload();
+        await sleep(5000);
+        return;
+      }
       if (!cfg.botFight) {   // combat lancé à la main : on n'y touche pas
         setStatus('Combat manuel en cours — le pilote attend', true);
         return progress();
@@ -1899,7 +1915,10 @@
   const ERROR_TITLE = /^\s*((erreur|error)\s*)?5\d\d\b|\b(erreur|error)\s*5\d\d\b/i;   // titre « Erreur 508 », « 503 Service… »
   let launchAt = 0, busySince = 0, fightSince = 0, presenceAt = 0, oddSince = 0, oddCheckedAt = 0, oddKind = '';
   const pageLoadedAt = Date.now();
-  const markLaunch = () => { if (!launchAt) launchAt = Date.now(); };
+  const markLaunch = () => {
+    if (!launchAt) launchAt = Date.now();
+    save({ lastLaunchAt: Date.now() });   // combat rapide : écart minimal entre deux lancements
+  };
 
   // Page vide ou page d'erreur (vérifié toutes les 2 s : innerText force un calcul de mise en page)
   function oddPage(now) {

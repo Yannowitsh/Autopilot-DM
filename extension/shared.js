@@ -28,6 +28,9 @@ const DM = {
     autoBuyEnergy: false, // dès 20 d'énergie ou moins : rachète l'énergie au max (kamas), le farm ne s'arrête pas
     delayMin: 3,         // secondes entre deux combats
     delayMax: 8,
+    fastFight: false,    // combat rapide : dès que le serveur a renvoyé le résultat, rechargement (pas d'animation)
+    fastFightMinSec: 5,  // combat rapide : au moins N s entre deux lancements de combat
+    huntRetries: 3,      // chasse (avis de recherche…) : nouveaux essais après une défaite avant arrêt
     errorReloadSec: 5,   // page d'erreur du site (508 « Resource Limit Is Reached », 5xx…) : rechargée après N s
     reloadGapSec: 30,    // anti-blocage : au plus un rechargement toutes les N s
     bossAlerts: true,    // alerte Discord quand le boss de chasse apparaît (indépendant du ON/OFF)
