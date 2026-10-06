@@ -598,7 +598,9 @@
   // `entries` ne contient que les objets non portés ; le serveur refuse de toute façon de vendre un objet porté.
   const SELL_ACTION_FALLBACK = '406e0b152d7eeb65f891df20554b9d310fd5dfd04c';
   const NEVER_SELL_SLOTS = new Set(['familier', 'dofus']);   // jamais vendus par l'Autosell
-  const FUSION_MAX = 5;   // « Rayonnant » : jamais vendu automatiquement (comme « Tout cocher » sur le site)
+  // Valeur de fusion du tier max « Rayonnant » (= FUSION.max du jeu : 0 = Tiers 1 … 3 = Tiers 4, 4 = Rayonnant, le « tier 5 »).
+  // Jamais vendu automatiquement (comme « Tout cocher » sur le site).
+  const FUSION_MAX = 4;
   const SELL_BATCH = 50;
   let sellActionId = null;
 
@@ -1629,12 +1631,12 @@
     }
   }
 
-  // ---------- Fusion : 3 exemplaires d'un même tiers → 1 du tiers suivant (+10 % de stats), jusqu'au tier 5 « Rayonnant » ----------
+  // ---------- Fusion : 3 exemplaires d'un même tiers → 1 du tiers suivant (+10 % de stats), jusqu’au tier 5 « Rayonnant » (fusion 4) ----------
   // Server action « fuseItem(itemId, fusion) » → { newFusion } ou { error }. Les objets portés ne sont pas dans `entries`.
   const FUSE_ACTION_FALLBACK = '60e1cb4d715df40bfc2d5e6af8032e5ae119fd0915';
   const FUSE_COPIES = 3;
   let fuseActionId = null, fuseChunks = null;
-  const tierLabel = (f) => (f >= FUSION_MAX ? 'Rayonnant ★' : f ? `T${f}` : 'base');
+  const tierLabel = (f) => (f >= FUSION_MAX ? 'Rayonnant ★' : f ? `T${f + 1}` : 'base');   // comme le jeu : fusion 1 = « Tiers 2 »
 
   // Objets fusionnables, regroupés par objet : fusions en cascade simulées (3 base → 1 T1 ; 3 T1 → 1 T2…).
   async function fusePlan() {
