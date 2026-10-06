@@ -170,6 +170,26 @@ async function buyWatchdog() {
   await discord('⚠️ Achat d’énergie auto : l’onglet d’achat ne répond pas, fermé. Nouvel essai dans 10 min.', undefined, 'errors');
 }
 
+// Onglet du pilote qui ne répond plus : page qui ne finit jamais de charger (le script de l'extension n'y est pas
+// encore injecté), page d'erreur réseau de Chrome, onglet gelé… → on le recharge (au plus une fois par PONG_MAX_MS).
+const PONG_MAX_MS = 90 * 1000;
+async function pilotWatchdog() {
+  const s = await DM.getAll();
+  if (!s.enabled || s.ownerTabId == null) return;
+  const tabId = s.ownerTabId, now = Date.now();
+  const alive = await chrome.tabs.sendMessage(tabId, { type: 'ping' }).then((r) => !!r?.ok, () => false);
+  const { pilotPong } = await chrome.storage.session.get('pilotPong');
+  if (alive || pilotPong?.tabId !== tabId) return chrome.storage.session.set({ pilotPong: { tabId, at: now } });
+  if (now - pilotPong.at < PONG_MAX_MS) return;
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  const url = tab?.pendingUrl || tab?.url || '';
+  if (!url.startsWith(DM.ORIGIN)) return;   // l'utilisateur a quitté le jeu dans cet onglet : on n'y touche pas
+  await chrome.storage.session.set({ pilotPong: { tabId, at: now } });
+  DM.log(`anti-blocage[sw]: onglet ${tabId} sans réponse depuis ${Math.round((now - pilotPong.at) / 1000)} s → rechargement`);
+  await chrome.storage.local.set({ status: 'Page sans réponse — rechargement…' });
+  chrome.tabs.reload(tabId, { bypassCache: true }).catch(() => {});
+}
+
 async function tickTabs() {
   const tabs = await chrome.tabs.query({ url: DM.ORIGIN + '/*' });
   for (const t of tabs) chrome.tabs.sendMessage(t.id, { type: 'tick' }).catch(() => {});
@@ -226,6 +246,7 @@ chrome.alarms.onAlarm.addListener(async (a) => {
   checkUpdate();
   await bossCheck();
   await buyWatchdog();
+  await pilotWatchdog();
   await tickTabs();
   await updateBadge();
 });

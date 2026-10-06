@@ -132,6 +132,7 @@
     btn.click();
     progress();
     lastAutoClick = Date.now();   // laisse l'animation/combat reprendre sans re-clic Auto immédiat
+    presenceAt = Date.now();      // si le combat ne repart pas, l'anti-blocage recharge la page
     return true;
   }
 
@@ -1825,23 +1826,54 @@
   // ---------- Anti-blocage : requête du jeu qui n'aboutit jamais ----------
   // Après un clic qui lance un combat (Attaquer, Combattre, Suivant en auto…), on doit voir un combat en cours.
   // Si rien ne se passe au bout de LAUNCH_TIMEOUT_MS, ou si une étape du pilote reste bloquée, on recharge la page.
+  // Autres cas rattrapés : combat du pilote qui ne se termine jamais (page figée alors que le serveur a répondu),
+  // combat qui ne repart pas après la vérification de présence, page vide ou page d'erreur serveur.
+  // Recharger /combat est sans risque : le combat en cours est rechargé tel quel et le pilote relance l'Auto.
   const LAUNCH_TIMEOUT_MS = 45 * 1000;
   const BUSY_TIMEOUT_MS = 90 * 1000;
+  const FIGHT_STALL_MS = 60 * 1000;      // un combat en Auto se joue en ~10 s
+  const PRESENCE_STALL_MS = 15 * 1000;   // combat toujours figé après avoir répondu à « Es-tu toujours là ? »
+  const BLANK_STALL_MS = 20 * 1000;      // page vide / erreur serveur
   const RELOAD_MIN_GAP_MS = 60 * 1000;   // jamais plus d'un rechargement par minute
-  let launchAt = 0, busySince = 0;
+  const MAX_STUCK_RELOADS = 3;           // au-delà : retour à la page d'accueil du mode
+  const ERROR_PAGE = /Application error|client-side exception|Internal Server Error|Bad Gateway|Service (Temporarily )?Unavailable|Gateway Time-?out|Web server is down|Connection timed out|This page couldn.t load|Erreur serveur/i;
+  let launchAt = 0, busySince = 0, fightSince = 0, presenceAt = 0, oddSince = 0, oddCheckedAt = 0;
   const markLaunch = () => { if (!launchAt) launchAt = Date.now(); };
+
+  // Page vide ou page d'erreur (vérifié toutes les 3 s : innerText force un calcul de mise en page)
+  function oddPage(now) {
+    if (now - oddCheckedAt < 3000) return;
+    oddCheckedAt = now;
+    const text = document.body?.innerText.trim() || '';
+    const odd = text.length < 40 || (text.length < 3000 && ERROR_PAGE.test(`${document.title} ${text}`));
+    if (!odd) oddSince = 0;
+    else if (!oddSince) oddSince = now;
+  }
 
   function stuckCheck() {
     const now = Date.now();
-    if (launchAt && location.pathname.startsWith('/combat') && !endTitle()) launchAt = 0;   // le combat a démarré
+    const end = location.pathname.startsWith('/combat') && endTitle();
+    const inFight = location.pathname.startsWith('/combat') && !end;
+    if (launchAt && inFight) launchAt = 0;   // le combat a démarré
+    if (!inFight) { fightSince = 0; presenceAt = 0; } else if (!fightSince) fightSince = now;
+    if (end && cfg.stuckReloads) save({ stuckReloads: 0 });   // un combat s'est terminé : compteur remis à zéro
+    oddPage(now);
+    const waitingPresence = !!presenceDialog();
     let why = null;
     if (launchAt && now - launchAt > LAUNCH_TIMEOUT_MS) why = 'lancement du combat sans réponse';
     else if (busy && now - busySince > BUSY_TIMEOUT_MS + cfg.delayMax * 1000) why = 'pilote bloqué';
+    else if (oddSince && now - oddSince > BLANK_STALL_MS) why = 'page vide ou erreur serveur';
+    else if (!waitingPresence && presenceAt && inFight && now - presenceAt > PRESENCE_STALL_MS) why = 'combat figé après la vérification de présence';
+    else if (!waitingPresence && inFight && cfg.botFight && now - fightSince > FIGHT_STALL_MS) why = 'combat figé';
     if (!why || now - (cfg.lastStuckReload || 0) < RELOAD_MIN_GAP_MS) return false;
     launchAt = 0;
     progress();
-    save({ lastStuckReload: now, status: `Requête sans réponse (${why}) — rechargement de la page…` });
-    setTimeout(() => location.reload(), 300);
+    const n = (cfg.stuckReloads || 0) + 1;
+    const giveUp = n > MAX_STUCK_RELOADS;   // recharger ne suffit pas : on repart de la page d'accueil du mode
+    DM.log(`anti-blocage : ${why} sur ${location.pathname} → ${giveUp ? `retour à ${home()}` : 'rechargement'}`);
+    save({ lastStuckReload: now, stuckReloads: giveUp ? 0 : n,
+      status: giveUp ? `Toujours bloqué (${why}) — retour à ${home()}…` : `Page bloquée (${why}) — rechargement…` });
+    setTimeout(() => (giveUp ? location.assign(home()) : location.reload()), 300);
     return true;
   }
 
@@ -2761,6 +2793,7 @@
   });
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg.type === 'tick') tick();
+    if (msg.type === 'ping') { sendResponse({ ok: !dead }); return; }   // le service worker vérifie que la page répond
     if (msg.type === 'autosell') { runAutosell(!!msg.dryRun).then(sendResponse); return true; }
     if (msg.type === 'tradePing') { tradeHealth().then(sendResponse); return true; }
     if (msg.type === 'tradeVerify') { tradeVerify(msg).then(sendResponse); return true; }
