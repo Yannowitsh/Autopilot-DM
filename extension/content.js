@@ -2926,27 +2926,18 @@
     }
     return tot * pct;
   }
-  // Meilleure combinaison d'au plus K sorts (cartes distinctes) dont la somme des PA ≤ pa.
-  function bestTurn(spells, S, pa, K) {
-    // dp[k][a] = meilleurs dégâts avec k sorts pour a PA ; sel[k][a] = sorts retenus (liste gardée telle quelle :
-    // remonter des « précédents » serait faux, une case pouvant être réécrite par un sort examiné plus tard)
-    const dp = Array.from({ length: K + 1 }, () => new Array(pa + 1).fill(-1));
-    const sel = Array.from({ length: K + 1 }, () => new Array(pa + 1).fill(null));
-    dp[0][0] = 0; sel[0][0] = [];
+  // Meilleur tour sans limite de nombre de sorts (cartes distinctes) dont la somme des PA ≤ pa : sac à dos 0/1.
+  function bestTurnPA(spells, S, pa) {
+    const dp = new Array(pa + 1).fill(0), sel = Array.from({ length: pa + 1 }, () => []);
     for (const sp of spells) {
       const v = profileAvg(sp.pf, S);
       if (v <= 0 || sp.ap > pa) continue;
-      for (let k = K - 1; k >= 0; k--) {
-        for (let a = pa - sp.ap; a >= 0; a--) {
-          if (dp[k][a] < 0) continue;
-          const nv = dp[k][a] + v;
-          if (nv > dp[k + 1][a + sp.ap]) { dp[k + 1][a + sp.ap] = nv; sel[k + 1][a + sp.ap] = [...sel[k][a], { sp, v }]; }
-        }
+      for (let a = pa; a >= sp.ap; a--) {
+        const nv = dp[a - sp.ap] + v;
+        if (nv > dp[a]) { dp[a] = nv; sel[a] = [...sel[a - sp.ap], { sp, v }]; }
       }
     }
-    let best = 0, used = [];
-    for (let k = 1; k <= K; k++) for (let a = 0; a <= pa; a++) if (dp[k][a] > best) { best = dp[k][a]; used = sel[k][a]; }
-    return { dmg: best, used };
+    return { dmg: dp[pa], used: sel[pa], pa };
   }
 
   async function fetchHdvGear(types, level, failed = []) {
@@ -3059,7 +3050,10 @@
     const spells = sp.spells.filter((x) => !opts.deckOnly || sp.activeDeck.has(x.id))
       .map((x) => ({ ...x, pf: vsTarget(spellProfile(x.card)) })).filter((x) => x.pf);
     if (!spells.length) throw new Error(opts.deckOnly ? 'Aucun sort de dégâts dans ton deck actif' : 'Aucun sort de dégâts');
-    const K = Math.max(1, Math.min(6, +opts.k || 4));
+    // PA offensifs (option) : les PA du tour qui servent à taper, le reste allant aux buffs/shield. Vide = tous les PA.
+    // Sorts conseillés (deckN) : affichage seulement, ne change pas les objets choisis.
+    const paOff = Math.max(0, Math.min(12, Math.round(+opts.paOff || 0)));
+    const deckN = Math.max(1, Math.min(8, +opts.deckN || 4));
     const pvMin = +opts.pvMin || 0;
     const paMin = +opts.paMin || 0;
     const slots = state.slots;
@@ -3088,6 +3082,7 @@
       return { S, active };
     };
     const paOf = buildPaOf(level), pvOf = buildPvOf(level);
+    const turnOf = (S) => bestTurnPA(spells, S, paOff ? Math.min(paOff, paOf(S)) : paOf(S));
     // Gain de dégâts d'un point dans chaque stat d'élément, pour les sorts du tour `used` (formule linéaire par stat).
     const pointWeights = (used, S) => {
       const w = { force: 0, intelligence: 0, chance: 0, agilite: 0 };
@@ -3106,14 +3101,13 @@
       let R0 = sheet.capital;
       const buy = (S, al, k, R) => { const c = pointCost(sheet.tiers[k] || ELEM_POINT_TIERS, al[k]); if (c > R) return R; al[k]++; S[k] = (S[k] || 0) + 1; return R - c; };
       if (pvMin) while (pvOf(S0) < pvMin) { const r = buy(S0, alloc, 'vitalite', R0); if (r === R0) break; R0 = r; }
-      const pa = paOf(S0);
       if (goal.points) {   // objectif Sagesse, Prospection : tout le reste du capital dans la stat qui la donne
         let R = R0;
         for (;;) { const r = buy(S0, alloc, goal.points, R); if (r === R) break; R = r; }
         while (R > 0) { const r = buy(S0, alloc, 'vitalite', R); if (r === R) break; R = r; }
-        return { S: S0, alloc, turn: bestTurn(spells, S0, pa, K) };
+        return { S: S0, alloc, turn: turnOf(S0) };
       }
-      let refS = S0, refTurn = bestTurn(spells, S0, pa, K), best = null;
+      let refS = S0, refTurn = turnOf(S0), best = null;
       for (let it = 0; it < 3; it++) {
         const w = pointWeights(refTurn.used, refS);
         const S = { ...S0 }, al = { ...alloc };
@@ -3130,7 +3124,7 @@
           }
         }
         while (R > 0) { const r = buy(S, al, 'vitalite', R); if (r === R) break; R = r; }   // reste → Vitalité
-        const turn = bestTurn(spells, S, pa, K);
+        const turn = turnOf(S);
         if (!best || turn.dmg > best.turn.dmg) best = { S, alloc: al, turn };
         const same = turn.used.map((u) => u.sp.id).sort().join() === refTurn.used.map((u) => u.sp.id).sort().join();
         if (same && it) break;
@@ -3142,7 +3136,7 @@
     const evalBuild = (build, realloc = opts.realloc !== false) => {
       if (!realloc) {
         const st = statsOf(build);
-        return { S: st.S, active: st.active, alloc: { ...sheet.base }, turn: bestTurn(spells, st.S, paOf(st.S), K) };
+        return { S: st.S, active: st.active, alloc: { ...sheet.base }, turn: turnOf(st.S) };
       }
       const st = statsOf(build, {});
       const a = allocate(st.S);
@@ -3156,9 +3150,10 @@
       // seuils non atteints : on remonte d'abord ce qui manque (1 PA manquant compte comme 1000 PV)
       const short = (pvMin ? Math.max(0, pvMin - pv) : 0) + (paMin ? 1000 * Math.max(0, paMin - pa) : 0);
       if (short) return -1e9 - short;
-      // chaque PA vaut PA_VALUE_PCT % de l'objectif, même au-delà de ce que les N sorts du tour consomment (buffs, soins,
-      // cartes de classe…) : un PA n'est plus échangé contre une broutille (ex. trophée PO = +0,4 % de dégâts par PO)
-      const paMult = (1 + PA_VALUE_PCT / 100) ** pa;
+      // chaque PA vaut PA_VALUE_PCT % de l'objectif, même au-delà des PA offensifs (buffs, soins, cartes de classe…) :
+      // un PA n'est plus échangé contre une broutille (ex. trophée PO = +0,4 % de dégâts par PO)
+      // (objectif Dégâts sans PA offensifs fixés : chaque PA sert déjà à taper, pas de bonus en plus)
+      const paMult = goalStat || paOff ? (1 + PA_VALUE_PCT / 100) ** pa : 1;
       if (goalStat) return goal.value(ev.S) * paMult + ev.turn.dmg * 1e-6 + pv * 1e-9;   // à stat égale : les dégâts, puis les PV
       return ev.turn.dmg * paMult + pv * 1e-4;   // à dégâts égaux, le plus de PV
     };
@@ -3320,14 +3315,14 @@
       ['PV', pvOf(cur.S), sheet.pv], ['PA', paOf(cur.S), sheet.pa],
       ...Object.keys(sheet.bonus).map((k) => [STAT_LABELS[k] || k, cur.S[k] || 0, (sheet.base[k] || 0) + sheet.bonus[k]]),
     ].filter(([, a, b]) => Number.isFinite(b));
-    // deck conseillé : K sorts offensifs (ceux du tour, complétés par les plus forts si les PA en limitent le nombre)
+    // deck conseillé : deckN sorts offensifs (ceux du tour d'abord, les plus forts ; complétés par les plus forts du build)
     const ranked = spells.filter((x) => x.usable).map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })).sort((a, b) => b.v - a.v);
-    const deck = nxtTurn.used.map((u) => u.sp).slice(0, K);
-    for (const { sp: x } of ranked) { if (deck.length >= K) break; if (!deck.includes(x)) deck.push(x); }
+    const deck = [...nxtTurn.used].sort((a, b) => b.v - a.v).map((u) => u.sp).slice(0, deckN);
+    for (const { sp: x } of ranked) { if (deck.length >= deckN) break; if (!deck.includes(x)) deck.push(x); }
     // cartes non offensives déjà dans le deck 3 (buffs, soins…) : conservées, c'est toi qui les choisis
     const dmgIds = new Set(sp.spells.map((x) => x.id));
     const keepCards = sp.deckIds(DECK_TARGET).filter((id) => !dmgIds.has(id) && !deck.some((x) => x.id === id)).slice(0, DECK_CARDS - deck.length);
-    return { sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, K, setFx, hdv: opts.hdv, target, goal, bestiary,
+    return { sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, paOff, deckN, setFx, hdv: opts.hdv, target, goal, bestiary,
       pvMin, pvShort: pvMin && pvOf(nxt.S) < pvMin, paMin, paShort: paMin && paOf(nxt.S) < paMin, bank, budget, hdvFailed, realloc: opts.realloc !== false, cost: costOf(final), deck: deck.map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })),
       deckChunks: sp.chunks, keepCards };
   }
@@ -3343,7 +3338,7 @@
     document.addEventListener('keydown', onKey, true);
     ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
     ov.addEventListener('keydown', (e) => e.stopPropagation());
-    let o = { k: 4, pvMin: '', deckOnly: false, hdv: false, realloc: true };
+    let o = { deckN: 4, paOff: '', pvMin: '', deckOnly: false, hdv: false, realloc: true };
     try { o = { ...o, ...JSON.parse(localStorage.getItem(BUILD_OPTS_KEY) || '{}') }; } catch { /* stockage indisponible */ }
     if (!BUILD_GOALS[o.goal]) o.goal = o.krala ? 'krala' : 'dps';   // ancienne case « Kralamoure »
     delete o.krala;
@@ -3351,10 +3346,11 @@
     const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:6px 12px;color:#fff;cursor:pointer;font:600 13px system-ui,sans-serif;background:#2a231a';
     ov.innerHTML = `
       <div style="width:min(900px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
-        <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🧬 Optimiseur de build${DM.tip("Cherche l’équipement qui maximise l’objectif choisi. Par défaut, tes dégâts sur un tour : la meilleure combinaison de N sorts de dégâts qui tient dans tes PA, sur une cible sans résistances. Prend en compte fusion, prestige, bonus de panoplie (dofusdb) et PA gagnés par l’équipement. Les PV minimum évitent un build trop fragile.")}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
+        <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🧬 Optimiseur de build${DM.tip("Cherche l’équipement qui maximise l’objectif choisi. Par défaut, tes dégâts sur un tour : le meilleur enchaînement de sorts de dégâts qui tient dans tes PA offensifs (tous tes PA si tu n’en fixes pas), sur une cible sans résistances. Prend en compte fusion, prestige, bonus de panoplie (dofusdb) et PA gagnés par l’équipement. Les PV minimum évitent un build trop fragile.")}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
         <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
           <label data-tip="Ce que l’optimiseur maximise.&#10;Dégâts par tour : sur une cible sans résistances.&#10;Kralamoure : contre le boss de guilde, ses résistances (20 % Neutre, Terre, Feu et Air, 30 % Eau) appliquées à chaque coup ; le combat dure 10 tours, seul le total de dégâts compte.&#10;Prospection : celle de l’équipement et des panoplies + 1 par 10 de Chance ; avec « Redistribuer mes points », tous tes points vont en Chance.&#10;Sagesse : idem, points en Sagesse.&#10;À égalité, le build qui fait le plus de dégâts.">Objectif <select data-o="goal" style="${inp}">${Object.entries(BUILD_GOALS).map(([k, g]) => `<option value="${k}">${g.label}</option>`).join('')}</select></label>
-          <label>Sorts par tour <select data-o="k" style="${inp}">${[2, 3, 4, 5].map((n) => `<option value="${n}">${n}</option>`).join('')}</select></label>
+          <label data-tip="PA de ton tour qui servent à taper ; le reste va à tes buffs, shields, soins… Les dégâts comptés sont ceux du meilleur enchaînement de sorts offensifs (autant de sorts que ces PA le permettent). Les PA au-delà gardent leur valeur (+3 % chacun). Vide = tous tes PA servent à taper.">PA offensifs <input data-o="paOff" type="number" min="1" max="12" placeholder="tous" style="${inp};width:70px"></label>
+          <label data-tip="Affichage seulement : nombre de sorts offensifs conseillés pour ton deck avec le build proposé (bouton « Écrire dans le deck 3 »). Ne change pas les objets choisis.">Sorts conseillés <select data-o="deckN" style="${inp}">${[2, 3, 4, 5, 6, 7, 8].map((n) => `<option value="${n}">${n}</option>`).join('')}</select></label>
           <label>PV minimum <input data-o="pvMin" type="number" min="0" placeholder="aucun" style="${inp};width:90px"></label>
           <label data-tip="Le build garde au moins ce nombre de PA (base 6, 7 dès le niveau 100, + PA de l’équipement et des panoplies, 12 au maximum). Vide = sans contrainte. Au-delà du minimum, chaque PA compte quand même pour +3 % de l’objectif : il n’est pas sacrifié pour un petit bonus.">PA minimum <input data-o="paMin" type="number" min="0" max="12" placeholder="aucun" style="${inp};width:70px"></label>
           <label style="cursor:pointer"><input data-o="deckOnly" type="checkbox"> Sorts du deck actif uniquement</label>
@@ -3691,7 +3687,7 @@
         ${r.paShort ? `<div style="color:#ff7b6b;font-weight:700">⚠️ PA minimum (${r.paMin}) impossible à atteindre avec tes objets : le build ci-dessous est celui qui a le plus de PA (${r.paOf(r.nxt.S)}).</div>` : ''}
         ${r.hdvFailed.length ? `<div style="color:#f0a040">⚠️ HDV illisible pour : ${r.hdvFailed.map((t) => esc(SLOT_NAMES[t] || t)).join(', ')} (site saturé) — ces emplacements n’ont pas d’objet HDV proposé.</div>` : ''}
         ${r.pvShort ? `<div style="color:#ff7b6b;font-weight:700">⚠️ PV minimum (${fmt(r.pvMin)}) impossible à atteindre avec tes objets : le build ci-dessous est celui qui a le plus de PV (${fmt(r.pvOf(r.nxt.S))}).</div>` : ''}
-        <div style="font-size:12px"><b>Sorts du tour</b> — actuel : ${turn(r.curTurn)}<br><b style="color:#6fcf7a">proposé</b> : ${turn(r.nxtTurn)}</div>
+        <div style="font-size:12px"><b>Sorts du tour</b>${r.paOff ? ` (${r.paOff} PA offensifs)` : ''} — actuel : ${turn(r.curTurn)}<br><b style="color:#6fcf7a">proposé</b> : ${turn(r.nxtTurn)}</div>
         <table style="border-collapse:collapse;width:100%;font-size:12px"><tr style="color:#b9a98c;text-align:left"><th style="padding:3px 6px">Emplacement</th><th>Actuel</th><th></th><th>Proposé</th></tr>${rows}</table>
         <div style="font-size:12px"><b>Panoplies</b> — actuel : ${sets(r.cur)} · proposé : ${sets(r.nxt)}</div>
         ${r.realloc ? `<div style="font-size:12px;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:6px 8px">
