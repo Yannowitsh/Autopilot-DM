@@ -96,6 +96,15 @@
     return best;
   }
 
+  // Composition d'un groupe (noms des monstres, triés) : sert à voir si les groupes ont été renouvelés (~3 min).
+  const groupMonsters = (panel) => [...panel?.querySelectorAll('li') || []]
+    .map((li) => li.querySelector('.font-bold')?.textContent.trim()).filter(Boolean).sort();
+  // Mémorise le groupe attaqué (cfg.huntTarget) ; comparé avant chaque attaque (groupe renouvelé ?).
+  const rememberHuntTarget = (panel) => {
+    const monsters = groupMonsters(panel);
+    if (monsters.length) save({ huntTarget: { zone: cfg.huntZone, group: groupNumber(panel), monsters } });
+  };
+
   // Choix manuel : quand TU cliques sur « Attaquer » dans une zone de chasse, ce groupe devient la cible du pilote
   // (mode chasse). Les clics du pilote (.click()) ne sont pas « isTrusted » : ils ne sont pas pris en compte ici.
   document.addEventListener('click', (e) => {
@@ -106,7 +115,8 @@
     const group = groupNumber(b.closest('.panel'));
     if (!zone || !group) return;
     const name = document.querySelector('h1')?.textContent.trim() || cfg.huntZoneName;
-    const o = { mode: 'chasse', huntZone: zone, huntZoneName: name, huntGroup: group };
+    const monsters = groupMonsters(b.closest('.panel'));
+    const o = { mode: 'chasse', huntZone: zone, huntZoneName: name, huntGroup: group, huntTarget: { zone, group, monsters } };
     if (isOwner()) {   // le pilote prend la main : Auto puis relance en boucle
       Object.assign(o, { botFight: true, pauseReason: null });
       lastAutoClick = 0;
@@ -517,6 +527,18 @@
       if (!onHome()) return goHome();
       const group = targetGroup();
       if (!group) return;   // page pas encore chargée
+      // Groupe d'avis de recherche choisi à la main, renouvelé depuis (combat perdu au rechargement…) :
+      // attaquer le nouveau groupe n'a pas de sens → arrêt.
+      const t = cfg.huntTarget;
+      if (cfg.huntGroup && t?.zone === cfg.huntZone && t.group === cfg.huntGroup && t.monsters?.some(wantedMatch)) {
+        const now = groupMonsters(group);
+        if (now.length && now.join('|') !== t.monsters.join('|')) {
+          await save({ enabled: false, paused: false, botFight: false, huntTarget: null,
+            status: 'Arrêté : le groupe d’avis de recherche a été renouvelé' });
+          notify('wanted', `⏹️ Le groupe d’avis de recherche (${t.monsters.filter(wantedMatch).join(', ')}) a été renouvelé dans **${cfg.huntZoneName || 'zone ' + cfg.huntZone}** : pilote auto arrêté.`);
+          return;
+        }
+      }
       if ([...group.querySelectorAll('button')].some((b) => /Plus d.énergie/.test(b.textContent))) {
         lastEnergyCheck = 0;   // force une lecture : gate() mettra en pause
       }
@@ -528,6 +550,7 @@
       await sleep(humanDelay());
       const btn = isOwner() && attack();
       if (!btn) return;
+      rememberHuntTarget(btn.closest('.panel'));
       await save({ botFight: true });
       spendEnergy();
       lastAutoClick = 0;   // le combat démarre en manuel : le mode Auto sera activé au tick suivant
@@ -1831,28 +1854,44 @@
   // Après un clic qui lance un combat (Attaquer, Combattre, Suivant en auto…), on doit voir un combat en cours.
   // Si rien ne se passe au bout de LAUNCH_TIMEOUT_MS, ou si une étape du pilote reste bloquée, on recharge la page.
   // Autres cas rattrapés : combat du pilote qui ne se termine jamais (page figée alors que le serveur a répondu),
-  // combat qui ne repart pas après la vérification de présence, page vide ou page d'erreur serveur.
-  // Recharger /combat est sans risque : le combat en cours est rechargé tel quel et le pilote relance l'Auto.
+  // combat qui ne repart pas après la vérification de présence, page vide ou page d'erreur serveur (5xx),
+  // requête du jeu sans réponse (netwatch.js publie les requêtes en cours dans <html data-dm-pending>).
+  // Recharger /combat est en général sans risque : le combat en cours est rechargé tel quel et le pilote relance l'Auto.
+  // Mais le serveur peut l'avoir perdu (chasse : groupes renouvelés entre-temps) : /combat ne lance alors plus
+  // aucune requête → combat perdu, retour à la page d'accueil du mode ; en chasse d’avis de recherche, le pilote s’y arrête si le groupe a été renouvelé.
   const LAUNCH_TIMEOUT_MS = 45 * 1000;
   const BUSY_TIMEOUT_MS = 90 * 1000;
-  const FIGHT_STALL_MS = 60 * 1000;      // un combat en Auto se joue en ~10 s
+  const FIGHT_STALL_MS = 40 * 1000;      // un combat en Auto se joue en ~10 s
   const PRESENCE_STALL_MS = 15 * 1000;   // combat toujours figé après avoir répondu à « Es-tu toujours là ? »
-  const BLANK_STALL_MS = 20 * 1000;      // page vide / erreur serveur
-  const RELOAD_MIN_GAP_MS = 60 * 1000;   // jamais plus d'un rechargement par minute
+  const BLANK_STALL_MS = 20 * 1000;      // page vide
+  const ERROR_STALL_MS = 4 * 1000;       // page d'erreur serveur affichée
+  const PENDING_MAX_MS = 15 * 1000;      // requête du jeu sans réponse (normalement < 1 s)
+  const LOST_FIGHT_MS = 25 * 1000;       // /combat sans fin de combat ni aucune requête depuis le chargement
+  const RELOAD_MIN_GAP_MS = 30 * 1000;   // jamais plus d'un rechargement toutes les 30 s
   const MAX_STUCK_RELOADS = 3;           // au-delà : retour à la page d'accueil du mode
-  const ERROR_PAGE = /Application error|client-side exception|Internal Server Error|Bad Gateway|Service (Temporarily )?Unavailable|Gateway Time-?out|Web server is down|Connection timed out|This page couldn.t load|Erreur serveur/i;
-  let launchAt = 0, busySince = 0, fightSince = 0, presenceAt = 0, oddSince = 0, oddCheckedAt = 0;
+  const ERROR_PAGE = /Application error|client-side exception|Internal Server Error|Bad Gateway|Service (Temporarily )?Unavailable|Gateway Time-?out|Web server is down|Connection timed out|This page couldn.t load|Resource Limit|Erreur serveur|\b(erreur|error)\s*5\d\d\b/i;
+  const ERROR_TITLE = /^\s*((erreur|error)\s*)?5\d\d\b|\b(erreur|error)\s*5\d\d\b/i;   // titre « Erreur 508 », « 503 Service… »
+  let launchAt = 0, busySince = 0, fightSince = 0, presenceAt = 0, oddSince = 0, oddCheckedAt = 0, oddKind = '';
+  const pageLoadedAt = Date.now();
   const markLaunch = () => { if (!launchAt) launchAt = Date.now(); };
 
-  // Page vide ou page d'erreur (vérifié toutes les 3 s : innerText force un calcul de mise en page)
+  // Page vide ou page d'erreur (vérifié toutes les 2 s : innerText force un calcul de mise en page)
   function oddPage(now) {
-    if (now - oddCheckedAt < 3000) return;
+    if (now - oddCheckedAt < 2000) return;
     oddCheckedAt = now;
     const text = document.body?.innerText.trim() || '';
-    const odd = text.length < 40 || (text.length < 3000 && ERROR_PAGE.test(`${document.title} ${text}`));
-    if (!odd) oddSince = 0;
-    else if (!oddSince) oddSince = now;
+    const titles = [document.title, ...[...document.querySelectorAll('h1, h2')].map((h) => h.textContent)];
+    const kind = document.getElementById('__next_error__') || titles.some((t) => ERROR_TITLE.test(t))
+      || (text.length < 3000 && ERROR_PAGE.test(`${document.title} ${text}`)) ? 'error'
+      : text.length < 40 ? 'blank' : '';
+    if (kind !== oddKind) { oddKind = kind; oddSince = kind ? now : 0; }
   }
+  // Plus ancienne requête du jeu en attente (ms), 0 si aucune.
+  const pendingFor = (now) => {
+    const t = +(document.documentElement.dataset.dmPending || '').split(':')[1];
+    return t ? now - t : 0;
+  };
+  const pageActions = () => +(document.documentElement.dataset.dmActions || 0);
 
   function stuckCheck() {
     const now = Date.now();
@@ -1866,14 +1905,21 @@
     let why = null;
     if (launchAt && now - launchAt > LAUNCH_TIMEOUT_MS) why = 'lancement du combat sans réponse';
     else if (busy && now - busySince > BUSY_TIMEOUT_MS + cfg.delayMax * 1000) why = 'pilote bloqué';
-    else if (oddSince && now - oddSince > BLANK_STALL_MS) why = 'page vide ou erreur serveur';
+    else if (oddKind === 'error' && now - oddSince > ERROR_STALL_MS) why = 'erreur serveur';
+    else if (oddKind === 'blank' && now - oddSince > BLANK_STALL_MS) why = 'page vide';
+    else if (pendingFor(now) > PENDING_MAX_MS) why = `requête sans réponse depuis ${Math.round(pendingFor(now) / 1000)} s`;
     else if (!waitingPresence && presenceAt && inFight && now - presenceAt > PRESENCE_STALL_MS) why = 'combat figé après la vérification de présence';
     else if (!waitingPresence && inFight && cfg.botFight && now - fightSince > FIGHT_STALL_MS) why = 'combat figé';
+    // Combat disparu côté serveur : la page /combat ne lance plus rien → inutile de recharger, on repart de l'accueil.
+    // (seulement si netwatch.js tourne dans la page, sinon le compteur de requêtes reste à 0)
+    if (!why && !waitingPresence && inFight && cfg.botFight && document.documentElement.dataset.dmNetwatch
+        && !pageActions() && !pendingFor(now) && now - pageLoadedAt > LOST_FIGHT_MS) why = 'combat introuvable (perdu par le serveur)';
     if (!why || now - (cfg.lastStuckReload || 0) < RELOAD_MIN_GAP_MS) return false;
     launchAt = 0;
     progress();
     const n = (cfg.stuckReloads || 0) + 1;
-    const giveUp = n > MAX_STUCK_RELOADS;   // recharger ne suffit pas : on repart de la page d'accueil du mode
+    // recharger ne suffit pas, ou combat perdu : on repart de la page d'accueil du mode
+    const giveUp = n > MAX_STUCK_RELOADS || why.startsWith('combat introuvable');
     DM.log(`anti-blocage : ${why} sur ${location.pathname} → ${giveUp ? `retour à ${home()}` : 'rechargement'}`);
     save({ lastStuckReload: now, stuckReloads: giveUp ? 0 : n,
       status: giveUp ? `Toujours bloqué (${why}) — retour à ${home()}…` : `Page bloquée (${why}) — rechargement…` });
