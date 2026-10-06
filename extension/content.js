@@ -241,8 +241,9 @@
       if (r.redirected && /connexion/.test(r.url)) return { error: 'déconnecté', fatal: true };
       if (!r.ok) return { error: r.status === 508 || r.status === 503 ? `site saturé (HTTP ${r.status})` : `HTTP ${r.status}` };
       const html = await r.text();
-      // v2 du site : compteur RegenValue, props « "regen":{"value":N,"max":M » dans le payload ; sinon le texte affiché
-      const m = html.replace(/\\"/g, '"').match(/"regen":\{"value":(\d+),"max":(\d+)/)
+      // v2 du site : compteur RegenValue, props « "regen":{"value":N,"max":M,…,"periodSec":360} » dans le payload
+      // (la page en a d'autres, ex. les coffres : periodSec 1200) ; sinon le texte affiché
+      const m = html.replace(/\\"/g, '"').match(/"regen":\{"value":(\d+),"max":(\d+),"nextAt":[^,]*,"periodSec":360\}/)
         || new DOMParser().parseFromString(html, 'text/html').body.textContent.match(/Énergie\s*(\d+)\s*\/\s*(\d+)/);
       if (!m) return { error: 'énergie introuvable sur /jeu' };
       await save({ energy: +m[1], energyMax: +m[2], energyAt: Date.now() });
