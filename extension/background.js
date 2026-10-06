@@ -294,8 +294,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case 'buyDone': return buyDone(msg, sender.tab?.id);
       case 'claim': {   // lien « attaque directe » ouvert dans un nouvel onglet : le pilote actif passe sur cet onglet
         const { enabled } = await DM.getAll();
-        if (!enabled || sender.tab?.id == null) return false;
-        await chrome.storage.local.set({ ownerTabId: sender.tab.id, paused: false, status: 'Avis de recherche : attaque du groupe…' });
+        if (sender.tab?.id == null || (!enabled && !msg.start)) return false;
+        if (!enabled) await setEnabled(true, sender.tab.id);   // « Attaquer » sur un avis : démarre le pilote
+        await chrome.storage.local.set({ ownerTabId: sender.tab.id, paused: false, pauseReason: null, botFight: false,
+          status: 'Avis de recherche : attaque du groupe…' });
         chrome.tabs.sendMessage(sender.tab.id, { type: 'tick' }).catch(() => {});
         return true;
       }

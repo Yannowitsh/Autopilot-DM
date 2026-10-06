@@ -2250,7 +2250,8 @@
 
   // Lien « ⚔️ Attaquer direct » reçu sur Discord : /chasse?zone=Z&dmAttack=N[&dmUntil=t].
   // Le groupe N devient la cible de chasse ; si le pilote tourne, cet onglet le prend en main (Auto + relance en boucle),
-  // sinon on lance juste ce combat. Si les groupes ont été renouvelés depuis (dmUntil dépassé), on n'attaque pas.
+  // Le pilote est démarré au besoin : il lance le combat en Auto puis le relance en boucle (comme en mode chasse),
+  // jusqu'au renouvellement du groupe. Si les groupes ont été renouvelés depuis (dmUntil dépassé), on n'attaque pas.
   async function attackFromLink() {
     const q = new URLSearchParams(location.search);
     const group = +q.get('dmAttack'), zone = +q.get('zone'), until = +q.get('dmUntil') || 0;
@@ -2262,14 +2263,12 @@
     }
     for (let i = 0; i < 40 && !targetGroupByNumber(group); i++) await sleep(250);   // attend l'affichage des groupes
     const name = document.querySelector('h1')?.textContent.trim() || '';
-    await save({ mode: 'chasse', huntZone: zone, huntZoneName: name, huntGroup: group, pauseReason: null });
-    if (cfg.enabled) {
-      await send({ type: 'claim' }).catch(() => {});   // le pilote passe sur cet onglet et attaque
-      return;
-    }
-    const btn = [...targetGroupByNumber(group)?.querySelectorAll('button') || []]
-      .find((b) => !b.disabled && /^Attaquer$/.test(b.textContent.trim()));
-    btn?.click();
+    // composition actuelle du groupe : le pilote s'arrêtera quand il sera renouvelé (voir step, mode chasse)
+    const monsters = groupMonsters(targetGroupByNumber(group));
+    await save({ mode: 'chasse', huntZone: zone, huntZoneName: name, huntGroup: group, pauseReason: null,
+      huntTarget: monsters.length ? { zone, group, monsters } : null });
+    // Le pilote (démarré s'il était arrêté) passe sur cet onglet : il attaque, active l'Auto puis relance en boucle.
+    await send({ type: 'claim', start: true }).catch(() => {});
   }
   const targetGroupByNumber = (n) => [...document.querySelectorAll('.panel')].find((p) => groupNumber(p) === n);
 
@@ -2521,8 +2520,8 @@
       });
     }
     $('wanted').addEventListener('click', (e) => {
-      const z = e.target.closest('li[data-zone]')?.dataset.zone;
-      if (z) location.assign(`/chasse?zone=${z}`);   // il reste à cliquer « Attaquer » : le pilote relancera ce groupe
+      const href = e.target.closest('li[data-href]')?.dataset.href;
+      if (href) location.assign(href);   // avis encore valable : attaque directe en pilote auto ; sinon ouverture de la zone
     });
     $('locks').addEventListener('click', (e) => {
       const k = e.target.closest('button[data-unlock]')?.dataset.unlock;
@@ -2992,10 +2991,10 @@
     const now = Date.now();
     for (const f of scanMatches()) {
       const li = document.createElement('li');
-      li.dataset.zone = f.zoneId;
       const old = f.rotateAt && now > f.rotateAt;
+      li.dataset.href = old ? `/chasse?zone=${f.zoneId}` : attackLink(f);
       if (old) li.className = 'old';
-      li.title = old ? 'Groupes renouvelés depuis le scan : peut-être plus là' : 'Ouvrir la zone';
+      li.title = old ? 'Groupes renouvelés depuis le scan : ouvrir la zone' : 'Attaquer ce groupe (pilote auto, combats relancés en boucle)';
       if (f.img) {
         const ic = document.createElement('img');
         ic.src = f.img;
