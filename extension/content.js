@@ -1794,7 +1794,7 @@
     const norm = (raw, fusion) => {
       const it = res(raw) || {};
       const type = it.s;
-      return { id: it.id, name: it.n, lvl: it.lvl, type, rarity: it.r, icon: it.icon, fusion: fusion || 0,
+      return { id: it.id, name: it.n, lvl: it.lvl, type, rarity: it.r, icon: it.icon, fusion: fusion || 0, setName: it.setName || null,
         two: !!res(it.w)?.twoHanded, eff: fusedStats(res(it.st), type, fusion || 0) };
     };
     const entries = props.entries.map((e) => ({ ...norm(e.item, e.fusion), qty: e.qty })).filter((e) => Number.isInteger(e.id) && e.qty > 0);
@@ -2430,7 +2430,9 @@
         fusion: +card.f || 0, card: { ...card, eff }, ...dmg, perAp: ap ? dmg.avg / ap : Infinity });
     }
     const favs = new Set((res(props.initialFavorites) || []).map(Number));
-    return { spells, favs, variableOnly, chunks };
+    const decks = res(props.initialDecks) || [];
+    const activeDeck = new Set((res(decks[+res(props.initialActive) || 0]) || []).map((k) => +String(k).split(':')[0]));
+    return { spells, favs, variableOnly, chunks, activeDeck };
   }
 
   // Caractéristiques du personnage : l'état de combat (/combat, combattant « p ») contient ses stats totales
@@ -2582,6 +2584,413 @@
       try { await navigator.clipboard.writeText(text); b.textContent = '✔ Copié'; } catch { b.textContent = '❌ Copie impossible'; }
     });
     document.body.appendChild(ov);
+  }
+
+  // ---------- Optimiseur de build : équipement qui maximise les dégâts d'un tour ----------
+  // Stats d'un build = points de base (fiche perso) + objets (fusion, puis prestige +25 %/niveau hors PA/PM/PO/invoc.)
+  // + bonus de panoplie (dofusdb, palier d'indice = nombre d'objets portés, plafonné ; rien sous 2 objets — calé sur
+  // le panneau « Panoplies » de la fiche). Dégâts d'un tour = meilleure combinaison de K sorts tenant dans les PA
+  // (formule de la tierlist, cible sans résistances). Recherche locale (emplacement par emplacement + panoplies
+  // complètes) avec plusieurs départs.
+  const CHAR_KEYS = { 0: 'pv', 1: 'pa', 10: 'force', 11: 'vitalite', 12: 'sagesse', 13: 'chance', 14: 'agilite', 15: 'intelligence',
+    16: 'dommages', 18: 'critique', 19: 'po', 23: 'pm', 25: 'puissance', 26: 'invocations', 27: 'esquivePA', 28: 'esquivePM',
+    33: 'resPctTerre', 34: 'resPctFeu', 35: 'resPctEau', 36: 'resPctAir', 37: 'resPctNeutre', 40: 'pods', 44: 'initiative',
+    48: 'prospection', 49: 'soins', 50: 'renvoi', 54: 'resTerre', 55: 'resFeu', 56: 'resEau', 57: 'resAir', 58: 'resNeutre',
+    78: 'fuite', 79: 'tacle', 82: 'retraitPA', 83: 'retraitPM', 84: 'dommagesPoussee', 85: 'resPoussee', 86: 'dommagesCritiques',
+    87: 'resCritiques', 88: 'dommagesTerre', 89: 'dommagesFeu', 90: 'dommagesEau', 91: 'dommagesAir', 92: 'dommagesNeutre',
+    120: 'dmgPctDistance', 121: 'resPctDistance', 122: 'dmgPctArmes', 123: 'dmgPctSorts', 124: 'resPctMelee', 125: 'dmgPctMelee' };
+  const PRESTIGE_GEAR_PCT = 25;
+  const PRESTIGE_EXCLUDED = new Set(['pa', 'pm', 'po', 'invocations']);
+  const SET_CACHE_KEY = 'dmSetBonuses';
+  const SET_CACHE_MS = 7 * 24 * 3600 * 1000;
+  const OFFENSE_KEYS = ['force', 'intelligence', 'chance', 'agilite', 'puissance', 'dommages', 'dommagesNeutre', 'dommagesTerre',
+    'dommagesFeu', 'dommagesEau', 'dommagesAir', 'critique', 'dommagesCritiques', 'dmgPctSorts', 'pa', 'po'];
+  const BUILD_OPTS_KEY = 'dmBuildOpts';
+
+  // Bonus de panoplie par nom (dofusdb, en cache 7 jours) : { nom: [[{k, v}], …] | null }
+  async function fetchSetBonuses(names) {
+    let cache = {};
+    try { cache = JSON.parse(localStorage.getItem(SET_CACHE_KEY) || '{}'); } catch { /* stockage indisponible */ }
+    const now = Date.now();
+    const missing = names.filter((n) => !cache[n] || now - cache[n].at > SET_CACHE_MS);
+    for (let i = 0; i < missing.length; i += 25) {
+      const batch = missing.slice(i, i + 25);
+      const q = batch.map((n) => `name.fr[$in][]=${encodeURIComponent(n)}`).join('&');
+      const r = await DM.fetchT(`https://api.dofusdb.fr/item-sets?${q}&$limit=50&$select[]=name&$select[]=effects&lang=fr`, {}, 20000);
+      if (!r.ok) throw new Error(`dofusdb : HTTP ${r.status}`);
+      const found = {};
+      for (const set of (await r.json()).data || []) {
+        found[set.name?.fr] = (set.effects || []).map((lvl) => (lvl || []).map((e) => ({ k: CHAR_KEYS[e.characteristic], v: +e.from || 0 })).filter((e) => e.k && e.v));
+      }
+      for (const n of batch) cache[n] = { at: now, fx: found[n] || null };
+    }
+    try { localStorage.setItem(SET_CACHE_KEY, JSON.stringify(cache)); } catch { /* idem */ }
+    return Object.fromEntries(names.map((n) => [n, cache[n]?.fx || null]));
+  }
+  const setTier = (fx, count) => (!fx?.length || count < 2 ? null : fx[Math.min(count, fx.length - 1)]);
+
+  // Fiche perso : niveau, prestige, points de base, PV/PA affichés, panoplies actives (texte du jeu).
+  async function fetchCharSheet() {
+    const { flight } = await fetchFlight('/personnage');
+    const { rows } = rscProps(flight, () => false);
+    const res = (v) => rscResolve(rows, v);
+    const alloc = rscProps(flight, (x) => Array.isArray(x.rows) && x.rows[0]?.key && 'pointsFree' in x).props;
+    const info = rscProps(flight, (x) => 'prestige' in x && 'level' in x && 'equipped' in x).props;
+    if (!alloc || !info) throw new Error('Fiche personnage illisible');
+    const base = {}, bonus = {};
+    for (const r of res(alloc.rows).map(res)) { base[r.key] = +r.base || 0; bonus[r.key] = +r.bonus || 0; }
+    const tile = (label) => +(flight.match(new RegExp(`"children":(-?\\d+)\\}\\],\\["\\$","div",null,\\{"className":"text-\\[11px\\][^"]*","children":"${label}"`))?.[1] ?? NaN);
+    const sets = [...flight.matchAll(/"children":\["([^"]+)"," \(",(\d+),"\/",(\d+),"\)"\]\}\],\["\$","div",null,\{"className":"text-muted","children":"([^"]*)"\}/g)]
+      .map((m) => ({ name: m[1], count: +m[2], max: +m[3], text: m[4] }));
+    return { level: +info.level || 1, prestige: +info.prestige || 0, base, bonus, pv: tile('PV'), pa: tile('PA'), crit: tile('% Critique'), sets };
+  }
+
+  // Signature de dégâts d'une carte : par élément, base moyenne cumulée (B) et nombre de coups (N, pour les dommages fixes).
+  function spellProfile(card) {
+    const B = [0, 0, 0, 0, 0], N = [0, 0, 0, 0, 0];
+    let any = false;
+    for (const e of card.eff || []) {
+      if (!DMG_FIXED.has(e.k)) continue;
+      any = true;
+      const n = e.k === 'poison' ? Math.max(1, +(e.turns || e.dur) || 1) : 1;
+      const w = e.chance != null && +e.chance < 100 ? Math.max(0, +e.chance) / 100 : 1;
+      const el = Number.isInteger(e.el) ? e.el : 0;
+      B[el] += w * n * ((+e.min || 0) + (+(e.max ?? e.min) || 0)) / 2;
+      N[el] += w * n;
+    }
+    return any ? { B, N, cc: +card.cc || 0 } : null;
+  }
+  // Dégâts moyens d'un sort avec ces stats (même formule que spellDamage, en version rapide).
+  function profileAvg(pf, S) {
+    const pct = (1 + (S.dmgPctSorts || 0) / 100) * (1 + (S.po || 0) * SPECTRAL_PER_PO / 100);
+    const p = pf.cc > 0 ? Math.min(1, Math.max(0, (pf.cc + (S.critique || 0)) / 100)) : 0;
+    let tot = 0;
+    for (let el = 0; el < 5; el++) {
+      if (!pf.N[el]) continue;
+      const m = 1 + ((S[EL_STAT[el]] || 0) + (S.puissance || 0)) / 100;
+      const fixed = (S.dommages || 0) + (S[EL_DMG[el]] || 0);
+      tot += pf.B[el] * m * (1 + p * (CRIT_MULT - 1)) + pf.N[el] * (fixed + p * (S.dommagesCritiques || 0));
+    }
+    return tot * pct;
+  }
+  // Meilleure combinaison d'au plus K sorts (cartes distinctes) dont la somme des PA ≤ pa.
+  function bestTurn(spells, S, pa, K) {
+    // dp[k][a] = meilleurs dégâts avec k sorts pour a PA ; sel[k][a] = sorts retenus (liste gardée telle quelle :
+    // remonter des « précédents » serait faux, une case pouvant être réécrite par un sort examiné plus tard)
+    const dp = Array.from({ length: K + 1 }, () => new Array(pa + 1).fill(-1));
+    const sel = Array.from({ length: K + 1 }, () => new Array(pa + 1).fill(null));
+    dp[0][0] = 0; sel[0][0] = [];
+    for (const sp of spells) {
+      const v = profileAvg(sp.pf, S);
+      if (v <= 0 || sp.ap > pa) continue;
+      for (let k = K - 1; k >= 0; k--) {
+        for (let a = pa - sp.ap; a >= 0; a--) {
+          if (dp[k][a] < 0) continue;
+          const nv = dp[k][a] + v;
+          if (nv > dp[k + 1][a + sp.ap]) { dp[k + 1][a + sp.ap] = nv; sel[k + 1][a + sp.ap] = [...sel[k][a], { sp, v }]; }
+        }
+      }
+    }
+    let best = 0, used = [];
+    for (let k = 1; k <= K; k++) for (let a = 0; a <= pa; a++) if (dp[k][a] > best) { best = dp[k][a]; used = sel[k][a]; }
+    return { dmg: best, used };
+  }
+
+  async function fetchHdvGear(types, level) {
+    const out = [];
+    for (const type of types) {
+      const { flight } = await fetchFlight(`/hdv?emplacement=${encodeURIComponent(type)}`);
+      const { rows, props } = rscProps(flight, (x) => Array.isArray(x.listings));
+      for (const raw of props ? rscResolve(rows, props.listings) || [] : []) {
+        const l = rscResolve(rows, raw), it = rscResolve(rows, l?.item);
+        if (!it?.id || l.mine || (it.lvl || 0) > level) continue;
+        out.push({ id: it.id, name: it.n, lvl: it.lvl, type: it.s, rarity: it.r, icon: it.icon, fusion: +l.fusion || 0,
+          setName: it.setName || null, two: !!rscResolve(rows, it.w)?.twoHanded, eff: fusedStats(rscResolve(rows, it.st), it.s, +l.fusion || 0),
+          src: 'hdv', price: +l.price || 0, listingId: l.id, seller: l.seller });
+      }
+      await sleep(250);
+    }
+    // une seule annonce par objet (id + fusion) : la moins chère
+    const best = new Map();
+    for (const c of out) { const k = `${c.id}|${c.fusion}`; if (!best.has(k) || best.get(k).price > c.price) best.set(k, c); }
+    return [...best.values()];
+  }
+
+  // Lecture de toutes les données + recherche. say(msg) : progression.
+  async function optimizeBuild(opts, say) {
+    say('Lecture de la fiche personnage…');
+    const sheet = await fetchCharSheet();
+    say('Lecture de l’inventaire…');
+    const state = await fetchEquipState();
+    say('Lecture des sorts…');
+    const sp = await fetchSpells();
+    const level = sheet.level, gearMult = 1 + sheet.prestige * PRESTIGE_GEAR_PCT / 100;
+    const withPrestige = (eff) => {
+      if (gearMult === 1) return eff;
+      const o = {};
+      for (const [k, v] of Object.entries(eff || {})) o[k] = v > 0 && !PRESTIGE_EXCLUDED.has(k) ? Math.round(v * gearMult) : v;
+      return o;
+    };
+    let pool = [
+      ...state.entries.filter((e) => !(e.lvl > level)).map((e) => ({ ...e, src: 'inv' })),
+      ...state.slots.filter((s) => s.cur).map((s) => ({ ...s.cur, src: 'worn', wornSlot: s.slot })),
+    ];
+    if (opts.hdv) {
+      say('Lecture de l’HDV…');
+      pool.push(...await fetchHdvGear([...new Set(state.slots.map((s) => s.accepts))], level));
+    }
+    pool = pool.map((c, i) => ({ ...c, uid: i, eff: withPrestige(c.eff) }));
+    say('Bonus de panoplie (dofusdb)…');
+    const setFx = await fetchSetBonuses([...new Set(pool.map((c) => c.setName).filter(Boolean))]);
+
+    const spells = sp.spells.filter((x) => !opts.deckOnly || sp.activeDeck.has(x.id))
+      .map((x) => ({ ...x, pf: spellProfile(x.card) })).filter((x) => x.pf);
+    if (!spells.length) throw new Error(opts.deckOnly ? 'Aucun sort de dégâts dans ton deck actif' : 'Aucun sort de dégâts');
+    const K = Math.max(1, Math.min(6, +opts.k || 4));
+    const pvMin = +opts.pvMin || 0;
+    const slots = state.slots;
+
+    // utile = stats offensives, PA/PO, vitalité si PV minimum, ou panoplie
+    const useful = (c) => c.src === 'worn' || c.setName || OFFENSE_KEYS.some((k) => (c.eff[k] || 0) > 0)
+      || (pvMin && ((c.eff.vitalite || 0) > 0 || (c.eff.pv || 0) > 0));
+    const cands = {};
+    for (const s of slots) cands[s.accepts] ||= pool.filter((c) => c.type === s.accepts && useful(c));
+
+    const statsOf = (build) => {
+      const S = { ...sheet.base };
+      const sets = {};
+      for (const c of Object.values(build)) {
+        if (!c) continue;
+        for (const k in c.eff) S[k] = (S[k] || 0) + c.eff[k];
+        if (c.setName) sets[c.setName] = (sets[c.setName] || 0) + 1;
+      }
+      const active = [];
+      for (const [n, cnt] of Object.entries(sets)) {
+        const tier = setTier(setFx[n], cnt);
+        if (!tier?.length) continue;
+        active.push({ name: n, count: cnt, tier });
+        for (const { k, v } of tier) S[k] = (S[k] || 0) + v;
+      }
+      return { S, active };
+    };
+    const paOf = (S) => Math.min(12, (level >= 100 ? 7 : 6) + (S.pa || 0));
+    const pvOf = (S) => 50 + 5 * level + (S.vitalite || 0) + (S.pv || 0);
+    let evals = 0;
+    const score = (build) => {
+      evals++;
+      const { S } = statsOf(build);
+      const pv = pvOf(S);
+      if (pvMin && pv < pvMin) return -1e9 + pv;   // build trop fragile : on remonte d'abord les PV
+      return bestTurn(spells, S, paOf(S), K).dmg + pv * 1e-4;   // à dégâts égaux, le plus de PV
+    };
+    // contraintes : un même objet (id) une seule fois ; arme à deux mains → pas de bouclier ; un exemplaire possédé par objet
+    const valid = (build) => {
+      const ids = new Set();
+      for (const c of Object.values(build)) { if (!c) continue; if (ids.has(c.id)) return false; ids.add(c.id); }
+      return !(build.arme?.two && build.bouclier);
+    };
+    const current = Object.fromEntries(slots.map((s) => [s.slot, s.cur ? pool.find((c) => c.src === 'worn' && c.wornSlot === s.slot) : null]));
+    const canEmpty = (slot) => !current[slot] || slot === 'bouclier';
+
+    async function climb(start) {
+      let build = { ...start }, best = score(build);
+      for (let pass = 0; pass < 12; pass++) {
+        let improved = false;
+        for (const s of [...slots].sort(() => Math.random() - 0.5)) {
+          let pick = build[s.slot], pickScore = best;
+          for (const c of [...cands[s.accepts], ...(canEmpty(s.slot) ? [null] : [])]) {
+            if (c === build[s.slot]) continue;
+            const b = { ...build, [s.slot]: c };
+            if (c?.two && s.slot === 'arme') b.bouclier = null;
+            if (!valid(b)) continue;
+            const v = score(b);
+            if (v > pickScore + 1e-6) { pick = c; pickScore = v; }
+          }
+          if (pick !== build[s.slot]) {
+            build = { ...build, [s.slot]: pick };
+            if (pick?.two && s.slot === 'arme') build.bouclier = null;
+            best = pickScore; improved = true;
+          }
+          if (evals % 400 < 40) await sleep(0);
+        }
+        // panoplies : poser d'un coup les meilleurs objets d'une panoplie (le palier ne vient qu'à plusieurs)
+        for (const name of Object.keys(setFx)) {
+          if (!setFx[name]) continue;
+          const items = pool.filter((c) => c.setName === name && cands[c.type]?.includes(c));
+          if (items.length < 2) continue;
+          const b = { ...build };
+          for (const c of items) {
+            const free = slots.filter((s) => s.accepts === c.type && b[s.slot]?.setName !== name);
+            if (!free.length) continue;
+            // emplacement le moins utile du type (vide d'abord)
+            const target = free.find((s) => !b[s.slot]) || free[0];
+            b[target.slot] = c;
+            if (c.two && target.slot === 'arme') b.bouclier = null;
+          }
+          if (!valid(b)) continue;
+          const v = score(b);
+          if (v > best + 1e-6) { build = b; best = v; improved = true; }
+        }
+        if (!improved) break;
+      }
+      return { build, best };
+    }
+
+    say('Recherche du meilleur build…');
+    let top = await climb(current);
+    const RESTARTS = 25;
+    for (let r = 0; r < RESTARTS; r++) {
+      say(`Recherche du meilleur build… (essai ${r + 2}/${RESTARTS + 1}, ${evals} builds testés)`);
+      const start = { ...top.build };
+      // perturbation : 3 emplacements au hasard
+      for (const s of [...slots].sort(() => Math.random() - 0.5).slice(0, 3)) {
+        const list = cands[s.accepts];
+        if (list.length) start[s.slot] = list[Math.floor(Math.random() * list.length)];
+      }
+      if (!valid(start)) continue;
+      const res = await climb(start);
+      if (res.best > top.best + 1e-6) top = res;
+    }
+
+    // anneaux / dofus : un objet déjà porté garde son emplacement (moins d'équipements à changer)
+    const final = { ...top.build };
+    for (const type of new Set(slots.map((s) => s.accepts))) {
+      const group = slots.filter((s) => s.accepts === type);
+      if (group.length < 2) continue;
+      const items = group.map((s) => final[s.slot]).filter(Boolean);
+      const place = {};
+      for (const c of items) if (c.src === 'worn' && group.some((s) => s.slot === c.wornSlot)) place[c.wornSlot] = c;
+      const rest = items.filter((c) => !Object.values(place).includes(c));
+      for (const s of group) if (!place[s.slot]) place[s.slot] = rest.shift() || null;
+      for (const s of group) final[s.slot] = place[s.slot];
+    }
+    const cur = statsOf(current), nxt = statsOf(final);
+    const curTurn = bestTurn(spells, cur.S, paOf(cur.S), K), nxtTurn = bestTurn(spells, nxt.S, paOf(nxt.S), K);
+    // contrôle du modèle : stats calculées pour l'équipement actuel vs fiche du jeu
+    const checks = [
+      ['PV', pvOf(cur.S), sheet.pv], ['PA', paOf(cur.S), sheet.pa],
+      ...Object.keys(sheet.bonus).map((k) => [STAT_LABELS[k] || k, cur.S[k] || 0, (sheet.base[k] || 0) + sheet.bonus[k]]),
+    ].filter(([, a, b]) => Number.isFinite(b));
+    return { sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, K, setFx, hdv: opts.hdv,
+      pvMin, pvShort: pvMin && pvOf(nxt.S) < pvMin };
+  }
+
+  async function openBuildOptimizer() {
+    document.querySelector('.dm-picker')?.remove();
+    const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+    const ov = document.createElement('div');
+    ov.className = 'dm-picker';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:#000a;display:grid;place-items:center;padding:16px;font:13px system-ui,sans-serif;color:#eee';
+    const close = () => { ov.remove(); document.removeEventListener('keydown', onKey, true); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+    document.addEventListener('keydown', onKey, true);
+    ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
+    ov.addEventListener('keydown', (e) => e.stopPropagation());
+    let o = { k: 4, pvMin: '', deckOnly: false, hdv: false };
+    try { o = { ...o, ...JSON.parse(localStorage.getItem(BUILD_OPTS_KEY) || '{}') }; } catch { /* stockage indisponible */ }
+    const inp = 'background:#2a231a;border:1px solid #5a4a33;border-radius:8px;color:#eee;padding:5px 8px;font:13px system-ui,sans-serif';
+    const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:6px 12px;color:#fff;cursor:pointer;font:600 13px system-ui,sans-serif;background:#2a231a';
+    ov.innerHTML = `
+      <div style="width:min(900px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
+        <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🧬 Optimiseur de build${DM.tip("Cherche l’équipement qui maximise tes dégâts sur un tour : la meilleure combinaison de N sorts de dégâts qui tient dans tes PA, sur une cible sans résistances. Prend en compte fusion, prestige, bonus de panoplie (dofusdb) et PA gagnés par l’équipement. Les PV minimum évitent un build trop fragile.")}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
+        <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
+          <label>Sorts par tour <select data-o="k" style="${inp}">${[2, 3, 4, 5].map((n) => `<option value="${n}">${n}</option>`).join('')}</select></label>
+          <label>PV minimum <input data-o="pvMin" type="number" min="0" placeholder="aucun" style="${inp};width:90px"></label>
+          <label style="cursor:pointer"><input data-o="deckOnly" type="checkbox"> Sorts du deck actif uniquement</label>
+          <label style="cursor:pointer" data-tip="Ajoute les objets en vente à l’HDV (jusqu’à 400 annonces par emplacement) : le build peut alors contenir des objets à acheter, avec leur prix."><input data-o="hdv" type="checkbox"> Fouiller l’HDV</label>
+          <button data-a="go" style="${btn};background:#8a5a1a;margin-left:auto">Lancer</button>
+        </div>
+        <div data-k="msg" style="font-size:12px;color:#b9a98c;min-height:1em"></div>
+        <div data-k="out" style="overflow-y:auto;display:flex;flex-direction:column;gap:10px"></div>
+      </div>`;
+    document.body.appendChild(ov);
+    const $ = (q) => ov.querySelector(q);
+    for (const el of ov.querySelectorAll('[data-o]')) {
+      if (el.type === 'checkbox') el.checked = !!o[el.dataset.o]; else el.value = o[el.dataset.o] ?? '';
+      el.addEventListener('change', () => {
+        o[el.dataset.o] = el.type === 'checkbox' ? el.checked : el.value;
+        try { localStorage.setItem(BUILD_OPTS_KEY, JSON.stringify(o)); } catch { /* idem */ }
+      });
+    }
+    const say = (t, err) => { $('[data-k="msg"]').textContent = t; $('[data-k="msg"]').style.color = err ? '#ff7b6b' : '#b9a98c'; };
+    let result = null, running = false;
+    ov.addEventListener('click', async (e) => {
+      if (e.target.closest('[data-a="x"]')) return close();
+      if (e.target.closest('[data-a="go"]') && !running) {
+        running = true;
+        $('[data-a="go"]').disabled = true;
+        $('[data-k="out"]').innerHTML = '';
+        try {
+          const t0 = Date.now();
+          result = await optimizeBuild(o, say);
+          say(`Terminé : ${result.evals} builds testés en ${((Date.now() - t0) / 1000).toFixed(1)} s.`);
+          render();
+        } catch (err) {
+          say(`❌ ${err.message || err}`, true);
+        } finally {
+          running = false;
+          $('[data-a="go"]').disabled = false;
+        }
+      }
+      const eq = e.target.closest('[data-a="equip"]');
+      if (eq && result && !eq.disabled) {
+        const changes = result.slots.map((s) => ({ s, to: result.final[s.slot], from: result.current[s.slot] }))
+          .filter(({ to, from }) => to && to.src !== 'hdv' && to !== from)
+          .map(({ s, to, from }) => ({ slot: s.slot, label: s.label, from, to }))
+          .sort((a, b) => (a.slot === 'arme' ? -1 : b.slot === 'arme' ? 1 : 0));
+        if (!changes.length) return;
+        eq.disabled = true;
+        try {
+          await runEquip({ changes, stats: [] }, null, (i, n, c) => { eq.textContent = `Équipement ${i}/${n} : ${c.to.name}…`; });
+          eq.textContent = '✔ Build équipé';
+        } catch (err) {
+          eq.textContent = `❌ ${err.message}`;
+        }
+      }
+    });
+
+    const fmt = (n) => Math.round(n).toLocaleString('fr-FR');
+    function render() {
+      const r = result;
+      const gain = r.nxtTurn.dmg - r.curTurn.dmg;
+      const item = (c) => (c ? `${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain;vertical-align:middle">` : ''} ${esc(itemLabel(c))}${c.src === 'hdv' ? ` <span style="color:#f0c04a">🛒 ${fmt(c.price)} K</span>` : ''}` : '<i style="color:#8a7d66">vide</i>');
+      const rows = r.slots.map((s) => {
+        const a = r.current[s.slot], b = r.final[s.slot];
+        const same = a === b || (a && b && a.id === b.id && a.fusion === b.fusion);
+        return `<tr style="border-top:1px solid #3a3024;${same ? 'color:#8a7d66' : ''}"><td style="padding:3px 6px">${esc(s.label)}</td><td>${item(a)}</td><td>${same ? '=' : '→'}</td><td style="${same ? '' : 'font-weight:700'}">${item(b)}</td></tr>`;
+      }).join('');
+      const turn = (t) => t.used.map((u) => `${esc(u.sp.name)} (${u.sp.ap} PA, ${fmt(u.v)})`).join(' + ') || '—';
+      const keys = ['pa', 'pv', ...OFFENSE_KEYS.filter((k) => k !== 'pa'), 'vitalite'];
+      const statRows = keys.map((k) => {
+        const a = k === 'pa' ? r.paOf(r.cur.S) : k === 'pv' ? r.pvOf(r.cur.S) : r.cur.S[k] || 0;
+        const b = k === 'pa' ? r.paOf(r.nxt.S) : k === 'pv' ? r.pvOf(r.nxt.S) : r.nxt.S[k] || 0;
+        if (!a && !b) return '';
+        const d = b - a;
+        return `<span style="white-space:nowrap">${esc(k === 'pv' ? 'PV' : k === 'pa' ? 'PA' : STAT_LABELS[k] || k)} ${fmt(a)} → <b>${fmt(b)}</b>${d ? ` <span style="color:${d > 0 ? '#6fcf7a' : '#ff7b6b'}">(${d > 0 ? '+' : ''}${fmt(d)})</span>` : ''}</span>`;
+      }).filter(Boolean).join(' · ');
+      const sets = (st) => st.active.map((a) => `${esc(a.name)} (${a.count})`).join(', ') || 'aucune';
+      const hdvCost = Object.values(r.final).filter((c) => c?.src === 'hdv').reduce((n, c) => n + c.price, 0);
+      const badChecks = r.checks.filter(([, a, b]) => Math.abs(a - b) > Math.max(2, Math.abs(b) * 0.02));
+      const owned = r.slots.some((s) => r.final[s.slot] && r.final[s.slot].src !== 'hdv' && r.final[s.slot] !== r.current[s.slot]);
+      $('[data-k="out"]').innerHTML = `
+        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:baseline">
+          <div>Dégâts par tour : <b>${fmt(r.curTurn.dmg)}</b> → <b style="font-size:17px;color:#6fcf7a">${fmt(r.nxtTurn.dmg)}</b> ${gain > 0.5 ? `<span style="color:#6fcf7a">(+${fmt(gain)}, +${(gain / Math.max(1, r.curTurn.dmg) * 100).toFixed(1)} %)</span>` : '<span style="color:#b9a98c">(ton build est déjà le meilleur trouvé)</span>'}</div>
+          ${hdvCost ? `<div style="color:#f0c04a">🛒 Coût des achats HDV : ${fmt(hdvCost)} K</div>` : ''}
+        </div>
+        ${r.pvShort ? `<div style="color:#ff7b6b;font-weight:700">⚠️ PV minimum (${fmt(r.pvMin)}) impossible à atteindre avec tes objets : le build ci-dessous est celui qui a le plus de PV (${fmt(r.pvOf(r.nxt.S))}).</div>` : ''}
+        <div style="font-size:12px"><b>Sorts du tour</b> — actuel : ${turn(r.curTurn)}<br><b style="color:#6fcf7a">proposé</b> : ${turn(r.nxtTurn)}</div>
+        <table style="border-collapse:collapse;width:100%;font-size:12px"><tr style="color:#b9a98c;text-align:left"><th style="padding:3px 6px">Emplacement</th><th>Actuel</th><th></th><th>Proposé</th></tr>${rows}</table>
+        <div style="font-size:12px"><b>Panoplies</b> — actuel : ${sets(r.cur)} · proposé : ${sets(r.nxt)}</div>
+        <div style="font-size:12px;line-height:1.6">${statRows}</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button data-a="equip" style="${btn};background:#2e7d32" ${owned ? '' : 'disabled'}>✅ Équiper ce build${Object.values(r.final).some((c) => c?.src === 'hdv') ? ' (objets possédés seulement)' : ''}</button>
+          <span style="font-size:11px;color:#8a7d66">Les objets HDV (🛒) sont à acheter d’abord.</span>
+        </div>
+        <details style="font-size:11px;color:#b9a98c"><summary style="cursor:pointer">Contrôle du modèle (${badChecks.length ? `<span style="color:#f0a040">${badChecks.length} écart(s)</span>` : '<span style="color:#6fcf7a">OK</span>'})</summary>
+          Stats calculées pour ton équipement actuel / affichées sur ta fiche : ${r.checks.map(([l, a, b]) => `<span style="color:${Math.abs(a - b) > Math.max(2, Math.abs(b) * 0.02) ? '#f0a040' : 'inherit'}">${esc(l)} ${fmt(a)} / ${fmt(b)}</span>`).join(' · ')}.
+          Panoplies de la fiche : ${r.sheet.sets.map((x) => `${esc(x.name)} (${x.count}/${x.max}) ${esc(x.text)}`).join(' ; ') || 'aucune'}.
+          Prestige ${r.sheet.prestige}, niveau ${r.sheet.level}.</details>`;
+    }
   }
 
   async function openSpellList() {
@@ -2895,7 +3304,7 @@
         </div>
         <div class="sec">
           <div class="head"><span>📚 Tierlist des sorts${DM.tip("Classe tous tes sorts à dégâts : dégâts totaux (toutes lignes et éléments additionnés), dégâts par PA ou coût en PA, avec filtres cible unique / zone et par élément. Le cadenas met un sort en favori sur le site.")}</span></div>
-          <button data-k="spells">Ouvrir la tierlist</button>
+          <div class="row"><button data-k="spells" style="flex:1">Ouvrir la tierlist</button><button data-k="build" style="flex:1" data-tip="Cherche l’équipement qui maximise tes dégâts sur un tour (sorts, PA, panoplies, prestige ; HDV en option).">🧬 Optimiser mon build</button></div>
         </div>
         <div class="sec">
           <div class="head"><span>🎯 Avis de recherche${DM.tip("Parcourt toutes les zones de chasse et repère les groupes contenant des monstres recherchés. Chaque trouvaille s’affiche ici et peut être envoyée sur Discord.")}</span><span class="muted" data-k="scanAge"></span></div>
@@ -2962,6 +3371,7 @@
     }));
     $('fuseScan').addEventListener('click', () => scanFusions());
     $('spells').addEventListener('click', () => { setOpen(false); openSpellList(); });
+    $('build').addEventListener('click', () => { setOpen(false); openBuildOptimizer(); });
     $('fuseAll').addEventListener('click', () => runFusions(fuseList || []));
     $('fuseList').addEventListener('click', (e) => {
       const id = +e.target.closest('button[data-fuse]')?.dataset.fuse;
