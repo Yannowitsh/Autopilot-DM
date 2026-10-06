@@ -1686,6 +1686,142 @@
   }
 
 
+  // ---------- Auto-équipement : meilleurs objets pour 3 caractéristiques par ordre de priorité ----------
+  // Server action « equipItem(itemId, fusion, emplacement) » sur /inventaire → {} ou { error }.
+  // Emplacements (props.slots de /inventaire) : chapeau, cape, amulette, anneau1-2, ceinture, bottes, arme, bouclier,
+  // familier, dofus1-6 ; chacun « accepte » un type d'objet (champ s de l'objet). Les objets portés ne sont pas dans entries.
+  const EQUIP_ACTION_FALLBACK = '706383ea472542e23da3f7d81239188959e316dda0';
+  // Poids des 3 stats choisies : la 1re décide, les 2 autres départagent / ajoutent un peu de valeur.
+  const EQUIP_WEIGHTS = [1, 0.35, 0.15];
+  // Constantes du jeu (FUSION et libellés), pour calculer les stats réelles d'un objet fusionné comme le site.
+  const FUSION_RULES = { stepPct: 10, excluded: ['pa', 'pm', 'po', 'invocations'], dofusRadiantPct: 100, radiantPa: 2 };
+  const STAT_LABELS = { pv: 'Points de vie', pa: 'PA', pm: 'PM', po: 'Portée', invocations: 'Invocations', vitalite: 'Vitalité', sagesse: 'Sagesse', force: 'Force', intelligence: 'Intelligence', chance: 'Chance', agilite: 'Agilité', critique: '% Critique', prospection: 'Prospection', initiative: 'Initiative', puissance: 'Puissance', soins: 'Soins', dommages: 'Dommages', dommagesTerre: 'Dommages Terre', dommagesFeu: 'Dommages Feu', dommagesEau: 'Dommages Eau', dommagesAir: 'Dommages Air', dommagesNeutre: 'Dommages Neutre', dommagesCritiques: 'Dommages Critiques', resCritiques: 'Résistance Critiques', dommagesPoussee: 'Dommages Poussée', resPoussee: 'Résistance Poussée', resPctTerre: '% Résistance Terre', resPctFeu: '% Résistance Feu', resPctEau: '% Résistance Eau', resPctAir: '% Résistance Air', resPctNeutre: '% Résistance Neutre', resTerre: 'Résistance Terre', resFeu: 'Résistance Feu', resEau: 'Résistance Eau', resAir: 'Résistance Air', resNeutre: 'Résistance Neutre', fuite: 'Fuite', tacle: 'Tacle', esquivePA: 'Esquive PA', esquivePM: 'Esquive PM', retraitPA: 'Retrait PA', retraitPM: 'Retrait PM', renvoi: 'Renvoi de dommages', pods: 'Pods', dmgPctDistance: '% Dommages distance', dmgPctMelee: '% Dommages mêlée', dmgPctArmes: '% Dommages d’armes', dmgPctSorts: '% Dommages aux sorts', resPctDistance: '% Résistance distance', resPctMelee: '% Résistance mêlée', resPctAll: '% Résistance (tous éléments)', resAll: 'Réduction de dommages' };
+  const STAT_ORDER = ['pa', 'pm', 'po', 'invocations', 'vitalite', 'sagesse', 'force', 'intelligence', 'chance', 'agilite', 'puissance', 'critique', 'dommages', 'dommagesNeutre', 'dommagesTerre', 'dommagesFeu', 'dommagesEau', 'dommagesAir', 'dommagesCritiques', 'dommagesPoussee', 'soins', 'prospection', 'initiative', 'resPctNeutre', 'resPctTerre', 'resPctFeu', 'resPctEau', 'resPctAir', 'resNeutre', 'resTerre', 'resFeu', 'resEau', 'resAir', 'resCritiques', 'resPoussee', 'tacle', 'fuite', 'retraitPA', 'retraitPM', 'esquivePA', 'esquivePM', 'renvoi', 'dmgPctSorts', 'dmgPctArmes', 'dmgPctMelee', 'dmgPctDistance', 'resPctMelee', 'resPctDistance', 'pods'];
+  // Emplacements dans l'ordre de la grille du menu (emoji affiché tant qu'on ne connaît pas l'objet porté).
+  const EQUIP_SLOTS = [
+    { slot: 'chapeau', label: 'Chapeau', em: '🎩' }, { slot: 'amulette', label: 'Amulette', em: '📿' },
+    { slot: 'cape', label: 'Cape', em: '🧥' }, { slot: 'familier', label: 'Familier', em: '🐾' },
+    { slot: 'anneau1', label: 'Anneau 1', em: '💍' }, { slot: 'anneau2', label: 'Anneau 2', em: '💍' },
+    { slot: 'ceinture', label: 'Ceinture', em: '🎗️' }, { slot: 'bottes', label: 'Bottes', em: '👢' },
+    { slot: 'arme', label: 'Arme', em: '⚔️' }, { slot: 'bouclier', label: 'Bouclier', em: '🛡️' },
+    ...[1, 2, 3, 4, 5, 6].map((n) => ({ slot: `dofus${n}`, label: `Dofus ${n}`, em: '🥚', dofus: true })),
+  ];
+  let equipActionId = null;
+
+  // Stats réelles d'un objet au tier de fusion donné (même calcul que itemStats du site).
+  function fusedStats(st, type, fusion) {
+    if (!fusion) return st || {};
+    const out = {};
+    if (type === 'dofus' && fusion >= FUSION_MAX) {
+      for (const [k, v] of Object.entries(st || {})) out[k] = v > 0 ? Math.round(v * (1 + FUSION_RULES.dofusRadiantPct / 100)) : v;
+      return out;
+    }
+    const mult = 1 + fusion * FUSION_RULES.stepPct / 100;
+    for (const [k, v] of Object.entries(st || {})) out[k] = v > 0 && !FUSION_RULES.excluded.includes(k) ? Math.round(v * mult) : v;
+    if (fusion >= FUSION_MAX && (out.pa ?? 0) > 0) out.pa = Math.max(out.pa, FUSION_RULES.radiantPa);
+    return out;
+  }
+
+  // Inventaire + objets portés, lus dans le payload RSC de /inventaire.
+  async function fetchEquipState() {
+    const { flight, chunks } = await fetchFlight('/inventaire');
+    const { rows, props } = rscProps(flight, (x) => Array.isArray(x.entries) && Array.isArray(x.slots));
+    if (!props) throw new Error('Inventaire introuvable dans la page');
+    const res = (v) => rscResolve(rows, v);
+    const norm = (raw, fusion) => {
+      const it = res(raw) || {};
+      const type = it.s;
+      return { id: it.id, name: it.n, lvl: it.lvl, type, rarity: it.r, icon: it.icon, fusion: fusion || 0,
+        two: !!res(it.w)?.twoHanded, eff: fusedStats(res(it.st), type, fusion || 0) };
+    };
+    const entries = props.entries.map((e) => ({ ...norm(e.item, e.fusion), qty: e.qty })).filter((e) => Number.isInteger(e.id) && e.qty > 0);
+    const slots = props.slots.map((s) => ({ slot: s.slot, label: s.label, accepts: s.accepts, cur: s.item ? norm(s.item, s.fusion) : null }));
+    return { entries, slots, level: +props.level || 0, chunks };
+  }
+
+  // Plan d'équipement : pour chaque type d'emplacement activé, les meilleurs objets (distincts) selon les stats choisies.
+  // Un objet déjà porté et retenu reste à sa place ; seuls les emplacements qui gagnent au change sont modifiés.
+  function equipPlan(state, statKeys, enabled) {
+    const stats = statKeys.filter(Boolean);
+    if (!stats.length) throw new Error('Choisis au moins une caractéristique');
+    const on = (slot) => enabled[slot] !== false;
+    const ok = (c) => c && !(c.lvl > state.level);   // niveau requis
+    const pool = [
+      ...state.entries.filter(ok).map((e) => ({ ...e, from: null })),
+      ...state.slots.filter((s) => on(s.slot) && ok(s.cur)).map((s) => ({ ...s.cur, qty: 1, from: s.slot })),
+    ];
+    // normalisation par type d'objet : valeur / meilleure valeur du type (une cape à 400 Vita ≠ un anneau à 400 Vita)
+    const best = {};
+    for (const c of [...pool, ...state.slots.map((s) => s.cur).filter(Boolean)]) {
+      for (const k of stats) best[`${c.type}|${k}`] = Math.max(best[`${c.type}|${k}`] || 0, c.eff[k] || 0);
+    }
+    const score = (c) => (c ? stats.reduce((n, k, i) => n + EQUIP_WEIGHTS[i] * (c.eff[k] || 0) / (best[`${c.type}|${k}`] || 1), 0) : -Infinity);
+    const rank = (a, b) => score(b) - score(a) || b.lvl - a.lvl || b.rarity - a.rarity || b.fusion - a.fusion;
+    const EPS = 1e-9;
+
+    // Arme à deux mains : retire le bouclier → on la compare à (meilleure arme à une main + meilleur bouclier).
+    const shieldSlot = state.slots.find((s) => s.slot === 'bouclier');
+    const shields = pool.filter((c) => c.type === 'bouclier').sort(rank);
+    const shieldScore = on('bouclier') ? Math.max(0, score(shields[0]) || 0, score(shieldSlot?.cur) || 0) : Math.max(0, score(shieldSlot?.cur) || 0);
+    const weapons = pool.filter((c) => c.type === 'arme').sort(rank);
+    const bestOne = weapons.find((c) => !c.two), bestTwo = weapons.find((c) => c.two);
+    let allowTwo = !!bestTwo && (on('bouclier') || !shieldSlot?.cur)
+      && score(bestTwo) > Math.max(0, score(bestOne) || 0) + shieldScore + EPS;
+    if (!on('arme')) allowTwo = !!state.slots.find((s) => s.slot === 'arme')?.cur?.two;   // arme non touchée : on garde sa règle
+    const usable = (c) => c.type !== 'arme' || (allowTwo ? c === bestTwo : !c.two);
+
+    const changes = [];
+    let unchanged = 0;
+    const types = [...new Set(state.slots.filter((s) => on(s.slot)).map((s) => s.accepts))];
+    for (const type of types) {
+      if (type === 'bouclier' && allowTwo) { unchanged += 1; continue; }   // l'arme à deux mains retirera le bouclier
+      const group = state.slots.filter((s) => s.accepts === type && on(s.slot));
+      // objets portés dans un emplacement désactivé du même type : ils restent, pas de doublon
+      const locked = new Set(state.slots.filter((s) => s.accepts === type && !on(s.slot) && s.cur).map((s) => s.cur.id));
+      const picks = [];
+      const seen = new Set(locked);
+      for (const c of pool.filter((x) => x.type === type && usable(x)).sort(rank)) {
+        if (seen.has(c.id)) continue;
+        seen.add(c.id);
+        picks.push(c);
+        if (picks.length === group.length) break;
+      }
+      // déjà porté dans un emplacement du groupe : il ne bouge pas
+      const free = group.filter((s) => !picks.some((p) => p.from === s.slot));
+      const toPlace = picks.filter((p) => !p.from || !group.some((s) => s.slot === p.from));
+      free.sort((a, b) => score(a.cur) - score(b.cur));   // vides d'abord, puis les moins bons
+      unchanged += group.length - free.length;
+      free.forEach((s, i) => {
+        const p = toPlace[i];
+        if (p && score(p) > Math.max(score(s.cur), 0) + EPS) {
+          const delta = stats.map((k) => [k, (p.eff[k] || 0) - (s.cur?.eff[k] || 0)]).filter(([, d]) => d);
+          changes.push({ slot: s.slot, label: s.label, from: s.cur, to: p, delta });
+        } else unchanged++;
+      });
+    }
+    // l'arme avant le bouclier (une arme à deux mains retire le bouclier, un bouclier retire une arme à deux mains)
+    changes.sort((a, b) => (a.slot === 'arme' ? -1 : b.slot === 'arme' ? 1 : 0));
+    return { changes, unchanged, stats };
+  }
+
+  async function runEquip(plan, chunks, onProgress) {
+    if (!equipActionId) equipActionId = await findAction(chunks || (await fetchFlight('/inventaire')).chunks, 'equipItem', EQUIP_ACTION_FALLBACK);
+    let done = 0;
+    for (const c of plan.changes) {
+      try {
+        await callAction('inventaire', equipActionId, [c.to.id, c.to.fusion, c.slot]);
+      } catch (e) {
+        if (!e.game) equipActionId = null;   // ID peut-être périmé : relu au prochain essai
+        throw new Error(`${c.label} (${c.to.name}) : ${e.message}`);
+      }
+      done++;
+      onProgress?.(done, plan.changes.length, c);
+      if (done < plan.changes.length) await sleep(350 + Math.random() * 350);
+    }
+    DM.log(`équipement auto : ${done} objet(s) équipé(s) (${plan.stats.join(', ')})`);
+    return done;
+  }
+
   // ---------- Anti-blocage : requête du jeu qui n'aboutit jamais ----------
   // Après un clic qui lance un combat (Attaquer, Combattre, Suivant en auto…), on doit voir un combat en cours.
   // Si rien ne se passe au bout de LAUNCH_TIMEOUT_MS, ou si une étape du pilote reste bloquée, on recharge la page.
@@ -2103,6 +2239,21 @@
       background: #1b1d22; border: 1px solid #3a3f48; border-radius: 6px; padding: 5px 7px; }
     .fuse li b { color: #e0b040; }
     .fuse button { padding: 3px 8px; font-size: 12px; flex: none; background: #8a6a1a; }
+    .eqstats { display: grid; grid-template-columns: auto 1fr; gap: 4px 6px; align-items: center; font-size: 12px; }
+    .eqstats b { color: #e0b040; text-align: center; }
+    .eqslots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+    .eqslots.dofus { grid-template-columns: repeat(6, 1fr); }
+    .eqslot { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 4px 1px; border-radius: 7px;
+      background: #1b1d22; border: 1px solid #3a3f48; font-size: 9.5px; font-weight: 600; color: #9aa0a8; min-width: 0; }
+    .eqslot span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .eqslot.on { border-color: #e0b040; color: #e8e6e1; background: #2b2618; }
+    .eqslot img { width: 26px; height: 26px; object-fit: contain; }
+    .eqslot .em { font-size: 17px; line-height: 26px; }
+    .eqslot:not(.on) img, .eqslot:not(.on) .em { opacity: .3; filter: grayscale(1); }
+    .eqslot.chg { box-shadow: 0 0 0 2px #2e9e44 inset; }
+    .eqplan { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; max-height: 220px; overflow-y: auto; }
+    .eqplan li { background: #1b1d22; border: 1px solid #3a3f48; border-radius: 6px; padding: 4px 7px; font-size: 12px; }
+    .eqplan .up { color: #6fcf7a; } .eqplan .down { color: #ff7b6b; }
   `;
   const ST_COLOR = { off: '#666', on: '#2e9e44', pause: '#d18b00', other: '#2e6fbf' };
 
@@ -2159,6 +2310,21 @@
           </div>
           <div class="status" data-k="fuseMsg"></div>
           <ul class="fuse" data-k="fuseList"></ul>
+        </div>
+        <div class="sec">
+          <div class="head"><span>🛡️ Auto-équipement${DM.tip("Équipe automatiquement les meilleurs objets de ton inventaire selon 3 caractéristiques par ordre de priorité. La 1re compte pleinement, la 2e pour 35 % et la 3e pour 15 % : elles départagent les objets proches. Chaque stat est comparée au meilleur objet du même type (ex. meilleur chapeau). Les bonus de panoplie ne sont pas pris en compte.")}</span></div>
+          <div class="eqstats">
+            ${[1, 2, 3].map((n) => `<b>${n}</b><select data-k="eqS${n}"></select>`).join('')}
+          </div>
+          <div class="muted">Emplacements à optimiser${DM.tip("Clique sur un emplacement pour l’activer ou le désactiver. Un emplacement désactivé (grisé) garde son objet actuel. Les icônes des objets portés s’affichent après un aperçu ; un contour vert = l’objet de cet emplacement va changer.")}</div>
+          <div class="eqslots" data-k="eqSlots"></div>
+          <div class="eqslots dofus" data-k="eqDofus"></div>
+          <div class="row">
+            <button data-k="eqPreview" style="flex:1" data-tip="Calcule le meilleur équipement sans rien changer : liste des objets qui seraient équipés, avec l’écart sur tes caractéristiques.">🔍 Aperçu</button>
+            <button data-k="eqGo" data-tip="Équipe les objets de l’aperçu (recalculé juste avant, au cas où ton inventaire a changé).">✅ Équiper</button>
+          </div>
+          <div class="status" data-k="eqMsg"></div>
+          <ul class="eqplan" data-k="eqPlan"></ul>
         </div>
         <div class="sec">
           <div class="head"><span>🎯 Avis de recherche${DM.tip("Parcourt toutes les zones de chasse et repère les groupes contenant des monstres recherchés. Chaque trouvaille s’affiche ici et peut être envoyée sur Discord.")}</span><span class="muted" data-k="scanAge"></span></div>
@@ -2256,6 +2422,29 @@
       save({ lockedItems });
     });
 
+    for (const n of [1, 2, 3]) {
+      const sel = $(`eqS${n}`);
+      sel.add(new Option(n === 1 ? '— choisir —' : '— aucune —', ''));
+      for (const k of STAT_ORDER) sel.add(new Option(STAT_LABELS[k] || k, k));
+      sel.addEventListener('change', () => {
+        const stats = [1, 2, 3].map((i) => $(`eqS${i}`).value);
+        eqPlanState = null;
+        save({ equipStats: stats }).then(renderUi);
+      });
+    }
+    const onSlotClick = (e) => {
+      const b = e.target.closest('button[data-eqslot]');
+      if (!b || equipBusy) return;
+      const slots = { ...(cfg.equipSlots || {}) };
+      slots[b.dataset.eqslot] = slots[b.dataset.eqslot] === false;
+      eqPlanState = null;
+      save({ equipSlots: slots }).then(renderUi);
+    };
+    $('eqSlots').addEventListener('click', onSlotClick);
+    $('eqDofus').addEventListener('click', onSlotClick);
+    $('eqPreview').addEventListener('click', () => previewEquip());
+    $('eqGo').addEventListener('click', () => applyEquip());
+
     document.body.appendChild(host);
     return { host, root, panel, bubble, $ };
   }
@@ -2306,6 +2495,97 @@
     } finally {
       btn.disabled = false;
       sellBusy = false;
+    }
+  }
+
+  // ---------- Auto-équipement (menu) ----------
+  let equipBusy = false, eqPlanState = null, eqState = null, eqMsg = '', eqMsgCls = '';
+  const setEqMsg = (text, cls = '') => { eqMsg = text; eqMsgCls = cls; renderUi(); };
+  const equipStats = () => cfg.equipStats || ['', '', ''];
+  const equipEnabled = () => cfg.equipSlots || {};
+  const statShort = (k) => STAT_LABELS[k] || k;
+
+  async function previewEquip() {
+    if (equipBusy) return;
+    equipBusy = true;
+    setEqMsg('Lecture de l’inventaire…');
+    try {
+      eqState = await fetchEquipState();
+      eqPlanState = equipPlan(eqState, equipStats(), equipEnabled());
+      const n = eqPlanState.changes.length;
+      setEqMsg(n ? `${n} objet(s) à changer, ${eqPlanState.unchanged} déjà optimal(aux).` : 'Ton équipement est déjà le meilleur pour ces caractéristiques ✔', n ? '' : 'ok');
+    } catch (e) {
+      eqPlanState = null;
+      setEqMsg(`❌ ${e.message}`, 'err');
+    } finally {
+      equipBusy = false;
+      renderUi();
+    }
+  }
+
+  async function applyEquip() {
+    if (equipBusy) return;
+    equipBusy = true;
+    setEqMsg('Recalcul…');
+    let done = 0;
+    try {
+      eqState = await fetchEquipState();   // inventaire peut-être changé depuis l'aperçu
+      const plan = equipPlan(eqState, equipStats(), equipEnabled());
+      eqPlanState = plan;
+      if (!plan.changes.length) { setEqMsg('Rien à changer : équipement déjà optimal ✔', 'ok'); return; }
+      done = await runEquip(plan, eqState.chunks, (i, total, c) => setEqMsg(`Équipement ${i}/${total} : ${c.to.name}…`));
+      setEqMsg(`✔ ${done} objet(s) équipé(s).`, 'ok');
+      eqPlanState = null;
+    } catch (e) {
+      setEqMsg(`❌ ${done ? `${done} équipé(s), puis : ` : ''}${e.message}`, 'err');
+    } finally {
+      equipBusy = false;
+      renderUi();
+      if (done && location.pathname.startsWith('/inventaire')) setTimeout(() => location.reload(), 1500);
+    }
+  }
+
+  function renderEquip() {
+    const $ = ui.$;
+    const stats = equipStats();
+    [1, 2, 3].forEach((n) => { const el = $(`eqS${n}`); if (ui.root.activeElement !== el) el.value = stats[n - 1] || ''; });
+    const enabled = equipEnabled();
+    const cur = Object.fromEntries((eqState?.slots || []).map((s) => [s.slot, s.cur]));
+    const changing = new Set((eqPlanState?.changes || []).map((c) => c.slot));
+    const slotHtml = (d) => {
+      const it = cur[d.slot];
+      const tip = `${d.label} : ${it ? `${it.name}${it.fusion ? ` (${it.fusion >= FUSION_MAX ? 'Rayonnant' : `Tiers ${it.fusion + 1}`})` : ''}` : (eqState ? 'vide' : '?')}${enabled[d.slot] === false ? ' — désactivé' : ''}`;
+      return `<button data-eqslot="${d.slot}" class="eqslot${enabled[d.slot] === false ? '' : ' on'}${changing.has(d.slot) ? ' chg' : ''}" data-tip="${DM.tipAttr(tip)}">`
+        + (it?.icon ? `<img src="/img/items/${+it.icon}.png" alt="">` : `<span class="em">${d.em}</span>`)
+        + `<span>${d.dofus ? d.label.replace('Dofus ', 'D') : d.label}</span></button>`;
+    };
+    const html = EQUIP_SLOTS.filter((d) => !d.dofus).map(slotHtml).join('');
+    const htmlD = EQUIP_SLOTS.filter((d) => d.dofus).map(slotHtml).join('');
+    if ($('eqSlots').dmHtml !== html) { $('eqSlots').dmHtml = html; $('eqSlots').innerHTML = html; }
+    if ($('eqDofus').dmHtml !== htmlD) { $('eqDofus').dmHtml = htmlD; $('eqDofus').innerHTML = htmlD; }
+    $('eqPreview').disabled = equipBusy || !stats[0];
+    $('eqGo').disabled = equipBusy || !eqPlanState?.changes.length;
+    $('eqGo').textContent = eqPlanState?.changes.length ? `✅ Équiper (${eqPlanState.changes.length})` : '✅ Équiper';
+    const msg = $('eqMsg');
+    msg.textContent = eqMsg || (stats[0] ? '' : 'Choisis au moins la caractéristique 1.');
+    msg.className = `status ${eqMsgCls}`;
+    const ul = $('eqPlan');
+    ul.textContent = '';
+    for (const c of eqPlanState?.changes || []) {
+      const li = document.createElement('li');
+      const b = document.createElement('b');
+      b.textContent = `${c.label} : `;
+      li.append(b, `${c.from ? itemLabel(c.from) : '(vide)'} → `);
+      const to = document.createElement('b');
+      to.textContent = itemLabel(c.to);
+      li.append(to, document.createElement('br'));
+      c.delta.forEach(([k, d], i) => {
+        const sp = document.createElement('span');
+        sp.className = d > 0 ? 'up' : 'down';
+        sp.textContent = `${i ? ', ' : ''}${d > 0 ? '+' : ''}${d} ${statShort(k)}`;
+        li.append(sp);
+      });
+      ul.appendChild(li);
     }
   }
 
@@ -2411,6 +2691,7 @@
     $('keepAbove').checked = cfg.sellKeepAbove !== false;
     DM.RARITIES.forEach((_, i) => { ui.$(`rar${i}`).checked = (cfg.sellKeepRarities || []).includes(i); });
     renderFuse();
+    renderEquip();
     // Avis de recherche
     const st = cfg.wantedScan;
     const missing = st?.zones?.filter((z) => !['ok', 'empty'].includes(z.status)).length || 0;
