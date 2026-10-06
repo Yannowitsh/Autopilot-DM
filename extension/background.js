@@ -301,6 +301,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         chrome.tabs.sendMessage(sender.tab.id, { type: 'tick' }).catch(() => {});
         return true;
       }
+      case 'peerGear':    // optimiseur de build : inventaire du compte « banque » (autre contexte)
       case 'tradePeer':   // échange HDV : on relaie à un onglet du jeu de l'autre contexte (normal ↔ navigation privée)
       case 'tradeBuy':
       case 'tradeVerify': {   // l'autre compte a-t-il bien reçu l'objet ?

@@ -2767,6 +2767,27 @@
     return [...best.values()];
   }
 
+  // Compte « banque » (onglet de l'autre contexte) : ses objets non portés, avec stats (fusion comprise, sans prestige :
+  // celui du personnage qui les portera s'applique), en excluant les exemplaires liés (achetés / reçus il y a < 24 h).
+  async function peerGear() {
+    try {
+      const [state, sell] = await Promise.all([fetchEquipState(), fetchSellable()]);
+      const now = Date.now();
+      const free = new Map();   // id|fusion → exemplaires échangeables
+      for (const e of sell.entries) {
+        if (e.boundUntil && new Date(e.boundUntil) > now) continue;
+        const k = `${e.id}|${e.fusion || 0}`;
+        free.set(k, (free.get(k) || 0) + (+e.qty || 0));
+      }
+      const entries = state.entries.filter((e) => free.get(`${e.id}|${e.fusion || 0}`) > 0)
+        .map((e) => ({ id: e.id, name: e.name, lvl: e.lvl, type: e.type, rarity: e.rarity, icon: e.icon, fusion: e.fusion,
+          setName: e.setName, two: e.two, eff: e.eff }));
+      return { ok: true, name: myName(), entries, bound: state.entries.length - entries.length };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
   // Lecture de toutes les données + recherche. say(msg) : progression.
   async function optimizeBuild(opts, say) {
     say('Lecture de la fiche personnage…');
@@ -2786,6 +2807,14 @@
       ...state.entries.filter((e) => !(e.lvl > level)).map((e) => ({ ...e, src: 'inv' })),
       ...state.slots.filter((s) => s.cur).map((s) => ({ ...s.cur, src: 'worn', wornSlot: s.slot })),
     ];
+    let bank = null;
+    if (opts.bank) {
+      say('Lecture de l’inventaire de la banque (autre compte)…');
+      const r = await send({ type: 'peerGear' }).catch((e) => ({ ok: false, error: e.message }));
+      if (!r?.ok) throw new Error(`Banque : ${r?.error || 'onglet de l’autre compte injoignable'}`);
+      bank = { name: r.name || 'banque', count: r.entries.length, bound: r.bound || 0 };
+      pool.push(...r.entries.filter((e) => !(e.lvl > level)).map((e) => ({ ...e, src: 'bank', bankName: bank.name })));
+    }
     const hdvFailed = [];
     if (opts.hdv) {
       say('Lecture de l’HDV…');
@@ -2802,6 +2831,7 @@
     if (!spells.length) throw new Error(opts.deckOnly ? 'Aucun sort de dégâts dans ton deck actif' : 'Aucun sort de dégâts');
     const K = Math.max(1, Math.min(6, +opts.k || 4));
     const pvMin = +opts.pvMin || 0;
+    const paMin = +opts.paMin || 0;
     const slots = state.slots;
 
     // utile = stats offensives, PA/PO, vitalité si PV minimum, ou panoplie
@@ -2887,8 +2917,10 @@
     const score = (build) => {
       evals++;
       const ev = evalBuild(build);
-      const pv = pvOf(ev.S);
-      if (pvMin && pv < pvMin) return -1e9 + pv;   // build trop fragile : on remonte d'abord les PV
+      const pv = pvOf(ev.S), pa = paOf(ev.S);
+      // seuils non atteints : on remonte d'abord ce qui manque (1 PA manquant compte comme 1000 PV)
+      const short = (pvMin ? Math.max(0, pvMin - pv) : 0) + (paMin ? 1000 * Math.max(0, paMin - pa) : 0);
+      if (short) return -1e9 - short;
       return ev.turn.dmg + pv * 1e-4;   // à dégâts égaux, le plus de PV
     };
     // contraintes : un même objet (id) une seule fois ; arme à deux mains → pas de bouclier ; un exemplaire possédé par objet
@@ -2992,7 +3024,7 @@
     const dmgIds = new Set(sp.spells.map((x) => x.id));
     const keepCards = sp.deckIds(DECK_TARGET).filter((id) => !dmgIds.has(id) && !deck.some((x) => x.id === id)).slice(0, DECK_CARDS - deck.length);
     return { sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, K, setFx, hdv: opts.hdv,
-      pvMin, pvShort: pvMin && pvOf(nxt.S) < pvMin, budget, hdvFailed, realloc: opts.realloc !== false, cost: costOf(final), deck: deck.map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })),
+      pvMin, pvShort: pvMin && pvOf(nxt.S) < pvMin, paMin, paShort: paMin && paOf(nxt.S) < paMin, bank, budget, hdvFailed, realloc: opts.realloc !== false, cost: costOf(final), deck: deck.map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })),
       deckChunks: sp.chunks, keepCards };
   }
 
@@ -3017,8 +3049,10 @@
         <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
           <label>Sorts par tour <select data-o="k" style="${inp}">${[2, 3, 4, 5].map((n) => `<option value="${n}">${n}</option>`).join('')}</select></label>
           <label>PV minimum <input data-o="pvMin" type="number" min="0" placeholder="aucun" style="${inp};width:90px"></label>
+          <label data-tip="Le build garde au moins ce nombre de PA (base 6, 7 dès le niveau 100, + PA de l’équipement et des panoplies, 12 au maximum). Vide = sans contrainte.">PA minimum <input data-o="paMin" type="number" min="0" max="12" placeholder="aucun" style="${inp};width:70px"></label>
           <label style="cursor:pointer"><input data-o="deckOnly" type="checkbox"> Sorts du deck actif uniquement</label>
           <label style="cursor:pointer" data-tip="Considère tous tes points de caractéristiques comme redistribuables (comme après une réinitialisation) : l’optimiseur choisit en même temps l’équipement et la répartition. Décoché : tes points restent comme ils sont."><input data-o="realloc" type="checkbox"> Redistribuer mes points</label>
+          <label style="cursor:pointer" data-tip="Ajoute les objets de ton autre compte (onglet ouvert en navigation privée ou normale), sauf ceux encore liés (reçus ou achetés il y a moins de 24 h). Un bouton les met dans la file d’échange de ce compte."><input data-o="bank" type="checkbox"> Inclure la banque (autre compte)</label>
           <label style="cursor:pointer" data-tip="Ajoute les objets en vente à l’HDV (jusqu’à 400 annonces par emplacement) : le build peut alors contenir des objets à acheter, avec leur prix."><input data-o="hdv" type="checkbox"> Fouiller l’HDV</label>
           <label data-k="budgetBox" data-tip="Total maximum des achats HDV du build proposé. Vide = pas de limite.">Budget <input data-o="budget" type="number" min="0" placeholder="illimité" style="${inp};width:110px"> K</label>
           <button data-a="go" style="${btn};background:#8a5a1a;margin-left:auto">Lancer</button>
@@ -3070,6 +3104,22 @@
         ban.closest('td').style.textDecoration = 'line-through';
         ban.remove();
         say(`🚫 ${ban.dataset.name} en liste noire — clique « Lancer » pour une nouvelle recherche sans lui.`);
+        return;
+      }
+      const bq = e.target.closest('[data-bankq]');
+      if (bq && result) {
+        const c = Object.values(result.final).find((x) => x?.src === 'bank' && String(x.uid) === bq.dataset.bankq);
+        if (!c) return;
+        const queues = { ...(cfg.tradeQueues || {}) };
+        const q = (queues[c.bankName] || []).map((x) => ({ ...x }));
+        const it = { name: c.name, lvl: c.lvl, fusion: c.fusion || 0 };
+        const cur = q.find((x) => sameItem(x, it));
+        if (!cur) q.push({ ...it, qty: 1 });   // un seul exemplaire suffit pour l'équiper
+        queues[c.bankName] = q;
+        await save({ tradeQueues: queues });
+        c.queued = true;
+        render();
+        say(`📦 ${c.name} ajouté à la file d’échange de ${c.bankName} : va sur son onglet et lance « Tout échanger ».`);
         return;
       }
       const buy = e.target.closest('[data-buy]');
@@ -3145,7 +3195,7 @@
       const eq = e.target.closest('[data-a="equip"]');
       if (eq && result && !eq.disabled) {
         const changes = result.slots.map((s) => ({ s, to: result.final[s.slot], from: result.current[s.slot] }))
-          .filter(({ to, from }) => to && to.src !== 'hdv' && to !== from)
+          .filter(({ to, from }) => to && to.src !== 'hdv' && to.src !== 'bank' && to !== from)
           .map(({ s, to, from }) => ({ slot: s.slot, label: s.label, from, to }))
           .sort((a, b) => (a.slot === 'arme' ? -1 : b.slot === 'arme' ? 1 : 0));
         if (!changes.length) return;
@@ -3180,7 +3230,7 @@
       const diffKeys = [...new Set([...keys(c.eff), ...keys(other?.eff)])].sort((a, b) => statIdxOf(a) - statIdxOf(b))
         .filter((k) => (c.eff[k] || 0) !== (other?.eff?.[k] || 0));
       hover.innerHTML = `<div style="font-weight:800">${esc(itemLabel(c))}</div>
-        <div style="color:#8a7d66;font-size:11px">Niveau ${c.lvl ?? '?'}${c.setName ? ` · ${esc(c.setName)}` : ''}${c.src === 'hdv' ? ` · HDV ${fmt(c.price)} K (${esc(c.seller)})` : c.src === 'worn' ? ' · porté' : ' · inventaire'}${c.two ? ' · deux mains' : ''}</div>
+        <div style="color:#8a7d66;font-size:11px">Niveau ${c.lvl ?? '?'}${c.setName ? ` · ${esc(c.setName)}` : ''}${c.src === 'hdv' ? ` · HDV ${fmt(c.price)} K (${esc(c.seller)})` : c.src === 'worn' ? ' · porté' : c.src === 'bank' ? ` · banque (${esc(c.bankName)})` : ' · inventaire'}${c.two ? ' · deux mains' : ''}</div>
         <div style="margin-top:4px">${keys(c.eff).map((k) => statLine(k, c.eff[k])).join('') || '<i>aucune stat</i>'}</div>
         ${other !== c ? `<div style="margin-top:6px;border-top:1px solid #3a3024;padding-top:4px;color:#b9a98c">${side === 'new' ? `Par rapport à ${other ? esc(itemLabel(other)) : 'l’emplacement vide'}` : `En passant à ${other ? esc(itemLabel(other)) : 'vide'}`} :</div>
           ${diffKeys.map((k) => statLine(k, side === 'new' ? (c.eff[k] || 0) - (other?.eff?.[k] || 0) : (other?.eff?.[k] || 0) - (c.eff[k] || 0), true)).join('') || '<i>aucun écart</i>'}
@@ -3194,9 +3244,9 @@
     function render() {
       const r = result;
       const gain = r.nxtTurn.dmg - r.curTurn.dmg;
-      const item = (c, slot, side) => (c ? `<span data-hover="${esc(slot)}|${side}" style="cursor:help">${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain;vertical-align:middle">` : ''} ${esc(itemLabel(c))}${c.src === 'hdv' ? ` <span style="color:#f0c04a">🛒 ${fmt(c.price)} K</span>` : ''}${c.bought ? ' <span style="color:#6fcf7a">✔ acheté</span>' : ''}</span>` : '<i style="color:#8a7d66">vide</i>');
+      const item = (c, slot, side) => (c ? `<span data-hover="${esc(slot)}|${side}" style="cursor:help">${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain;vertical-align:middle">` : ''} ${esc(itemLabel(c))}${c.src === 'hdv' ? ` <span style="color:#f0c04a">🛒 ${fmt(c.price)} K</span>` : ''}${c.src === 'bank' ? ` <span style="color:#8fb8ee">🏦 ${esc(c.bankName)}</span>` : ''}${c.bought ? ' <span style="color:#6fcf7a">✔ acheté</span>' : ''}</span>` : '<i style="color:#8a7d66">vide</i>');
       const sbtn = 'border:1px solid #5a4a33;border-radius:6px;padding:2px 7px;color:#fff;cursor:pointer;font:600 11px system-ui,sans-serif;background:#2a231a;margin-left:4px';
-      const tools = (c) => (!c ? '' : `${c.src === 'hdv' ? `<button data-buy="${esc(c.listingId)}" style="${sbtn};background:#8a5a1a" title="Acheter cette annonce (vendeur : ${esc(c.seller)}) — 2e clic pour confirmer">🛒 Acheter</button>` : ''}<button data-ban="${+c.id}" data-name="${esc(c.name)}" style="${sbtn}" title="Mettre en liste noire : ne plus jamais proposer cet objet">🚫</button>`);
+      const tools = (c) => (!c ? '' : `${c.src === 'bank' ? (c.queued ? '<span style="color:#6fcf7a;margin-left:4px">✔ en file d’échange</span>' : `<button data-bankq="${esc(c.uid)}" style="${sbtn};background:#2e6fbf" title="Ajoute cet objet à la file d’échange de ${esc(c.bankName)} : lance « Tout échanger » depuis son onglet, puis équipe-le">📦 File d’échange</button>`) : ''}${c.src === 'hdv' ? `<button data-buy="${esc(c.listingId)}" style="${sbtn};background:#8a5a1a" title="Acheter cette annonce (vendeur : ${esc(c.seller)}) — 2e clic pour confirmer">🛒 Acheter</button>` : ''}<button data-ban="${+c.id}" data-name="${esc(c.name)}" style="${sbtn}" title="Mettre en liste noire : ne plus jamais proposer cet objet">🚫</button>`);
       const rows = r.slots.map((s) => {
         const a = r.current[s.slot], b = r.final[s.slot];
         const same = a === b || (a && b && a.id === b.id && a.fusion === b.fusion);
@@ -3215,12 +3265,14 @@
       const hdvCost = Object.values(r.final).filter((c) => c?.src === 'hdv').reduce((n, c) => n + c.price, 0);
       const deckHtml = r.deck.map((d, i) => `<span style="white-space:nowrap">${i + 1}. ${esc(d.sp.name)} <span style="color:#8a7d66">(${d.sp.ap} PA, ~${fmt(d.v)})</span></span>`).join(' · ');
       const badChecks = r.checks.filter(([, a, b]) => Math.abs(a - b) > Math.max(2, Math.abs(b) * 0.02));
-      const owned = r.slots.some((s) => r.final[s.slot] && r.final[s.slot].src !== 'hdv' && r.final[s.slot] !== r.current[s.slot]);
+      const owned = r.slots.some((s) => r.final[s.slot] && !['hdv', 'bank'].includes(r.final[s.slot].src) && r.final[s.slot] !== r.current[s.slot]);
       $('[data-k="out"]').innerHTML = `
         <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:baseline">
           <div>Dégâts par tour : <b>${fmt(r.curTurn.dmg)}</b> → <b style="font-size:17px;color:#6fcf7a">${fmt(r.nxtTurn.dmg)}</b> ${gain > 0.5 ? `<span style="color:#6fcf7a">(+${fmt(gain)}, +${(gain / Math.max(1, r.curTurn.dmg) * 100).toFixed(1)} %)</span>` : '<span style="color:#b9a98c">(ton build est déjà le meilleur trouvé)</span>'}</div>
           ${hdvCost ? `<div style="color:#f0c04a">🛒 Achats HDV restants : ${fmt(hdvCost)} K${r.budget ? ` / budget ${fmt(r.budget)} K` : ''}</div>` : r.budget ? `<div style="color:#b9a98c">Budget ${fmt(r.budget)} K : aucun achat nécessaire</div>` : ''}
         </div>
+        ${r.bank ? `<div style="font-size:12px;color:#8fb8ee">🏦 Banque ${esc(r.bank.name)} : ${r.bank.count} objet(s) disponible(s)${r.bank.bound ? `, ${r.bank.bound} lié(s) ignoré(s)` : ''}.</div>` : ''}
+        ${r.paShort ? `<div style="color:#ff7b6b;font-weight:700">⚠️ PA minimum (${r.paMin}) impossible à atteindre avec tes objets : le build ci-dessous est celui qui a le plus de PA (${r.paOf(r.nxt.S)}).</div>` : ''}
         ${r.hdvFailed.length ? `<div style="color:#f0a040">⚠️ HDV illisible pour : ${r.hdvFailed.map((t) => esc(SLOT_NAMES[t] || t)).join(', ')} (site saturé) — ces emplacements n’ont pas d’objet HDV proposé.</div>` : ''}
         ${r.pvShort ? `<div style="color:#ff7b6b;font-weight:700">⚠️ PV minimum (${fmt(r.pvMin)}) impossible à atteindre avec tes objets : le build ci-dessous est celui qui a le plus de PV (${fmt(r.pvOf(r.nxt.S))}).</div>` : ''}
         <div style="font-size:12px"><b>Sorts du tour</b> — actuel : ${turn(r.curTurn)}<br><b style="color:#6fcf7a">proposé</b> : ${turn(r.nxtTurn)}</div>
@@ -3241,7 +3293,7 @@
         <div style="font-size:12px;line-height:1.6">${statRows}</div>
         <div style="display:flex;gap:8px;align-items:center">
           <button data-a="equip" style="${btn};background:#2e7d32" ${owned ? '' : 'disabled'}>✅ Équiper ce build${Object.values(r.final).some((c) => c?.src === 'hdv') ? ' (objets possédés seulement)' : ''}</button>
-          <span style="font-size:11px;color:#8a7d66">Les objets HDV (🛒) sont à acheter d’abord.</span>
+          <span style="font-size:11px;color:#8a7d66">Les objets HDV (🛒) sont à acheter, ceux de la banque (🏦) à échanger d’abord ; relance ensuite la recherche pour les équiper.</span>
         </div>
         <details style="font-size:11px;color:#b9a98c"><summary style="cursor:pointer">Contrôle du modèle (${badChecks.length ? `<span style="color:#f0a040">${badChecks.length} écart(s)</span>` : '<span style="color:#6fcf7a">OK</span>'})</summary>
           Stats calculées pour ton équipement actuel / affichées sur ta fiche : ${r.checks.map(([l, a, b]) => `<span style="color:${Math.abs(a - b) > Math.max(2, Math.abs(b) * 0.02) ? '#f0a040' : 'inherit'}">${esc(l)} ${fmt(a)} / ${fmt(b)}</span>`).join(' · ')}.
@@ -4176,6 +4228,7 @@
     if (msg.type === 'tradePing') { tradeHealth().then(sendResponse); return true; }
     if (msg.type === 'tradeVerify') { tradeVerify(msg).then(sendResponse); return true; }
     if (msg.type === 'tradeBuy') { tradeBuy(msg).then(sendResponse); return true; }
+    if (msg.type === 'peerGear') { peerGear().then(sendResponse); return true; }
   });
 
   (async () => {
