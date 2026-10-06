@@ -60,6 +60,9 @@ async function bossCheck() {
 // bossRun.phase : 'waiting' (le farm finit son combat sans relancer) → 'fighting' (onglet boss pilote) → supprimé.
 const BOSS_FIGHT_MAX_MS = 8 * 60000;   // sécurité : onglet boss abandonné au-delà
 const BOSS_MIN_LEFT_MS = 45 * 1000;    // inutile de partir si le boss s'en va dans moins de 45 s
+// Désactivé (1.63.2) : l'onglet du boss et celui du farm se retrouvaient souvent en combat en même temps.
+// Les alertes Discord du boss restent actives. Remettre à true pour réactiver (et ré-afficher l'option de la popup).
+const BOSS_AUTO_ENABLED = false;
 
 async function bossAutoCheck(st, now) {
   const s = await DM.getAll();
@@ -69,7 +72,7 @@ async function bossAutoCheck(st, now) {
     return;
   }
   if (run?.phase === 'fighting' && now - run.startedAt > BOSS_FIGHT_MAX_MS) return bossFinish('abandonné (délai dépassé)');
-  if (run || !s.enabled || s.bossAuto === false || !st.active) return;
+  if (run || !BOSS_AUTO_ENABLED || !s.enabled || s.bossAuto === false || !st.active) return;
   if (s.bossTriedFor === st.spawnAt || st.endsAt - now < BOSS_MIN_LEFT_MS) return;
   await chrome.storage.local.set({
     bossTriedFor: st.spawnAt,   // un seul essai par apparition

@@ -3075,7 +3075,8 @@
     const level = sheet.level;
     // Niveau max (option) : objets jusqu'à ce niveau. Au-dessus du niveau actuel, prévision : PV, PA de base et points
     // de caractéristiques de ce niveau (5 points par niveau). Vide = niveau actuel.
-    const planLevel = Math.max(1, Math.min(200, Math.round(+opts.lvlMax || 0))) || level;
+    const lvlOpt = Math.round(+opts.lvlMax || 0);
+    const planLevel = lvlOpt > 0 ? Math.min(200, lvlOpt) : level;
     const statLevel = Math.max(level, planLevel);
     const planCapital = sheet.capital + 5 * (statLevel - level);
     let gearMult = 1 + sheet.prestige * PRESTIGE_GEAR_PCT / 100;   // recalé plus bas sur la fiche (fitGearMult)
