@@ -1805,7 +1805,9 @@
       for (const k of stats) best[`${c.type}|${k}`] = Math.max(best[`${c.type}|${k}`] || 0, c.eff[k] || 0);
     }
     const score = (c) => (c ? weighted.reduce((n, [k, w]) => n + w * (c.eff[k] || 0) / (best[`${c.type}|${k}`] || 1), 0) : -Infinity);
-    const rank = (a, b) => score(b) - score(a) || b.lvl - a.lvl || b.rarity - a.rarity || b.fusion - a.fusion;
+    // à égalité, l'objet déjà porté passe avant un exemplaire identique de l'inventaire : sinon ce 2e exemplaire
+    // serait retenu, le porté écarté (même id), et le même objet finirait dans deux emplacements (anneaux, dofus)
+    const rank = (a, b) => score(b) - score(a) || !!b.from - !!a.from || b.lvl - a.lvl || b.rarity - a.rarity || b.fusion - a.fusion;
     const EPS = 1e-9;
 
     // Arme à deux mains : retire le bouclier → on la compare à (meilleure arme à une main + meilleur bouclier).
