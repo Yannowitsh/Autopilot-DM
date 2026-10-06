@@ -688,7 +688,7 @@
       },
       body: JSON.stringify(args),
     });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    if (!r.ok) throw Object.assign(new Error(`HTTP ${r.status}`), { status: r.status });
     const text = await r.text();
     const line = text.split(/\r?\n/).find((l) => l.startsWith('1:'));
     const res = line ? JSON.parse(line.slice(2)) : null;
@@ -810,12 +810,14 @@
     return hdvActionIds[name];
   }
 
-  // Server action de l'HDV ; en cas d'échec de protocole (ID périmé après un déploiement), on relit l'ID et on réessaie une fois.
+  // Server action de l'HDV. Si l'ID est périmé (nouveau déploiement : HTTP 404 ou réponse illisible), on le relit et on
+  // réessaie une fois. Jamais sur une erreur serveur (5xx, 508…) ni réseau : relire l'ID prend plusieurs secondes,
+  // pendant lesquelles une annonce à 1 kamas resterait en vente.
   async function hdvCall(name, args, query = '') {
     try {
       return await postAction('hdv', await hdvAction(name), args, query);
     } catch (e) {
-      if (e.game) throw e;
+      if (e.game || !(e.status === 404 || e.message === 'Réponse du serveur illisible')) throw e;
       delete hdvActionIds[name];
       hdvActionIds[name] = await findAction((await fetchFlight('/hdv')).chunks, name, HDV_ACTION_FALLBACK[name]);
       return postAction('hdv', hdvActionIds[name], args, query);
@@ -885,10 +887,7 @@
 
   // Vendeur, avant un ou plusieurs échanges : contact de l'autre compte + objets vendables + IDs des actions.
   async function tradePrepare(say) {
-    say('Contact de l’autre compte…');
-    const peer = await send({ type: 'tradePeer' });
-    if (!peer?.ok) throw new Error(peer?.error || 'Autre compte injoignable');
-    if (peer.name && peer.name === myName()) throw new Error('L’autre onglet est connecté au même personnage');
+    const peer = await peerReady(say);
     const sell = await fetchSellable();
     if (sell.maxListings && sell.mine.length >= sell.maxListings) throw new Error(`HDV plein (${sell.mine.length}/${sell.maxListings} ventes en cours)`);
     await Promise.all([hdvAction('listItem', sell.chunks), hdvAction('cancelListing', sell.chunks)]);
@@ -907,33 +906,116 @@
     return entry;
   }
 
+  // ---------- Robustesse de l'échange ----------
+  // Une annonce à 1 kamas ne doit jamais rester en vente si l'autre compte ne l'achète pas aussitôt :
+  // - avant chaque mise en vente, on vérifie que l'autre compte (session + serveur) répond, sinon on attend ;
+  // - l'achat doit être confirmé en BUY_WAIT_MS, sinon l'annonce est retirée sans attendre la réponse ;
+  // - après un échec technique (HTTP 5xx, onglet en rechargement…), l'objet est retenté une fois l'autre compte revenu.
+  const BUY_WAIT_MS = 2500;
+  const BUY_WAIT_SEARCH_MS = 8000;              // l'acheteur doit chercher l'annonce lui-même (ID non lu)
+  const TRADE_RETRIES = 4;                       // nouveaux essais d'un même exemplaire après un échec technique
+  const PEER_WAIT_MS = 3 * 60000;                // attente max que l'autre compte redevienne joignable
+  const PEER_RETRY_GAPS = [2000, 4000, 8000, 15000, 30000];
+  const CANCEL_TRIES = 6;
+  const tradeErr = (message, extra) => Object.assign(new Error(message), extra);
+  const tradeStopped = () => !!queueRun?.stop;
+
+  // Attend que l'autre compte réponde (onglet joignable, session valide, serveur du jeu disponible).
+  async function peerReady(say) {
+    const t0 = Date.now();
+    for (let i = 0; ; i++) {
+      const p = await send({ type: 'tradePeer' }).catch((e) => ({ ok: false, error: e.message, retry: true }));
+      if (p?.ok) {
+        if (p.name && p.name === myName()) throw tradeErr('L’autre onglet est connecté au même personnage');
+        return p;
+      }
+      if (p?.retry === false || Date.now() - t0 > PEER_WAIT_MS) throw tradeErr(p?.error || 'Autre compte injoignable');
+      if (tradeStopped()) throw tradeErr('Arrêté');
+      const gap = PEER_RETRY_GAPS[Math.min(i, PEER_RETRY_GAPS.length - 1)];
+      say(`⏳ Autre compte indisponible (${p?.error || 'sans réponse'}) — nouvel essai dans ${gap / 1000} s…`);
+      await sleep(gap);
+    }
+  }
+
+  // Retire l'annonce (avec plusieurs essais : tant qu'elle est en ligne, n'importe qui peut l'acheter).
+  // → { ok } | { gone } (déjà vendue / retirée) | { error }
+  async function cancelTradeListing(listingId, entry) {
+    let id = listingId, last = null;
+    for (let i = 0; i < CANCEL_TRIES; i++) {
+      try {
+        if (!id) id = findMyListing(JSON.stringify((await fetchSellable()).mine), entry.id, entry.fusion);
+        if (!id) return { gone: true, error: 'annonce introuvable' };
+        await hdvCall('cancelListing', [id], '?onglet=vendre');
+        return { ok: true };
+      } catch (e) {
+        if (e.game) return { gone: true, error: e.message };   // « Cette vente n'existe plus »
+        last = e;
+        await sleep(300 + i * 300);
+      }
+    }
+    return { error: last?.message || 'retrait impossible' };
+  }
+
   // Un exemplaire : mise en vente à 1 kamas puis achat par l'autre compte. last = dernier de la série (l'acheteur recharge sa page).
+  // Erreur avec retry = true : rien n'est perdu (annonce retirée ou jamais créée), on peut retenter.
   async function tradeOne(ctx, entry, say, last = true) {
+    await peerReady(say);
     say(`${entry.name} : mise en vente à ${TRADE_PRICE} K…`);
     const t0 = performance.now();
-    const { text } = await hdvCall('listItem', [entry.id, entry.fusion, TRADE_PRICE], '?onglet=vendre');
+    let text;
+    try {
+      ({ text } = await hdvCall('listItem', [entry.id, entry.fusion, TRADE_PRICE], '?onglet=vendre'));
+    } catch (e) {
+      if (e.game) throw e;   // refus du jeu (HDV plein…) : inutile de retenter
+      // erreur technique : la vente a peut-être été créée quand même → on la retire si elle existe
+      const c = await cancelTradeListing(null, entry);
+      if (c.error && !c.gone) throw tradeErr(`${entry.name} : mise en vente incertaine (${e.message}) et retrait impossible (${c.error}) — vérifie tes ventes à l’HDV !`);
+      throw tradeErr(`${entry.name} : mise en vente impossible (${e.message})`, { retry: true });
+    }
     const listingId = findMyListing(text, entry.id, entry.fusion);
     say(`${entry.name} : achat par ${ctx.to}…`);
-    const r = await send({ type: 'tradeBuy', listingId, itemId: entry.id, fusion: entry.fusion, seller: myName(), last })
-      .catch((e) => ({ ok: false, error: e.message }));
-    const ms = Math.round(performance.now() - t0);
-    if (r?.ok) {
+    const buyP = send({ type: 'tradeBuy', listingId, itemId: entry.id, fusion: entry.fusion, seller: myName(), last })
+      .catch((e) => ({ ok: false, error: e.message, retry: true }));
+    let r = await Promise.race([buyP, sleep(listingId ? BUY_WAIT_MS : BUY_WAIT_SEARCH_MS).then(() => null)]);
+    const done = (res) => {
       entry.qty--;
-      DM.log(`échange: ${entry.name} → ${ctx.to} (annonce ${r.listingId}, ${ms} ms)`);
+      const ms = Math.round(performance.now() - t0);
+      DM.log(`échange: ${entry.name} → ${ctx.to} (annonce ${res.listingId || listingId}, ${ms} ms)`);
       return ms;
-    }
+    };
+    if (r?.ok) return done(r);
 
-    // Achat raté : on retire l'annonce pour que personne d'autre ne l'achète à 1 kamas.
-    let back = '';
-    try {
-      const id = listingId || findMyListing(JSON.stringify((await fetchSellable()).mine), entry.id, entry.fusion);
-      if (id) { await hdvCall('cancelListing', [id], '?onglet=vendre'); back = ' — annonce retirée'; }
-      else back = ' — ⚠️ annonce à retirer à la main';
-    } catch (e) {
-      back = ` — ⚠️ retrait impossible (${e.message}), retire l’annonce à la main !`;
+    // Échec, ou pas de confirmation à temps : on retire l'annonce tout de suite, sans attendre la réponse.
+    say(`${entry.name} : achat ${r ? 'refusé' : 'trop lent'} — retrait de l’annonce…`);
+    const tooSlow = !r;   // retirée avant la réponse : l'achat échouera sur « vente n'existe plus », ce n'est pas un vrai refus
+    const c = await cancelTradeListing(listingId, entry);
+    if (!r) r = await buyP;   // la réponse de l'acheteur finit par arriver
+    if (r?.ok) return done(r);
+    const why = r?.error || 'sans réponse';
+    if (c.ok) {
+      DM.log(`échange: ${entry.name} → ${ctx.to} raté (${why}), annonce retirée`);
+      throw tradeErr(`${entry.name} : achat ${tooSlow ? 'trop lent' : `raté (${why})`} — annonce retirée`, { retry: tooSlow || r?.retry !== false });
     }
-    DM.log(`échange: échec ${entry.name} → ${ctx.to} : ${r?.error}${back}`);
-    throw new Error(`${entry.name} : achat refusé (${r?.error || 'sans réponse'})${back}`);
+    // Annonce introuvable ou impossible à retirer : l'autre compte l'a-t-il finalement reçue ?
+    const v = await send({ type: 'tradeVerify', itemId: entry.id, fusion: entry.fusion }).catch(() => null);
+    if (v?.has) return done({ listingId });
+    DM.log(`échange: PERTE possible ${entry.name} (achat : ${why} ; retrait : ${c.error})`);
+    throw tradeErr(c.gone
+      ? `⚠️ ${entry.name} a été acheté par un autre joueur avant le retrait (achat : ${why}).`
+      : `⚠️ ${entry.name} : achat raté (${why}) et retrait impossible (${c.error}) — retire l’annonce à la main !`);
+  }
+
+  // tradeOne avec nouveaux essais après un échec technique (attend que l'autre compte soit revenu).
+  async function tradeWithRetry(ctx, entry, say, last = true) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await tradeOne(ctx, entry, say, last);
+      } catch (e) {
+        if (!e.retry || attempt > TRADE_RETRIES || tradeStopped()) throw e;
+        say(`${e.message} — nouvel essai ${attempt + 1}/${TRADE_RETRIES + 1}…`);
+        await sleep(1500 * attempt);
+      }
+    }
   }
 
   // Bouton « Échanger » d'un panneau d'objet.
@@ -941,28 +1023,53 @@
     const it = itemFromPanel(panel);
     if (!it) throw new Error('Objet illisible');
     const ctx = await tradePrepare(say);
-    const ms = await tradeOne(ctx, tradeResolve(ctx, it), say);
+    const ms = await tradeWithRetry(ctx, tradeResolve(ctx, it), say);
     return `✔ ${it.name} → ${ctx.to} (${ms} ms)`;
   }
 
   // Acheteur : achète l'annonce relayée par le service worker.
+  // retry = false : refus du jeu (kamas, vente disparue…) ; sinon erreur technique, le vendeur pourra retenter.
   let buyReloadTimer;
   async function tradeBuy(msg) {
     clearTimeout(buyReloadTimer);
     try {
       const listingId = msg.listingId || await findListingOnMarket(msg);
-      if (!listingId) throw new Error('annonce introuvable à l’HDV');
+      if (!listingId) throw tradeErr('annonce introuvable à l’HDV', { game: true });
       const { res } = await hdvCall('buyListing', [listingId]);
       tradeToast(`🔁 Objet reçu via l’HDV${msg.seller ? ` de ${msg.seller}` : ''}.`, 'ok');
       return { ok: true, listingId, text: res.ok };
     } catch (e) {
       tradeToast(`🔁 Échec de l’achat : ${e.message}`, 'err');
-      return { ok: false, error: e.message };
+      return { ok: false, error: e.message, retry: !e.game };
     } finally {
       // Rafraîchit l'inventaire affiché, une fois la série terminée (ou 5 s sans nouvel achat).
       if (/^\/(hdv|inventaire)/.test(location.pathname) && !isOwner()) {
         buyReloadTimer = setTimeout(() => location.reload(), msg.last === false ? 5000 : 1200);
       }
+    }
+  }
+
+  // Acheteur : le jeu et la session répondent-ils ? (requête légère, celle que le chat du site fait en continu)
+  async function tradeHealth() {
+    try {
+      const r = await DM.fetchT('/api/chat?after=999999999&g=0', { credentials: 'same-origin', cache: 'no-store' }, 8000);
+      if (r.redirected && /connexion/.test(r.url)) return { ok: false, error: 'autre compte déconnecté', retry: true };
+      if (!r.ok) return { ok: false, error: `serveur indisponible (HTTP ${r.status})`, retry: true };
+    } catch (e) {
+      return { ok: false, error: `serveur injoignable (${e.message})`, retry: true };
+    }
+    hdvAction('buyListing').catch(() => {});   // préchauffe l'ID de buyListing (une fois par page)
+    return { ok: true, name: myName() };
+  }
+
+  // Acheteur : l'objet est-il arrivé dans l'inventaire ? (acheté à l'HDV = lié pendant ~24 h)
+  async function tradeVerify({ itemId, fusion }) {
+    try {
+      const { entries } = await fetchSellable();
+      const soon = Date.now() + 23 * 3600000;
+      return { has: entries.some((e) => e.id === itemId && e.fusion === fusion && e.boundUntil && new Date(e.boundUntil) > soon) };
+    } catch (e) {
+      return { has: false, error: e.message };
     }
   }
 
@@ -1024,7 +1131,7 @@
           continue;
         }
         const last = queueRun.done + 1 >= queueRun.total;
-        ms += await tradeOne(ctx, entry, (t) => say(`${queueRun.done + 1}/${queueRun.total} · ${t}`), last);
+        ms += await tradeWithRetry(ctx, entry, (t) => say(`${queueRun.done + 1}/${queueRun.total} · ${t}`), last);
         queueRun.done++;
         await setTradeQueue(tradeQueue().map((x) => (sameItem(x, it) ? { ...x, qty: x.qty - 1 } : x)));
         renderQueue();
@@ -2215,10 +2322,8 @@
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg.type === 'tick') tick();
     if (msg.type === 'autosell') { runAutosell(!!msg.dryRun).then(sendResponse); return true; }
-    if (msg.type === 'tradePing') {   // préchauffe l'ID de buyListing pour acheter sans délai
-      hdvAction('buyListing').catch(() => {}).then(() => sendResponse({ ok: true, name: myName() }));
-      return true;
-    }
+    if (msg.type === 'tradePing') { tradeHealth().then(sendResponse); return true; }
+    if (msg.type === 'tradeVerify') { tradeVerify(msg).then(sendResponse); return true; }
     if (msg.type === 'tradeBuy') { tradeBuy(msg).then(sendResponse); return true; }
   });
 

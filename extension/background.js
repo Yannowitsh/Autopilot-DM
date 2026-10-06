@@ -279,15 +279,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return true;
       }
       case 'tradePeer':   // échange HDV : on relaie à un onglet du jeu de l'autre contexte (normal ↔ navigation privée)
-      case 'tradeBuy': {
+      case 'tradeBuy':
+      case 'tradeVerify': {   // l'autre compte a-t-il bien reçu l'objet ?
         const peer = await tradePeerTab(sender.tab);
         if (!peer) {
-          return { ok: false, error: sender.tab?.incognito
+          return { ok: false, retry: false, error: sender.tab?.incognito
             ? 'Aucun onglet DofusMasters ouvert en navigation normale'
             : 'Aucun onglet DofusMasters en navigation privée (l’extension doit y être autorisée)' };
         }
-        return chrome.tabs.sendMessage(peer.id, { ...msg, type: msg.type === 'tradePeer' ? 'tradePing' : 'tradeBuy' })
-          .catch(() => ({ ok: false, error: 'Recharge l’onglet de l’autre compte' }));
+        // onglet en cours de (re)chargement : il répondra dans un instant → le vendeur réessaie
+        return chrome.tabs.sendMessage(peer.id, { ...msg, type: msg.type === 'tradePeer' ? 'tradePing' : msg.type })
+          .catch(() => ({ ok: false, retry: true, error: 'onglet de l’autre compte en cours de chargement' }));
       }
       case 'autosell': {
         // La server action doit partir de la page du jeu (contrôle d'origine Next.js) : on passe par un onglet.
