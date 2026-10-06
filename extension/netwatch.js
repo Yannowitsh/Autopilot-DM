@@ -5,6 +5,8 @@
 // <html data-dm-actions="n"> : nombre de server actions lancées par la page depuis son chargement.
 // <html data-dm-fight-end="won|lost:heure"> : une réponse de combat contient l'état final (le serveur joue tout le
 // combat Auto d'un coup ; la page ne fait ensuite que rejouer l'animation) → utilisé par le « combat rapide ».
+// Chaque état de combat reçu est aussi transmis à content.js (postMessage « dm-fight ») : stats du personnage
+// et journal des coups, pour la tierlist des sorts et son test de calcul.
 (() => {
   if (window.__dmNetwatch) return;
   window.__dmNetwatch = true;
@@ -41,6 +43,8 @@
       p.then((r) => r.clone().text()).then((t) => {
         const m = t.match(/"logCount":\d+,"status":"(won|lost)"/);   // état final du combat (pas « ongoing »)
         if (m && document.documentElement) document.documentElement.dataset.dmFightEnd = `${m[1]}:${Date.now()}`;
+        const line = t.split('\n').find((l) => l.startsWith('1:{"state":{'));
+        if (line) window.postMessage({ type: 'dm-fight', line: line.slice(2) }, location.origin);
       }).catch(() => {});
     }
     return p;

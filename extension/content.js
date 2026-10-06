@@ -2334,36 +2334,79 @@
   const DMG_FIXED = new Set(['dmg', 'steal', 'bomb', 'trap', 'detonate', 'poison']);
   const DMG_VARIABLE = new Set(['dmgCasterHp', 'dmgLostHp']);
   const SPELL_FILTERS_KEY = 'dmSpellFilters';
+  // Dégâts réels (option « Avec mes stats ») — formule des infobulles du jeu, vérifiée sur les journaux de combat :
+  // par ligne : (base × (1 + (stat de l'élément + Puissance) / 100) + Dommages + Dommages <élément>) × (1 + % Dommages aux sorts).
+  // Neutre et Terre = Force, Feu = Intelligence, Eau = Chance, Air = Agilité. Critique : chance de la carte + % Critique
+  // (seulement si la carte peut critiquer), coup ×1,25 (estimé sur les journaux) + Dommages Critiques.
+  // Vision spectrale : 0,4 % par point de PO qu'un sort de dégâts frappe deux fois (compté en moyenne).
+  // Les résistances / le niveau du monstre réduisent ensuite tous les sorts pareil : le classement n'en dépend pas.
+  const EL_STAT = ['force', 'force', 'intelligence', 'chance', 'agilite'];
+  const EL_DMG = ['dommagesNeutre', 'dommagesTerre', 'dommagesFeu', 'dommagesEau', 'dommagesAir'];
+  const CRIT_MULT = 1.25;
+  const SPECTRAL_PER_PO = 0.4;
+  const CHAR_STATS_KEY = 'dmCharStats';
+  const LAST_FIGHT_KEY = 'dmLastFight';   // dernier état de combat reçu, par personnage (localStorage de la page)
+  const fightAcct = () => myName() || (chrome.extension?.inIncognitoContext ? 'privé' : 'normal');
+  // netwatch.js transmet chaque état de combat reçu : on garde le dernier qui contient des coups du joueur.
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || e.data?.type !== 'dm-fight' || typeof e.data.line !== 'string') return;
+    try {
+      const st = JSON.parse(e.data.line).state;
+      if (!st?.fighters?.p?.stats || !st.log?.some((L) => L.t === 'play' && L.who === 'p')) return;
+      const fighters = Object.fromEntries(Object.entries(st.fighters).map(([id, f]) => [id,
+        { id, name: f.name, kind: f.kind, team: f.team, level: f.level, stats: f.stats, resCap: f.resCap, buffs: f.buffs }]));
+      const all = JSON.parse(localStorage.getItem(LAST_FIGHT_KEY) || '{}');
+      all[fightAcct()] = { at: Date.now(), kind: st.kind, status: st.status, fighters, log: st.log };
+      localStorage.setItem(LAST_FIGHT_KEY, JSON.stringify(all));
+    } catch { /* état illisible ou stockage plein */ }
+  });
+  const lastFight = () => { try { return JSON.parse(localStorage.getItem(LAST_FIGHT_KEY) || '{}')[fightAcct()] || null; } catch { return null; } };
   let favActionId = null;
 
   // Dégâts d'une carte : total min / max / moyen, détail par élément, zone ou cible unique.
-  function spellDamage(card) {
+  // `stats` (caractéristiques du personnage) : dégâts estimés avec ses bonus, critique et vision spectrale compris.
+  function spellDamage(card, stats = null) {
+    const S = (k) => +stats?.[k] || 0;
+    const pct = (1 + S('dmgPctSorts') / 100);
+    const critP = stats && +card.cc > 0 ? Math.min(1, Math.max(0, (+card.cc + S('critique')) / 100)) : 0;
+    // valeur d'un coup de base `v` dans l'élément `el` : [normal, critique]
+    const hitVal = (v, el) => {
+      if (!stats) return [v, v];
+      const mult = 1 + (S(EL_STAT[el]) + S('puissance')) / 100, fixed = S('dommages') + S(EL_DMG[el]);
+      return [(v * mult + fixed) * pct, (v * CRIT_MULT * mult + fixed + S('dommagesCritiques')) * pct];
+    };
     let min = 0, max = 0, zone = false, variable = false, delayed = false, fixed = false, random = false;
-    let rndAvg = 0, rndMax = 0;
+    let rndAvg = 0, rndMax = 0, sure = 0;
     const byEl = {};
     for (const e of card.eff || []) {
       if (DMG_VARIABLE.has(e.k)) { variable = true; continue; }
       if (!DMG_FIXED.has(e.k)) continue;
       fixed = true;
       const n = e.k === 'poison' ? Math.max(1, +(e.turns || e.dur) || 1) : 1;   // poison : dégâts à chaque tour
-      const lo = (+e.min || 0) * n, hi = (+(e.max ?? e.min) || 0) * n;
       const el = Number.isInteger(e.el) ? e.el : 0;
+      const [loN, loC] = hitVal(+e.min || 0, el), [hiN, hiC] = hitVal(+(e.max ?? e.min) || 0, el);
+      // min = sans critique, max = critique ; moyenne pondérée par la chance de critique
+      const lo = loN * n, hi = (critP ? hiC : hiN) * n;
+      const mid = ((1 - critP) * (loN + hiN) / 2 + critP * (loC + hiC) / 2) * n;
       const p = e.chance != null && +e.chance < 100 ? Math.max(0, +e.chance) / 100 : 1;
       if (p < 1) {   // ligne à x % de chance
         random = true;
-        rndAvg += p * (lo + hi) / 2;
+        rndAvg += p * mid;
         rndMax = Math.max(rndMax, hi);
-        byEl[el] = (byEl[el] || 0) + p * (lo + hi) / 2;
+        byEl[el] = (byEl[el] || 0) + p * mid;
       } else {
-        min += lo; max += hi;
-        byEl[el] = (byEl[el] || 0) + (lo + hi) / 2;
+        min += lo; max += hi; sure += mid;
+        byEl[el] = (byEl[el] || 0) + mid;
       }
       if (e.zone || e.k === 'bomb' || e.k === 'detonate') zone = true;   // bombes : explosion en zone
       if (e.k === 'bomb' || e.k === 'trap' || e.k === 'poison') delayed = true;
     }
     if (!fixed) return null;
-    const avg = (min + max) / 2 + rndAvg;
-    return { min, max: max + rndMax, avg: Math.round(avg * 10) / 10, byEl, zone, variable, delayed, random };
+    const spectral = stats ? 1 + S('po') * SPECTRAL_PER_PO / 100 : 1;   // 2e frappe possible (moyenne seulement)
+    const avg = (sure + rndAvg) * spectral;
+    const r = (v) => Math.round(v);
+    for (const k in byEl) byEl[k] *= spectral;
+    return { min: r(min), max: r(max + rndMax), avg: Math.round(avg * 10) / 10, byEl, zone, variable, delayed, random, critP };
   }
 
   async function fetchSpells() {
@@ -2384,10 +2427,35 @@
       }
       const ap = +card.ap || 0;
       spells.push({ id: card.id, key: ent.key, name: card.n, desc: card.d || '', icon: card.icon, ap, rarity: card.r,
-        fusion: +card.f || 0, ...dmg, perAp: ap ? dmg.avg / ap : Infinity });
+        fusion: +card.f || 0, card: { ...card, eff }, ...dmg, perAp: ap ? dmg.avg / ap : Infinity });
     }
     const favs = new Set((res(props.initialFavorites) || []).map(Number));
     return { spells, favs, variableOnly, chunks };
+  }
+
+  // Caractéristiques du personnage : l'état de combat (/combat, combattant « p ») contient ses stats totales
+  // (équipement, points, prestige). Mémorisées par personnage pour quand aucun combat n'est disponible.
+  async function fetchCharStats() {
+    const lf = lastFight();
+    if (lf?.fighters?.p?.stats) return { stats: lf.fighters.p.stats, at: lf.at, level: lf.fighters.p.level };
+    const acct = fightAcct();
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(CHAR_STATS_KEY) || '{}')[acct] || null; } catch { /* stockage indisponible */ }
+    try {
+      const { flight } = await fetchFlight('/combat');
+      const { rows, props } = rscProps(flight, (x) => x.id === 'p' && x.kind === 'player' && x.stats && typeof x.stats === 'object');
+      const stats = props && rscResolve(rows, props.stats);
+      if (stats && typeof stats === 'object') {
+        const out = { stats, at: Date.now(), level: props.level };
+        try {
+          const all = JSON.parse(localStorage.getItem(CHAR_STATS_KEY) || '{}');
+          all[acct] = out;
+          localStorage.setItem(CHAR_STATS_KEY, JSON.stringify(all));
+        } catch { /* idem */ }
+        return out;
+      }
+    } catch { /* pas de combat lisible : dernière lecture */ }
+    return saved;
   }
 
   async function setFavorite(id, on, chunks) {
@@ -2398,6 +2466,116 @@
       if (!e.game) favActionId = null;   // ID peut-être périmé : relu au prochain essai
       throw e;
     }
+  }
+
+  // ---------- Test du calcul : coups réels du dernier combat vs estimation ----------
+  // Pour chaque carte jouée : les lignes de dégâts qui suivent dans le journal (jusqu'à la carte / au tour suivant),
+  // appariées dans l'ordre aux lignes de la carte du même élément. Observé = v + absorbé (bouclier).
+  // Estimation « sans rés. » = formule de la tierlist ; « avec rés. » = (x − rés. fixe) × (1 − % rés.) de la cible.
+  const EL_RES_PCT = ['resPctNeutre', 'resPctTerre', 'resPctFeu', 'resPctEau', 'resPctAir'];
+  const EL_RES = ['resNeutre', 'resTerre', 'resFeu', 'resEau', 'resAir'];
+  function damageTest(fight, spells) {
+    const stats = fight.fighters.p.stats;
+    const S = (k) => +stats[k] || 0;
+    const pct = 1 + S('dmgPctSorts') / 100;
+    const byName = new Map(spells.map((sp) => [sp.name, sp.card]));
+    const rows = [];
+    let buffed = false;
+    const log = fight.log;
+    for (let i = 0; i < log.length; i++) {
+      const L = log[i];
+      if (L.t === 'buff' && L.who === 'p') buffed = true;
+      if (L.t !== 'play' || L.who !== 'p') continue;
+      const card = byName.get(L.card);
+      const lines = (card?.eff || []).filter((e) => DMG_FIXED.has(e.k) && !(e.chance != null && +e.chance < 100));
+      const used = new Set();
+      for (let j = i + 1; j < log.length && !['play', 'turn', 'round'].includes(log[j].t); j++) {
+        const D = log[j];
+        if (D.t !== 'dmg') continue;
+        const tg = fight.fighters[D.who];
+        if (!tg || tg.team === fight.fighters.p.team) continue;   // coups sur soi / les alliés (zones) ignorés
+        const li = lines.findIndex((e, k) => !used.has(k) && (Number.isInteger(e.el) ? e.el : 0) === D.el);
+        if (li >= 0 && !lines[li].zone) used.add(li);
+        const e = lines[li];
+        const crit = !!(D.crit ?? L.crit);
+        const fatal = log[j + 1]?.t === 'death' && log[j + 1].who === D.who;
+        const row = { card: L.card, ap: card?.ap, target: tg.name, el: D.el, v: (+D.v || 0) + (+D.absorbed || 0), crit, fatal, buffed };
+        if (e) {
+          const n = e.k === 'poison' ? Math.max(1, +(e.turns || e.dur) || 1) : 1;
+          const mult = 1 + (S(EL_STAT[D.el]) + S('puissance')) / 100, fixed = S('dommages') + S(EL_DMG[D.el]);
+          const val = (b) => (crit ? b * CRIT_MULT * mult + fixed + S('dommagesCritiques') : b * mult + fixed) * pct;
+          row.lo = val(+e.min || 0) * n; row.hi = val(+(e.max ?? e.min) || 0) * n;
+          const rp = Math.min(+tg.resCap || 100, (+tg.stats?.[EL_RES_PCT[D.el]] || 0) + (+tg.stats?.resPctAll || 0));
+          const rf = +tg.stats?.[EL_RES[D.el]] || 0;
+          const adj = (x) => Math.max(0, (x - rf) * (1 - rp / 100));
+          row.rp = rp; row.rf = rf; row.loR = adj(row.lo); row.hiR = adj(row.hi);
+          row.ratio = row.v / ((row.loR + row.hiR) / 2 || 1);
+        }
+        rows.push(row);
+      }
+    }
+    return { rows, stats };
+  }
+
+  function openDamageTest(spells) {
+    document.querySelector('.dm-dtest')?.remove();
+    const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+    const ov = document.createElement('div');
+    ov.className = 'dm-dtest dm-picker';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483601;background:#000c;display:grid;place-items:center;padding:16px;font:13px system-ui,sans-serif;color:#eee';
+    const close = () => ov.remove();
+    ov.addEventListener('click', (e) => { if (e.target === ov || e.target.closest('[data-a="close"]')) close(); });
+    ov.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Escape') close(); });
+    const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:5px 10px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
+    const fight = lastFight();
+    const box = (html) => `<div style="width:min(900px,100%);max-height:90vh;display:flex;flex-direction:column;gap:8px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">${html}</div>`;
+    if (!fight) {
+      ov.innerHTML = box(`<div style="display:flex;gap:8px;align-items:center"><b style="flex:1">🧪 Test du calcul</b><button data-a="close" style="${btn}">✕</button></div>
+        <div>Aucun combat capturé pour ce personnage. Fais un combat (Auto ou manuel) dans un onglet du jeu avec l’extension active, puis rouvre ce test.</div>`);
+      document.body.appendChild(ov);
+      return;
+    }
+    const { rows, stats } = damageTest(fight, spells);
+    const EL = (el) => ELEMENTS[el]?.name || '?';
+    const r1 = (x) => Math.round(x);
+    const statLine = Object.entries(stats).filter(([, v]) => +v).map(([k, v]) => `${k} ${v}`).join(', ');
+    const text = [
+      `Test calcul dégâts — combat ${fight.kind || ''} du ${new Date(fight.at).toLocaleString('fr-FR')} (${fight.status || ''})`,
+      `Stats : ${statLine}`,
+      ...rows.map((r) => `${r.card} (${r.ap ?? '?'} PA) → ${r.target} : ${r.v} ${EL(r.el)}${r.crit ? ' CRIT' : ''}${r.fatal ? ' (coup fatal)' : ''}${r.buffed ? ' [buff]' : ''}`
+        + (r.lo != null ? ` | estimé ${r1(r.lo)}-${r1(r.hi)} sans rés. | ${r1(r.loR)}-${r1(r.hiR)} avec rés. (${r.rp} %, ${r.rf} fixe) | ratio ${r.ratio.toFixed(2)}` : ' | ligne de la carte introuvable')),
+    ].join('\n');
+    const okRows = rows.filter((r) => r.lo != null && !r.fatal && !r.buffed);
+    const inRange = okRows.filter((r) => r.v >= Math.floor(r.loR) - 1 && r.v <= Math.ceil(r.hiR) + 1).length;
+    ov.innerHTML = box(`
+      <div style="display:flex;gap:8px;align-items:center"><b style="flex:1;font-size:15px">🧪 Test du calcul — dernier combat (${esc(new Date(fight.at).toLocaleString('fr-FR'))})</b>
+        <button data-a="copy" style="${btn};background:#2e6fbf">📋 Copier le récap</button><button data-a="close" style="${btn}">✕</button></div>
+      <div style="color:#b9a98c;font-size:12px">Stats du combat : ${esc(statLine) || 'aucun bonus'}</div>
+      <div style="font-size:12px">${okRows.length ? `<b>${inRange} / ${okRows.length}</b> coups dans la fourchette estimée (hors coups fatals, plafonnés par la vie restante, et coups sous buff).` : 'Aucun coup comparable.'}</div>
+      <div style="overflow:auto">
+        <table style="border-collapse:collapse;width:100%;font-size:12px">
+          <tr style="color:#b9a98c;text-align:left"><th>Sort</th><th>Cible</th><th>Élément</th><th style="text-align:right">Observé</th><th style="text-align:right">Estimé sans rés.</th><th style="text-align:right">Avec rés. cible</th><th style="text-align:right">Ratio</th></tr>
+          ${rows.map((r) => {
+            const ok = r.lo != null && r.v >= Math.floor(r.loR) - 1 && r.v <= Math.ceil(r.hiR) + 1;
+            const col = r.lo == null || r.fatal || r.buffed ? '#b9a98c' : ok ? '#6fcf7a' : '#ff7b6b';
+            return `<tr style="border-top:1px solid #3a3024">
+              <td>${esc(r.card)}${r.crit ? ' <b style="color:#f0c04a">CRIT</b>' : ''}${r.buffed ? ' <span title="Un buff était actif : les stats ont pu changer">[buff]</span>' : ''}</td>
+              <td>${esc(r.target)}${r.fatal ? ' ☠' : ''}</td>
+              <td style="color:${ELEMENTS[r.el]?.color || '#888'}">${EL(r.el)}</td>
+              <td style="text-align:right;font-weight:700;color:${col}">${r.v}</td>
+              <td style="text-align:right">${r.lo != null ? `${r1(r.lo)} – ${r1(r.hi)}` : '—'}</td>
+              <td style="text-align:right">${r.lo != null ? `${r1(r.loR)} – ${r1(r.hiR)} <span style="color:#8a7d66">(${r.rp} %)</span>` : '—'}</td>
+              <td style="text-align:right">${r.ratio != null ? r.ratio.toFixed(2) : '—'}</td></tr>`;
+          }).join('') || '<tr><td colspan="7" style="padding:10px;color:#b9a98c">Aucun coup de sort dans ce combat.</td></tr>'}
+        </table>
+      </div>
+      <div style="color:#8a7d66;font-size:11px">Vert = dans la fourchette, rouge = hors fourchette, gris = non comparable (coup fatal ☠ plafonné par la vie, buff actif, ligne inconnue). « Copier le récap » puis colle-le moi.</div>`);
+    ov.addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-a="copy"]');
+      if (!b) return;
+      try { await navigator.clipboard.writeText(text); b.textContent = '✔ Copié'; } catch { b.textContent = '❌ Copie impossible'; }
+    });
+    document.body.appendChild(ov);
   }
 
   async function openSpellList() {
@@ -2427,7 +2605,9 @@
       return;
     }
     const { spells, favs, variableOnly, chunks } = data;
-    const NO_FILTERS = { q: '', target: '', el: '', sort: 'avg', dir: -1, favOnly: false };
+    const NO_FILTERS = { q: '', target: '', el: '', sort: 'avg', dir: -1, favOnly: false, real: false };
+    const baseOf = new Map(spells.map((sp) => [sp, { ...sp }]));   // valeurs de base de chaque sort
+    let charStats = null, statsMsg = '';
     let f = { ...NO_FILTERS };
     try { f = { ...f, ...JSON.parse(localStorage.getItem(SPELL_FILTERS_KEY) || '{}'), q: '' }; } catch { /* stockage indisponible */ }
     const saveFilters = () => { try { localStorage.setItem(SPELL_FILTERS_KEY, JSON.stringify(f)); } catch { /* idem */ } };
@@ -2438,13 +2618,17 @@
     const SORTS = [['avg', 'Dégâts totaux'], ['perAp', 'Dégâts / PA'], ['ap', 'Coût en PA'], ['name', 'Nom']];
     ov.innerHTML = `
       <div style="width:min(860px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
-        <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📚 Tierlist de mes sorts${DM.tip("Tous les sorts à dégâts de ta collection, avec les dégâts de base de la carte (sans tes caractéristiques). Un sort à plusieurs lignes de dégâts affiche leur total, même sur des éléments différents : toutes les lignes sont appliquées, sauf celles à x % de chance (comptées en moyenne, 🎲). Bombes, pièges et poisons comptent leurs dégâts (le poison, sur toute sa durée). Le cadenas met le sort en favori sur le site (toujours en haut de la liste de /deck).")}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
+        <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📚 Tierlist de mes sorts${DM.tip("Tous les sorts à dégâts de ta collection, avec les dégâts de base de la carte (sans tes caractéristiques). Un sort à plusieurs lignes de dégâts affiche leur total, même sur des éléments différents : toutes les lignes sont appliquées, sauf celles à x % de chance (comptées en moyenne, 🎲). Bombes, pièges et poisons comptent leurs dégâts (le poison, sur toute sa durée). Le cadenas met le sort en favori sur le site (toujours en haut de la liste de /deck).")}</b><button data-a="test" style="${btn}" data-tip="Compare mon calcul aux vrais coups de ton dernier combat (capturé automatiquement) : coup observé, estimation sans résistance et estimation avec les résistances de la cible. « Copier » pour me l’envoyer.">🧪 Tester le calcul</button><button data-a="x" style="${btn};background:transparent">✕</button></div>
         <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
           <input data-f="q" placeholder="Rechercher un sort…" style="${inp};flex:1;min-width:140px">
           <select data-f="target" style="${inp}"><option value="">Toutes cibles</option><option value="single">Cible unique</option><option value="zone">Zone</option></select>
           <select data-f="el" style="${inp}"><option value="">Tous éléments</option>${ELEMENTS.map((e, i) => `<option value="${i}">${e.name}</option>`).join('')}<option value="multi">Multi-éléments</option></select>
           <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" data-f="favOnly"> Favoris</label>
+          <label data-tip="Calcule les dégâts avec tes caractéristiques (lues sur ton dernier combat) : stat de l’élément + Puissance (+1 % par point), Dommages fixes à chaque ligne, % Dommages aux sorts, critique (chance de la carte + ton % Critique, coup ×1,25 estimé) et vision spectrale. Un sort multi-éléments ne profite que de tes éléments forts." style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-left:auto">
+            <span class="dm-sw" style="position:relative;width:34px;height:18px;border-radius:9px;background:#5a4a33;transition:.15s;flex:none"><span style="position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#eee;transition:.15s"></span></span>
+            <input type="checkbox" data-f="real" style="display:none"> Avec mes stats</label>
         </div>
+        <div data-k="stats" style="font-size:11px;color:#b9a98c;display:none"></div>
         <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><span style="color:#b9a98c">Trier :</span>
           ${SORTS.map(([k, l]) => `<button data-sort="${k}" style="${btn}">${l}</button>`).join('')}
           <span data-k="count" style="margin-left:auto;color:#b9a98c"></span>
@@ -2459,11 +2643,28 @@
       el.addEventListener(el.tagName === 'INPUT' && el.type !== 'checkbox' ? 'input' : 'change', () => {
         f[el.dataset.f] = el.type === 'checkbox' ? el.checked : el.value;
         saveFilters();
+        if (el.dataset.f === 'real') return applyStats();
         render();
       });
     }
+    // Interrupteur « Avec mes stats » : recalcul de tous les sorts avec les caractéristiques (ou retour aux valeurs de base)
+    async function applyStats() {
+      if (f.real && !charStats) {
+        statsMsg = 'Lecture de tes caractéristiques…';
+        render();
+        charStats = await fetchCharStats();
+        statsMsg = charStats ? '' : 'Caractéristiques introuvables : lance un combat puis rouvre la tierlist.';
+      }
+      for (const sp of spells) {
+        const d = f.real && charStats ? spellDamage(sp.card, charStats.stats) : baseOf.get(sp);
+        Object.assign(sp, { min: d.min, max: d.max, avg: d.avg, byEl: d.byEl, critP: d.critP || 0 });
+        sp.perAp = sp.ap ? sp.avg / sp.ap : Infinity;
+      }
+      render();
+    }
     ov.addEventListener('click', async (e) => {
       if (e.target.closest('[data-a="x"]')) return close();
+      if (e.target.closest('[data-a="test"]')) return openDamageTest(spells);
       const sb = e.target.closest('[data-sort]');
       if (sb) {
         const k = sb.dataset.sort;
@@ -2489,7 +2690,16 @@
     });
 
     const fmt = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
+    const STAT_SHOW = [['force', 'Force'], ['intelligence', 'Intel.'], ['chance', 'Chance'], ['agilite', 'Agi.'], ['puissance', 'Puissance'],
+      ['dommages', 'Dommages'], ['dommagesNeutre', 'Do Neutre'], ['dommagesTerre', 'Do Terre'], ['dommagesFeu', 'Do Feu'], ['dommagesEau', 'Do Eau'],
+      ['dommagesAir', 'Do Air'], ['critique', '% Crit'], ['dommagesCritiques', 'Do Crit'], ['dmgPctSorts', '% Do sorts'], ['po', 'PO']];
     function render() {
+      const sw = ov.querySelector('.dm-sw');
+      sw.style.background = f.real ? '#2e7d32' : '#5a4a33';
+      sw.firstElementChild.style.left = f.real ? '18px' : '2px';
+      const sb = $('[data-k="stats"]');
+      sb.style.display = f.real ? '' : 'none';
+      sb.textContent = statsMsg || (charStats ? `Tes stats (combat de ${DM.hhmm(charStats.at)}) : ${STAT_SHOW.filter(([k]) => +charStats.stats[k]).map(([k, l]) => `${l} ${charStats.stats[k]}`).join(' · ') || 'aucun bonus'} — dégâts avant résistances du monstre.` : '');
       const q = normName(f.q || '');
       const list = spells.filter((sp) => {
         if (q && !normName(sp.name).includes(q)) return false;
@@ -2525,13 +2735,13 @@
           <div style="min-width:0"><div style="font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(sp.desc)}">${esc(sp.name)}</div>
             <div style="font-size:11px;color:#b9a98c">${chips} ${tags}</div></div>
           <div style="text-align:center" title="Coût en PA"><b style="font-size:15px;color:#5aa9e6">${sp.ap}</b><div style="font-size:10px;color:#8a7d66">PA</div></div>
-          <div style="text-align:right;min-width:86px" title="Dégâts totaux (min – max)"><b style="font-size:15px">${fmt(sp.avg)}</b><div style="font-size:10px;color:#8a7d66">${sp.min} – ${sp.max}</div></div>
+          <div style="text-align:right;min-width:86px" title="${f.real ? `Dégâts moyens avec tes stats (critique ${Math.round((sp.critP || 0) * 100)} % compris) — min sans critique, max en critique` : 'Dégâts totaux (min – max)'}"><b style="font-size:15px">${fmt(sp.avg)}</b><div style="font-size:10px;color:#8a7d66">${sp.min} – ${sp.max}</div></div>
           <div style="text-align:right;min-width:56px" title="Dégâts moyens par PA"><b style="font-size:14px;color:#f0c04a">${sp.ap ? fmt(sp.perAp) : '—'}</b><div style="font-size:10px;color:#8a7d66">/ PA</div></div>
           <button data-fav="${sp.id}" title="${fav ? 'Favori sur le site : cliquer pour le retirer' : 'Mettre en favori sur le site (toujours en haut de /deck)'}" style="width:28px;height:28px;border-radius:50%;cursor:pointer;border:1px solid ${fav ? '#e0b040' : '#5a4a33'};background:${fav ? '#e0b040' : 'transparent'};color:${fav ? '#1d1812' : '#b9a98c'};font-size:13px">${fav ? '🔒' : '🔓'}</button>
         </div>`;
       }).join('') || '<div style="color:#b9a98c;padding:12px">Aucun sort ne correspond aux filtres.</div>';
     }
-    render();
+    if (f.real) applyStats(); else render();
   }
 
   // ---------- Bulle en bas à gauche + menu (pilote, chasse, autosell) ----------
