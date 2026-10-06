@@ -2646,6 +2646,19 @@
     87: 'resCritiques', 88: 'dommagesTerre', 89: 'dommagesFeu', 90: 'dommagesEau', 91: 'dommagesAir', 92: 'dommagesNeutre',
     120: 'dmgPctDistance', 121: 'resPctDistance', 122: 'dmgPctArmes', 123: 'dmgPctSorts', 124: 'resPctMelee', 125: 'dmgPctMelee' };
   const PRESTIGE_GEAR_PCT = 25;
+  // Cibles particulières (option de l'optimiseur) : % de résistance par élément [Neutre, Terre, Feu, Eau, Air], relevés
+  // sur l'état de combat (aucune résistance fixe). Kralamoure Géant = boss de guilde (10 tours, on vise le total de dégâts).
+  const BUILD_TARGETS = { krala: { name: 'Kralamoure Géant', resPct: [20, 20, 20, 30, 20] } };
+  // Objectifs de l'optimiseur (menu « Objectif ») : dégâts par tour (éventuellement contre une cible à résistances),
+  // ou une stat à maximiser (stat, valeur value(S), points de caractéristiques à y mettre : points) — les dégâts ne
+  // servent alors qu'à départager deux builds. Prospection : +1 par 10 de Chance (objets et points), vérifié en jeu.
+  const BUILD_GOALS = {
+    dps: { label: '⚔️ Dégâts par tour' },
+    krala: { label: '🐙 Dégâts sur Kralamoure', target: BUILD_TARGETS.krala },
+    prospection: { label: '💰 Prospection', stat: 'prospection', points: 'chance', also: ['chance'],
+      value: (S) => (S.prospection || 0) + Math.floor((S.chance || 0) / 10) },
+    sagesse: { label: '📚 Sagesse', stat: 'sagesse', points: 'sagesse', value: (S) => S.sagesse || 0 },
+  };
   const PRESTIGE_EXCLUDED = new Set(['pa', 'pm', 'po', 'invocations']);
   const SET_CACHE_KEY = 'dmSetBonuses';
   const SET_CACHE_MS = 7 * 24 * 3600 * 1000;
@@ -2907,8 +2920,16 @@
     say('Bonus de panoplie (dofusdb)…');
     const setFx = await fetchSetBonuses([...new Set(pool.map((c) => c.setName).filter(Boolean))]);
 
+    // cible à résistances : chaque élément pèse (1 − % rés.) — les dégâts d'un élément étant linéaires en B et N,
+    // réduire le profil du sort revient à appliquer la résistance à chaque coup
+    const goal = BUILD_GOALS[opts.goal] || (opts.krala ? BUILD_GOALS.krala : BUILD_GOALS.dps);   // opts.krala : ancienne case à cocher
+    const target = goal.target || null;
+    const goalStat = goal.stat || null;
+    const goalKeys = goalStat ? [goalStat, ...(goal.also || [])] : [];
+    const vsTarget = (pf) => (!pf || !target ? pf
+      : { ...pf, B: pf.B.map((b, el) => b * (1 - target.resPct[el] / 100)), N: pf.N.map((n, el) => n * (1 - target.resPct[el] / 100)) });
     const spells = sp.spells.filter((x) => !opts.deckOnly || sp.activeDeck.has(x.id))
-      .map((x) => ({ ...x, pf: spellProfile(x.card) })).filter((x) => x.pf);
+      .map((x) => ({ ...x, pf: vsTarget(spellProfile(x.card)) })).filter((x) => x.pf);
     if (!spells.length) throw new Error(opts.deckOnly ? 'Aucun sort de dégâts dans ton deck actif' : 'Aucun sort de dégâts');
     const K = Math.max(1, Math.min(6, +opts.k || 4));
     const pvMin = +opts.pvMin || 0;
@@ -2917,7 +2938,7 @@
 
     // utile = stats offensives, PA/PO, vitalité si PV minimum, ou panoplie
     const useful = (c) => c.src === 'worn' || c.setName || OFFENSE_KEYS.some((k) => (c.eff[k] || 0) > 0)
-      || (pvMin && ((c.eff.vitalite || 0) > 0 || (c.eff.pv || 0) > 0));
+      || (pvMin && ((c.eff.vitalite || 0) > 0 || (c.eff.pv || 0) > 0)) || goalKeys.some((k) => (c.eff[k] || 0) > 0);
     const cands = {};
     for (const s of slots) cands[s.accepts] ||= pool.filter((c) => c.type === s.accepts && useful(c) && !banned.has(c.id) && !(budget && c.price > budget));
 
@@ -2959,6 +2980,12 @@
       const buy = (S, al, k, R) => { const c = pointCost(sheet.tiers[k] || ELEM_POINT_TIERS, al[k]); if (c > R) return R; al[k]++; S[k] = (S[k] || 0) + 1; return R - c; };
       if (pvMin) while (pvOf(S0) < pvMin) { const r = buy(S0, alloc, 'vitalite', R0); if (r === R0) break; R0 = r; }
       const pa = paOf(S0);
+      if (goal.points) {   // objectif Sagesse, Prospection : tout le reste du capital dans la stat qui la donne
+        let R = R0;
+        for (;;) { const r = buy(S0, alloc, goal.points, R); if (r === R) break; R = r; }
+        while (R > 0) { const r = buy(S0, alloc, 'vitalite', R); if (r === R) break; R = r; }
+        return { S: S0, alloc, turn: bestTurn(spells, S0, pa, K) };
+      }
       let refS = S0, refTurn = bestTurn(spells, S0, pa, K), best = null;
       for (let it = 0; it < 3; it++) {
         const w = pointWeights(refTurn.used, refS);
@@ -3002,6 +3029,7 @@
       // seuils non atteints : on remonte d'abord ce qui manque (1 PA manquant compte comme 1000 PV)
       const short = (pvMin ? Math.max(0, pvMin - pv) : 0) + (paMin ? 1000 * Math.max(0, paMin - pa) : 0);
       if (short) return -1e9 - short;
+      if (goalStat) return goal.value(ev.S) + ev.turn.dmg * 1e-6 + pv * 1e-9;   // à stat égale : les dégâts, puis les PV
       return ev.turn.dmg + pv * 1e-4;   // à dégâts égaux, le plus de PV
     };
     // contraintes : un même objet (id) une seule fois ; arme à deux mains → pas de bouclier ; un exemplaire possédé par objet
@@ -3104,7 +3132,7 @@
     // cartes non offensives déjà dans le deck 3 (buffs, soins…) : conservées, c'est toi qui les choisis
     const dmgIds = new Set(sp.spells.map((x) => x.id));
     const keepCards = sp.deckIds(DECK_TARGET).filter((id) => !dmgIds.has(id) && !deck.some((x) => x.id === id)).slice(0, DECK_CARDS - deck.length);
-    return { sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, K, setFx, hdv: opts.hdv,
+    return { sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, K, setFx, hdv: opts.hdv, target, goal,
       pvMin, pvShort: pvMin && pvOf(nxt.S) < pvMin, paMin, paShort: paMin && paOf(nxt.S) < paMin, bank, budget, hdvFailed, realloc: opts.realloc !== false, cost: costOf(final), deck: deck.map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })),
       deckChunks: sp.chunks, keepCards };
   }
@@ -3122,12 +3150,15 @@
     ov.addEventListener('keydown', (e) => e.stopPropagation());
     let o = { k: 4, pvMin: '', deckOnly: false, hdv: false, realloc: true };
     try { o = { ...o, ...JSON.parse(localStorage.getItem(BUILD_OPTS_KEY) || '{}') }; } catch { /* stockage indisponible */ }
+    if (!BUILD_GOALS[o.goal]) o.goal = o.krala ? 'krala' : 'dps';   // ancienne case « Kralamoure »
+    delete o.krala;
     const inp = 'background:#2a231a;border:1px solid #5a4a33;border-radius:8px;color:#eee;padding:5px 8px;font:13px system-ui,sans-serif';
     const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:6px 12px;color:#fff;cursor:pointer;font:600 13px system-ui,sans-serif;background:#2a231a';
     ov.innerHTML = `
       <div style="width:min(900px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
-        <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🧬 Optimiseur de build${DM.tip("Cherche l’équipement qui maximise tes dégâts sur un tour : la meilleure combinaison de N sorts de dégâts qui tient dans tes PA, sur une cible sans résistances. Prend en compte fusion, prestige, bonus de panoplie (dofusdb) et PA gagnés par l’équipement. Les PV minimum évitent un build trop fragile.")}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
+        <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🧬 Optimiseur de build${DM.tip("Cherche l’équipement qui maximise l’objectif choisi. Par défaut, tes dégâts sur un tour : la meilleure combinaison de N sorts de dégâts qui tient dans tes PA, sur une cible sans résistances. Prend en compte fusion, prestige, bonus de panoplie (dofusdb) et PA gagnés par l’équipement. Les PV minimum évitent un build trop fragile.")}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
         <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
+          <label data-tip="Ce que l’optimiseur maximise.&#10;Dégâts par tour : sur une cible sans résistances.&#10;Kralamoure : contre le boss de guilde, ses résistances (20 % Neutre, Terre, Feu et Air, 30 % Eau) appliquées à chaque coup ; le combat dure 10 tours, seul le total de dégâts compte.&#10;Prospection : celle de l’équipement et des panoplies + 1 par 10 de Chance ; avec « Redistribuer mes points », tous tes points vont en Chance.&#10;Sagesse : idem, points en Sagesse.&#10;À égalité, le build qui fait le plus de dégâts.">Objectif <select data-o="goal" style="${inp}">${Object.entries(BUILD_GOALS).map(([k, g]) => `<option value="${k}">${g.label}</option>`).join('')}</select></label>
           <label>Sorts par tour <select data-o="k" style="${inp}">${[2, 3, 4, 5].map((n) => `<option value="${n}">${n}</option>`).join('')}</select></label>
           <label>PV minimum <input data-o="pvMin" type="number" min="0" placeholder="aucun" style="${inp};width:90px"></label>
           <label data-tip="Le build garde au moins ce nombre de PA (base 6, 7 dès le niveau 100, + PA de l’équipement et des panoplies, 12 au maximum). Vide = sans contrainte.">PA minimum <input data-o="paMin" type="number" min="0" max="12" placeholder="aucun" style="${inp};width:70px"></label>
@@ -3355,6 +3386,7 @@
     function render() {
       const r = result;
       const gain = r.nxtTurn.dmg - r.curTurn.dmg;
+      const gs = r.goal.stat, gA = gs ? r.goal.value(r.cur.S) : 0, gB = gs ? r.goal.value(r.nxt.S) : 0;
       const item = (c, slot, side) => (c ? `<span data-hover="${esc(slot)}|${side}" style="cursor:help">${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain;vertical-align:middle">` : ''} ${esc(itemLabel(c))}${c.src === 'hdv' ? ` <span style="color:#f0c04a">🛒 ${fmt(c.price)} K</span>` : ''}${c.src === 'bank' ? ` <span style="color:#8fb8ee">🏦 ${esc(c.bankName)}</span>` : ''}${c.bought ? ' <span style="color:#6fcf7a">✔ acheté</span>' : ''}</span>` : '<i style="color:#8a7d66">vide</i>');
       const sbtn = 'border:1px solid #5a4a33;border-radius:6px;padding:2px 7px;color:#fff;cursor:pointer;font:600 11px system-ui,sans-serif;background:#2a231a;margin-left:4px';
       const tools = (c) => (!c ? '' : `${c.src === 'bank' ? (c.queued ? '<span style="color:#6fcf7a;margin-left:4px">✔ en file d’échange</span>' : `<button data-bankq="${esc(c.uid)}" style="${sbtn};background:#2e6fbf" title="Ajoute cet objet à la file d’échange de ${esc(c.bankName)} : lance « Tout échanger » depuis son onglet, puis équipe-le">📦 File d’échange</button>`) : ''}${c.src === 'hdv' ? `<button data-buy="${esc(c.listingId)}" style="${sbtn};background:#8a5a1a" title="Acheter cette annonce (vendeur : ${esc(c.seller)}) — 2e clic pour confirmer">🛒 Acheter</button>` : ''}<button data-ban="${+c.id}" data-name="${esc(c.name)}" style="${sbtn}" title="Mettre en liste noire : ne plus jamais proposer cet objet">🚫</button>`);
@@ -3364,7 +3396,7 @@
         return `<tr style="border-top:1px solid #3a3024;${same ? 'color:#8a7d66' : ''}"><td style="padding:3px 6px">${esc(s.label)}</td><td>${item(a, s.slot, 'cur')}</td><td>${same ? '=' : '→'}</td><td style="${same ? '' : 'font-weight:700'}">${item(b, s.slot, 'new')}${same ? '' : tools(b)}</td></tr>`;
       }).join('');
       const turn = (t) => t.used.map((u) => `${esc(u.sp.name)} (${u.sp.ap} PA, ${fmt(u.v)})`).join(' + ') || '—';
-      const keys = ['pa', 'pv', ...OFFENSE_KEYS.filter((k) => k !== 'pa'), 'vitalite'];
+      const keys = [...new Set(['pa', 'pv', ...(gs ? [gs, ...(r.goal.also || [])] : []), ...OFFENSE_KEYS.filter((k) => k !== 'pa'), 'vitalite'])];
       const statRows = keys.map((k) => {
         const a = k === 'pa' ? r.paOf(r.cur.S) : k === 'pv' ? r.pvOf(r.cur.S) : r.cur.S[k] || 0;
         const b = k === 'pa' ? r.paOf(r.nxt.S) : k === 'pv' ? r.pvOf(r.nxt.S) : r.nxt.S[k] || 0;
@@ -3379,7 +3411,9 @@
       const owned = r.slots.some((s) => r.final[s.slot] && !['hdv', 'bank'].includes(r.final[s.slot].src) && r.final[s.slot] !== r.current[s.slot]);
       $('[data-k="out"]').innerHTML = `
         <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:baseline">
-          <div>Dégâts par tour : <b>${fmt(r.curTurn.dmg)}</b> → <b style="font-size:17px;color:#6fcf7a">${fmt(r.nxtTurn.dmg)}</b> ${gain > 0.5 ? `<span style="color:#6fcf7a">(+${fmt(gain)}, +${(gain / Math.max(1, r.curTurn.dmg) * 100).toFixed(1)} %)</span>` : '<span style="color:#b9a98c">(ton build est déjà le meilleur trouvé)</span>'}</div>
+          ${gs ? `<div>${esc(STAT_LABELS[gs] || gs)}${r.goal.also ? ' (Chance comprise)' : ''} : <b>${fmt(gA)}</b> → <b style="font-size:17px;color:#6fcf7a">${fmt(gB)}</b> ${gB - gA > 0 ? `<span style="color:#6fcf7a">(+${fmt(gB - gA)})</span>` : '<span style="color:#b9a98c">(ton build est déjà le meilleur trouvé)</span>'}</div>
+          <div style="font-size:12px">Dégâts par tour : ${fmt(r.curTurn.dmg)} → <b>${fmt(r.nxtTurn.dmg)}</b>${gain ? ` <span style="color:${gain > 0 ? '#6fcf7a' : '#ff7b6b'}">(${gain > 0 ? '+' : ''}${fmt(gain)})</span>` : ''}</div>`
+    : `<div>Dégâts par tour${r.target ? ` sur ${esc(r.target.name)} (résistances comprises)` : ''} : <b>${fmt(r.curTurn.dmg)}</b> → <b style="font-size:17px;color:#6fcf7a">${fmt(r.nxtTurn.dmg)}</b> ${gain > 0.5 ? `<span style="color:#6fcf7a">(+${fmt(gain)}, +${(gain / Math.max(1, r.curTurn.dmg) * 100).toFixed(1)} %)</span>` : '<span style="color:#b9a98c">(ton build est déjà le meilleur trouvé)</span>'}</div>`}
           ${hdvCost ? `<div style="color:#f0c04a">🛒 Achats HDV restants : ${fmt(hdvCost)} K${r.budget ? ` / budget ${fmt(r.budget)} K` : ''}</div>` : r.budget ? `<div style="color:#b9a98c">Budget ${fmt(r.budget)} K : aucun achat nécessaire</div>` : ''}
         </div>
         ${r.bank ? `<div style="font-size:12px;color:#8fb8ee">🏦 Banque ${esc(r.bank.name)} : ${r.bank.count} objet(s) disponible(s)${r.bank.bound ? `, ${r.bank.bound} lié(s) ignoré(s)` : ''}.</div>` : ''}
