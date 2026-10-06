@@ -20,7 +20,10 @@
   const humanDelay = () => (cfg.delayMin + Math.random() * Math.max(0, cfg.delayMax - cfg.delayMin)) * 1000;
   // Délai avant de relancer depuis l'écran de fin : en combat rapide, juste ce qu'il faut pour respecter
   // fastFightMinSec depuis le lancement précédent (+ un petit aléa) ; sinon le délai « humain » habituel.
-  const relaunchDelay = () => (cfg.fastFight
+  // Combat rapide désactivé (1.63.3) : le serveur impose désormais la durée des combats, recharger ne fait rien gagner.
+  const FAST_FIGHT_ENABLED = false;
+  const fastFight = () => FAST_FIGHT_ENABLED && !!cfg.fastFight;
+  const relaunchDelay = () => (fastFight()
     ? Math.max(0, (+cfg.fastFightMinSec || 0) * 1000 - (Date.now() - (cfg.lastLaunchAt || 0))) + 300 + Math.random() * 700
     : humanDelay());
   // ---------- Extension rechargée pendant que l'onglet reste ouvert ----------
@@ -534,7 +537,7 @@
 
       // Combat rapide : le serveur a déjà renvoyé le résultat ; recharger affiche directement l'écran de fin.
       const fightEnd = (document.documentElement.dataset.dmFightEnd || '').split(':');
-      if (cfg.fastFight && cfg.botFight && +fightEnd[1] >= pageLoadedAt && !presenceDialog()) {
+      if (fastFight() && cfg.botFight && +fightEnd[1] >= pageLoadedAt && !presenceDialog()) {
         DM.log(`combat rapide : résultat reçu (${fightEnd[0]}) ${((Date.now() - (cfg.lastLaunchAt || Date.now())) / 1000).toFixed(1)} s après le lancement → rechargement`);
         setStatus(`Combat rapide : ${fightEnd[0] === 'won' ? 'victoire' : 'défaite'} reçue — affichage du résultat…`);
         progress();
