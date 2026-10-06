@@ -39,6 +39,8 @@
     const quiet = (f) => { try { f(); } catch { /* pas encore initialisé */ } };
     quiet(() => clearInterval(ticker));
     quiet(() => clearInterval(aliveTimer));
+    quiet(() => clearInterval(eqTimer));
+    quiet(() => eqAsk?.host.remove());
     quiet(() => domObserver.disconnect());
     quiet(() => ui?.host.remove());
     quiet(() => queueBox?.remove());
@@ -1708,6 +1710,7 @@
     ...[1, 2, 3, 4, 5, 6].map((n) => ({ slot: `dofus${n}`, label: `Dofus ${n}`, em: '🥚', dofus: true })),
   ];
   let equipActionId = null;
+  const eqItemKey = (it) => `${it.id}|${it.fusion || 0}`;
 
   // Stats réelles d'un objet au tier de fusion donné (même calcul que itemStats du site).
   function fusedStats(st, type, fusion) {
@@ -1742,13 +1745,14 @@
 
   // Plan d'équipement : pour chaque type d'emplacement activé, les meilleurs objets (distincts) selon les stats choisies.
   // Un objet déjà porté et retenu reste à sa place ; seuls les emplacements qui gagnent au change sont modifiés.
-  function equipPlan(state, statKeys, enabled) {
+  // `exclude` : clés « id|fusion » d'objets de l'inventaire à ignorer (refusés dans la proposition automatique).
+  function equipPlan(state, statKeys, enabled, exclude = null) {
     const stats = statKeys.filter(Boolean);
     if (!stats.length) throw new Error('Choisis au moins une caractéristique');
     const on = (slot) => enabled[slot] !== false;
     const ok = (c) => c && !(c.lvl > state.level);   // niveau requis
     const pool = [
-      ...state.entries.filter(ok).map((e) => ({ ...e, from: null })),
+      ...state.entries.filter((e) => ok(e) && !exclude?.has(eqItemKey(e))).map((e) => ({ ...e, from: null })),
       ...state.slots.filter((s) => on(s.slot) && ok(s.cur)).map((s) => ({ ...s.cur, qty: 1, from: s.slot })),
     ];
     // normalisation par type d'objet : valeur / meilleure valeur du type (une cape à 400 Vita ≠ un anneau à 400 Vita)
@@ -2237,7 +2241,7 @@
       max-height: calc(100vh - 80px); overflow-y: auto; background: #1b1d22; color: #e8e6e1;
       border: 1px solid #3a3f48; border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.55);
       font-size: 13px; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
-    .panel[hidden] { display: none; }
+    .panel[hidden], .row[hidden] { display: none; }
     .sec { background: #262a31; border-radius: 8px; padding: 9px; display: flex; flex-direction: column; gap: 7px; }
     .head { display: flex; justify-content: space-between; align-items: center; font-weight: 700; }
     .muted { color: #9aa0a8; font-size: 12px; font-weight: 400; }
@@ -2345,6 +2349,15 @@
         </div>
         <div class="sec">
           <div class="head"><span>🛡️ Auto-équipement${DM.tip("Équipe automatiquement les meilleurs objets de ton inventaire selon 3 caractéristiques par ordre de priorité. La 1re compte pleinement, la 2e pour 35 % et la 3e pour 15 % : elles départagent les objets proches. Chaque stat est comparée au meilleur objet du même type (ex. meilleur chapeau). Les bonus de panoplie ne sont pas pris en compte.")}</span></div>
+          <div class="seg eqmode">
+            <button data-eqmode="off" data-tip="Pas de vérification automatique : utilise Aperçu / Équiper ci-dessous.">Off</button>
+            <button data-eqmode="semi" data-tip="Toutes les 3 min, vérifie l’inventaire. Si un objet ferait mieux, une fenêtre le propose avec l’écart de stats : ✔ pour l’équiper, ✖ pour ne plus jamais le proposer.">Semi</button>
+            <button data-eqmode="auto" data-tip="Toutes les 3 min, équipe directement les meilleurs objets (hors objets refusés en mode Semi).">Auto</button>
+          </div>
+          <div class="row" style="align-items:center;justify-content:space-between" data-k="eqDeclBox">
+            <span class="muted" data-k="eqDecl"></span>
+            <button data-k="eqDeclReset" data-tip="Oublier les objets refusés : ils pourront de nouveau être proposés." style="padding:2px 7px;font-size:12px">↺ Oublier</button>
+          </div>
           <div class="eqstats">
             ${[1, 2, 3].map((n) => `<b>${n}</b><select data-k="eqS${n}"></select>`).join('')}
           </div>
@@ -2474,6 +2487,20 @@
     };
     $('eqSlots').addEventListener('click', onSlotClick);
     $('eqDofus').addEventListener('click', onSlotClick);
+    for (const b of root.querySelectorAll('[data-eqmode]')) {
+      b.addEventListener('click', async () => {
+        await save({ equipAuto: b.dataset.eqmode });
+        renderUi();
+        if (b.dataset.eqmode !== 'off') autoEquipTick(true);   // première vérification tout de suite
+      });
+    }
+    $('eqDeclReset').addEventListener('click', async () => {
+      const equipDeclined = { ...(cfg.equipDeclined || {}) };
+      delete equipDeclined[eqAcct()];
+      eqSnooze.clear();
+      await save({ equipDeclined });
+      renderUi();
+    });
     $('eqPreview').addEventListener('click', () => previewEquip());
     $('eqGo').addEventListener('click', () => applyEquip());
 
@@ -2577,6 +2604,159 @@
     }
   }
 
+  // ---------- Auto-équipement automatique (Off / Semi / Auto) ----------
+  // Toutes les EQUIP_CHECK_MS, on recalcule le meilleur équipement (mêmes stats et emplacements que le menu).
+  // Auto : équipe directement. Semi : fenêtre de proposition, avec l'écart de stats ; « Non » = objet jamais reproposé
+  // (cfg.equipDeclined, par personnage : le stockage est commun aux deux comptes). Jamais pendant un combat ni sur /inventaire.
+  const EQUIP_CHECK_MS = 3 * 60000;
+  const EQUIP_SNOOZE_MS = 30 * 60000;   // proposition fermée (✕) : pas reproposée avant 30 min
+  let eqTimer = null, eqAutoBusy = false, eqAsk = null;
+  const eqSnooze = new Map();           // changement (emplacement > objet) → fermé à
+  const eqAcct = () => myName() || (chrome.extension?.inIncognitoContext ? 'privé' : 'normal');
+  const eqDeclined = () => new Set(cfg.equipDeclined?.[eqAcct()] || []);
+  const eqChangeKey = (c) => `${c.slot}>${eqItemKey(c.to)}`;
+  const statIdx = (k) => { const i = STAT_ORDER.indexOf(k); return i < 0 ? 999 : i; };
+
+  // Écart complet de stats (toutes les caractéristiques). Arme à deux mains : le bouclier retiré compte comme une perte.
+  function fullDiff(c, state) {
+    const before = { ...(c.from?.eff || {}) };
+    const shield = c.slot === 'arme' && c.to.two && !c.from?.two && state.slots.find((s) => s.slot === 'bouclier')?.cur;
+    if (shield) for (const [k, v] of Object.entries(shield.eff)) before[k] = (before[k] || 0) + v;
+    const keys = new Set([...Object.keys(before), ...Object.keys(c.to.eff)]);
+    const diff = [...keys].map((k) => [k, (c.to.eff[k] || 0) - (before[k] || 0)]).filter(([, d]) => d)
+      .sort((a, b) => statIdx(a[0]) - statIdx(b[0]));
+    return { diff, shield };
+  }
+
+  async function autoEquipTick(force = false) {
+    const mode = cfg.equipAuto || 'off';
+    if (dead || mode === 'off' || eqAutoBusy || equipBusy || !equipStats()[0] || eqAsk?.host.isConnected) return;
+    const path = location.pathname;
+    if (/^\/(inventaire|connexion)/.test(path) || (path.startsWith('/combat') && !endTitle())) return;
+    if (!isOwner() && document.visibilityState !== 'visible') return;   // onglet du pilote, ou onglet affiché
+    const acct = eqAcct(), now = Date.now();
+    if (!force && now - (cfg.equipCheckAt?.[acct] || 0) < EQUIP_CHECK_MS) return;
+    eqAutoBusy = true;
+    try {
+      await save({ equipCheckAt: { ...(cfg.equipCheckAt || {}), [acct]: now } });
+      const state = await fetchEquipState();
+      const plan = equipPlan(state, equipStats(), equipEnabled(), eqDeclined());
+      if (!plan.changes.length) return;
+      if (mode === 'auto') {
+        let done = 0;
+        try {
+          done = await runEquip(plan, state.chunks, (i) => { done = i; });
+        } finally {
+          const names = plan.changes.slice(0, done).map((c) => itemLabel(c.to));
+          if (names.length) tradeToast(`🛡️ Auto-équipement : ${names.join(', ')}`, 'ok');
+          eqState = null; eqPlanState = null;
+          renderUi();
+        }
+        return;
+      }
+      const fresh = plan.changes.filter((c) => now - (eqSnooze.get(eqChangeKey(c)) || 0) > EQUIP_SNOOZE_MS);
+      if (fresh.length && !eqAsk?.host.isConnected) showEquipAsk(plan, state);
+    } catch (e) {
+      DM.log(`auto-équipement : ${e.message || e}`);
+    } finally {
+      eqAutoBusy = false;
+    }
+  }
+
+  const ASK_CSS = `
+    :host { all: initial; }
+    * { box-sizing: border-box; font-family: system-ui, sans-serif; }
+    .box { position: fixed; right: 12px; top: 12px; z-index: 2147483646; width: 360px; max-width: calc(100vw - 24px);
+      max-height: calc(100vh - 24px); overflow-y: auto; background: #1b1d22; color: #e8e6e1; border: 1px solid #2e6fbf;
+      border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.55); font-size: 12px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+    .top { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 800; }
+    .x { margin-left: auto; background: none; border: 0; color: #9aa0a8; cursor: pointer; font-size: 15px; }
+    .muted { color: #9aa0a8; font-weight: 400; font-size: 11px; }
+    .row { background: #262a31; border: 1px solid #3a3f48; border-radius: 8px; padding: 7px; display: flex; flex-direction: column; gap: 5px; }
+    .items { display: flex; align-items: center; gap: 6px; }
+    .it { flex: 1; display: flex; align-items: center; gap: 5px; min-width: 0; }
+    .it img { width: 30px; height: 30px; object-fit: contain; flex: none; }
+    .it span { overflow: hidden; text-overflow: ellipsis; }
+    .it.to { font-weight: 700; }
+    .slot { font-weight: 800; color: #8fb8ee; }
+    .diff { display: flex; flex-wrap: wrap; gap: 3px 8px; }
+    .up { color: #6fcf7a; } .down { color: #ff7b6b; } .main { font-weight: 800; text-decoration: underline; }
+    .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    button.b { border: 0; border-radius: 6px; padding: 6px; color: #fff; font-weight: 700; cursor: pointer; background: #3a3f48; }
+    button.b.yes { background: #2e7d32; } button.b.no { background: #8a3a32; }
+    button.b:disabled { opacity: .5; cursor: default; }
+    .res { font-weight: 700; } .res.ok { color: #6fcf7a; } .res.err { color: #ff7b6b; }
+  `;
+
+  function showEquipAsk(plan, state) {
+    if (!document.body) return;
+    eqAsk?.host.remove();
+    const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) => `&#${ch.charCodeAt(0)};`);
+    const icon = (it) => (it?.icon ? `<img src="/img/items/${+it.icon}.png" alt="">` : '');
+    const host = document.createElement('div');
+    host.id = 'dm-equip-ask';
+    const root = host.attachShadow({ mode: 'open' });
+    const chosen = new Set(plan.stats);
+    const rows = plan.changes.map((c, i) => {
+      const { diff, shield } = fullDiff(c, state);
+      const d = diff.map(([k, v]) => `<span class="${v > 0 ? 'up' : 'down'}${chosen.has(k) ? ' main' : ''}">${v > 0 ? '+' : ''}${v} ${esc(statShort(k))}</span>`).join('');
+      return `<div class="row" data-i="${i}">
+        <div><span class="slot">${esc(c.label)}</span>${c.to.lvl ? ` <span class="muted">niv. ${+c.to.lvl}</span>` : ''}</div>
+        <div class="items">
+          <div class="it">${icon(c.from)}<span>${c.from ? esc(itemLabel(c.from)) : '<i class="muted">vide</i>'}</span></div>
+          <span>→</span>
+          <div class="it to">${icon(c.to)}<span>${esc(itemLabel(c.to))}</span></div>
+        </div>
+        ${shield ? `<div class="muted">Arme à deux mains : retire aussi ${esc(itemLabel(shield))}</div>` : ''}
+        <div class="diff">${d || '<span class="muted">aucun écart de stats</span>'}</div>
+        <div class="btns"><button class="b yes" data-a="yes">✔ Équiper</button><button class="b no" data-a="no">✖ Non, ne plus proposer</button></div>
+      </div>`;
+    }).join('');
+    root.innerHTML = `<style>${ASK_CSS}</style><div class="box">
+      <div class="top">🛡️ Nouveaux objets à équiper<button class="x" data-a="close" title="Plus tard (reproposé dans 30 min)">✕</button></div>
+      <div class="muted">Selon tes caractéristiques ${plan.stats.map((k) => `<b>${esc(statShort(k))}</b>`).join(', ')} (soulignées ci-dessous).</div>
+      ${rows}</div>`;
+    document.body.appendChild(host);
+    eqAsk = { host };
+    const pending = new Set(plan.changes.map((_, i) => i));
+    const close = () => {
+      for (const i of pending) eqSnooze.set(eqChangeKey(plan.changes[i]), Date.now());
+      host.remove();
+      if (eqAsk?.host === host) eqAsk = null;
+    };
+    const answered = (i) => { pending.delete(i); if (!pending.size) setTimeout(close, 1500); };
+    root.addEventListener('click', async (e) => {
+      const b = e.target.closest('button[data-a]');
+      if (!b || b.disabled) return;
+      if (b.dataset.a === 'close') return close();
+      const row = b.closest('.row');
+      const i = +row.dataset.i, c = plan.changes[i];
+      const done = (text, cls) => { row.querySelector('.btns').outerHTML = `<div class="res ${cls}">${esc(text)}</div>`; };
+      if (b.dataset.a === 'no') {
+        const acct = eqAcct();
+        const list = [...new Set([...(cfg.equipDeclined?.[acct] || []), eqItemKey(c.to)])];
+        await save({ equipDeclined: { ...(cfg.equipDeclined || {}), [acct]: list } });
+        done('Refusé : ne sera plus proposé', 'err');
+        renderUi();
+        return answered(i);
+      }
+      if (equipBusy || eqAutoBusy) return;
+      row.querySelectorAll('button').forEach((x) => { x.disabled = true; });
+      eqAutoBusy = true;
+      try {
+        await runEquip({ changes: [c], stats: plan.stats }, state.chunks);
+        done('✔ Équipé', 'ok');
+        eqState = null; eqPlanState = null;
+        renderUi();
+      } catch (err) {
+        done(`❌ ${err.message || err}`, 'err');
+      } finally {
+        eqAutoBusy = false;
+        answered(i);
+      }
+    });
+  }
+
   function renderEquip() {
     const $ = ui.$;
     const stats = equipStats();
@@ -2595,6 +2775,10 @@
     const htmlD = EQUIP_SLOTS.filter((d) => d.dofus).map(slotHtml).join('');
     if ($('eqSlots').dmHtml !== html) { $('eqSlots').dmHtml = html; $('eqSlots').innerHTML = html; }
     if ($('eqDofus').dmHtml !== htmlD) { $('eqDofus').dmHtml = htmlD; $('eqDofus').innerHTML = htmlD; }
+    for (const b of ui.root.querySelectorAll('[data-eqmode]')) b.classList.toggle('on', b.dataset.eqmode === (cfg.equipAuto || 'off'));
+    const nDecl = cfg.equipDeclined?.[eqAcct()]?.length || 0;
+    $('eqDeclBox').hidden = !nDecl;
+    $('eqDecl').textContent = `${nDecl} objet(s) refusé(s), plus proposé(s)`;
     $('eqPreview').disabled = equipBusy || !stats[0];
     $('eqGo').disabled = equipBusy || !eqPlanState?.changes.length;
     $('eqGo').textContent = eqPlanState?.changes.length ? `✅ Équiper (${eqPlanState.changes.length})` : '✅ Équiper';
@@ -2815,6 +2999,7 @@
     await attackFromLink();
     runBuyTab();
     ticker = setInterval(tick, TICK_MS);
+    eqTimer = setInterval(() => autoEquipTick(), 15000);
     tick();
   })();
 })();

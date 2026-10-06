@@ -26,6 +26,10 @@ Tes réglages (webhook Discord, objets verrouillés, file d'échange…) sont co
 
 Dans le menu 🤖 en jeu, section **🛡️ Auto-équipement** : choisis jusqu'à 3 caractéristiques par ordre de priorité (la 1re compte pleinement, la 2e pour 35 %, la 3e pour 15 %) et les emplacements à optimiser (clic sur un emplacement pour l'activer ou le désactiver). **🔍 Aperçu** montre les objets qui seraient équipés et l'écart de stats, **✅ Équiper** les équipe. Les bonus de panoplie ne sont pas pris en compte.
 
+Le sélecteur **Off / Semi / Auto** vérifie l'inventaire toutes les 3 minutes (jamais pendant un combat) :
+- **Auto** équipe directement les meilleurs objets ;
+- **Semi** ouvre une fenêtre qui propose chaque changement avec l'écart de stats (gagnées en vert, perdues en rouge) : **✔ Équiper** ou **✖ Non** (l'objet n'est plus jamais proposé ; **↺ Oublier** efface ces refus). Fermer la fenêtre avec ✕ la repropose 30 minutes plus tard.
+
 ## Échange entre deux comptes
 
 Connecte un compte dans une fenêtre normale et l'autre dans une fenêtre de navigation privée. Sur `/inventaire` ou dans l'onglet *Vendre* de l'HDV :
