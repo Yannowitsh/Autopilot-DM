@@ -1730,13 +1730,15 @@
   }
 
 
-  // ---------- Auto-équipement : meilleurs objets pour 3 caractéristiques par ordre de priorité ----------
+  // ---------- Auto-équipement : meilleurs objets pour 5 caractéristiques (dont 2 facultatives) par ordre de priorité ----------
   // Server action « equipItem(itemId, fusion, emplacement) » sur /inventaire → {} ou { error }.
   // Emplacements (props.slots de /inventaire) : chapeau, cape, amulette, anneau1-2, ceinture, bottes, arme, bouclier,
   // familier, dofus1-6 ; chacun « accepte » un type d'objet (champ s de l'objet). Les objets portés ne sont pas dans entries.
   const EQUIP_ACTION_FALLBACK = '706383ea472542e23da3f7d81239188959e316dda0';
-  // Poids des 3 stats choisies : la 1re décide, les 2 autres départagent / ajoutent un peu de valeur.
-  const EQUIP_WEIGHTS = [1, 0.35, 0.15];
+  // Poids des stats choisies, par position : la 1re décide, les suivantes départagent / ajoutent un peu de valeur.
+  // Les 4e et 5e sont facultatives (poids faibles) : non choisies, elles ne changent rien.
+  const EQUIP_WEIGHTS = [1, 0.35, 0.15, 0.08, 0.04];
+  const EQUIP_N = EQUIP_WEIGHTS.length;
   // Constantes du jeu (FUSION et libellés), pour calculer les stats réelles d'un objet fusionné comme le site.
   const FUSION_RULES = { stepPct: 10, excluded: ['pa', 'pm', 'po', 'invocations'], dofusRadiantPct: 100, radiantPa: 2 };
   const STAT_LABELS = { pv: 'Points de vie', pa: 'PA', pm: 'PM', po: 'Portée', invocations: 'Invocations', vitalite: 'Vitalité', sagesse: 'Sagesse', force: 'Force', intelligence: 'Intelligence', chance: 'Chance', agilite: 'Agilité', critique: '% Critique', prospection: 'Prospection', initiative: 'Initiative', puissance: 'Puissance', soins: 'Soins', dommages: 'Dommages', dommagesTerre: 'Dommages Terre', dommagesFeu: 'Dommages Feu', dommagesEau: 'Dommages Eau', dommagesAir: 'Dommages Air', dommagesNeutre: 'Dommages Neutre', dommagesCritiques: 'Dommages Critiques', resCritiques: 'Résistance Critiques', dommagesPoussee: 'Dommages Poussée', resPoussee: 'Résistance Poussée', resPctTerre: '% Résistance Terre', resPctFeu: '% Résistance Feu', resPctEau: '% Résistance Eau', resPctAir: '% Résistance Air', resPctNeutre: '% Résistance Neutre', resTerre: 'Résistance Terre', resFeu: 'Résistance Feu', resEau: 'Résistance Eau', resAir: 'Résistance Air', resNeutre: 'Résistance Neutre', fuite: 'Fuite', tacle: 'Tacle', esquivePA: 'Esquive PA', esquivePM: 'Esquive PM', retraitPA: 'Retrait PA', retraitPM: 'Retrait PM', renvoi: 'Renvoi de dommages', pods: 'Pods', dmgPctDistance: '% Dommages distance', dmgPctMelee: '% Dommages mêlée', dmgPctArmes: '% Dommages d’armes', dmgPctSorts: '% Dommages aux sorts', resPctDistance: '% Résistance distance', resPctMelee: '% Résistance mêlée', resPctAll: '% Résistance (tous éléments)', resAll: 'Réduction de dommages' };
@@ -1788,7 +1790,8 @@
   // Un objet déjà porté et retenu reste à sa place ; seuls les emplacements qui gagnent au change sont modifiés.
   // `exclude` : clés « id|fusion » d'objets de l'inventaire à ignorer (refusés dans la proposition automatique).
   function equipPlan(state, statKeys, enabled, exclude = null) {
-    const stats = statKeys.filter(Boolean);
+    const weighted = statKeys.slice(0, EQUIP_N).map((k, i) => [k, EQUIP_WEIGHTS[i]]).filter(([k]) => k);
+    const stats = weighted.map(([k]) => k);
     if (!stats.length) throw new Error('Choisis au moins une caractéristique');
     const on = (slot) => enabled[slot] !== false;
     const ok = (c) => c && !(c.lvl > state.level);   // niveau requis
@@ -1801,7 +1804,7 @@
     for (const c of [...pool, ...state.slots.map((s) => s.cur).filter(Boolean)]) {
       for (const k of stats) best[`${c.type}|${k}`] = Math.max(best[`${c.type}|${k}`] || 0, c.eff[k] || 0);
     }
-    const score = (c) => (c ? stats.reduce((n, k, i) => n + EQUIP_WEIGHTS[i] * (c.eff[k] || 0) / (best[`${c.type}|${k}`] || 1), 0) : -Infinity);
+    const score = (c) => (c ? weighted.reduce((n, [k, w]) => n + w * (c.eff[k] || 0) / (best[`${c.type}|${k}`] || 1), 0) : -Infinity);
     const rank = (a, b) => score(b) - score(a) || b.lvl - a.lvl || b.rarity - a.rarity || b.fusion - a.fusion;
     const EPS = 1e-9;
 
@@ -1839,7 +1842,9 @@
       unchanged += group.length - free.length;
       free.forEach((s, i) => {
         const p = toPlace[i];
-        if (p && score(p) > Math.max(score(s.cur), 0) + EPS) {
+        // emplacement vide : rempli même par un objet sans aucune des stats choisies (mieux que rien),
+        // le classement (niveau, rareté, fusion) départage ; sinon il faut faire mieux que l'objet porté
+        if (p && (s.cur ? score(p) > Math.max(score(s.cur), 0) + EPS : score(p) >= 0)) {
           const delta = stats.map((k) => [k, (p.eff[k] || 0) - (s.cur?.eff[k] || 0)]).filter(([, d]) => d);
           changes.push({ slot: s.slot, label: s.label, from: s.cur, to: p, delta });
         } else unchanged++;
@@ -2412,7 +2417,7 @@
           <ul class="fuse" data-k="fuseList"></ul>
         </div>
         <div class="sec">
-          <div class="head"><span>🛡️ Auto-équipement${DM.tip("Équipe automatiquement les meilleurs objets de ton inventaire selon 3 caractéristiques par ordre de priorité. La 1re compte pleinement, la 2e pour 35 % et la 3e pour 15 % : elles départagent les objets proches. Chaque stat est comparée au meilleur objet du même type (ex. meilleur chapeau). Les bonus de panoplie ne sont pas pris en compte.")}</span></div>
+          <div class="head"><span>🛡️ Auto-équipement${DM.tip("Équipe automatiquement les meilleurs objets de ton inventaire selon jusqu’à 5 caractéristiques par ordre de priorité. La 1re compte pleinement, la 2e pour 35 %, la 3e pour 15 %, puis les 4e et 5e (facultatives) pour 8 % et 4 % : elles départagent les objets proches. Un emplacement vide est toujours rempli, même par un objet sans ces stats. Chaque stat est comparée au meilleur objet du même type (ex. meilleur chapeau). Les bonus de panoplie ne sont pas pris en compte.")}</span></div>
           <div class="seg eqmode">
             <button data-eqmode="off" data-tip="Pas de vérification automatique : utilise Aperçu / Équiper ci-dessous.">Off</button>
             <button data-eqmode="semi" data-tip="Toutes les 3 min, vérifie l’inventaire. Si un objet ferait mieux, une fenêtre le propose avec l’écart de stats : ✔ pour l’équiper, ✖ pour ne plus jamais le proposer.">Semi</button>
@@ -2423,7 +2428,7 @@
             <button data-k="eqDeclReset" data-tip="Oublier les objets refusés : ils pourront de nouveau être proposés." style="padding:2px 7px;font-size:12px">↺ Oublier</button>
           </div>
           <div class="eqstats">
-            ${[1, 2, 3].map((n) => `<b>${n}</b><select data-k="eqS${n}"></select>`).join('')}
+            ${[1, 2, 3, 4, 5].map((n) => `<b>${n}</b><select data-k="eqS${n}"></select>`).join('')}
           </div>
           <div class="muted">Emplacements à optimiser${DM.tip("Clique sur un emplacement pour l’activer ou le désactiver. Un emplacement désactivé (grisé) garde son objet actuel. Les icônes des objets portés s’affichent après un aperçu ; un contour vert = l’objet de cet emplacement va changer.")}</div>
           <div class="eqslots" data-k="eqSlots"></div>
@@ -2531,12 +2536,12 @@
       save({ lockedItems });
     });
 
-    for (const n of [1, 2, 3]) {
+    for (const n of [1, 2, 3, 4, 5]) {
       const sel = $(`eqS${n}`);
       sel.add(new Option(n === 1 ? '— choisir —' : '— aucune —', ''));
       for (const k of STAT_ORDER) sel.add(new Option(STAT_LABELS[k] || k, k));
       sel.addEventListener('change', () => {
-        const stats = [1, 2, 3].map((i) => $(`eqS${i}`).value);
+        const stats = [1, 2, 3, 4, 5].map((i) => $(`eqS${i}`).value);
         eqPlanState = null;
         save({ equipStats: stats }).then(renderUi);
       });
@@ -2624,7 +2629,7 @@
   // ---------- Auto-équipement (menu) ----------
   let equipBusy = false, eqPlanState = null, eqState = null, eqMsg = '', eqMsgCls = '';
   const setEqMsg = (text, cls = '') => { eqMsg = text; eqMsgCls = cls; renderUi(); };
-  const equipStats = () => cfg.equipStats || ['', '', ''];
+  const equipStats = () => [...(cfg.equipStats || []), '', '', '', '', ''].slice(0, 5);
   const equipEnabled = () => cfg.equipSlots || {};
   const statShort = (k) => STAT_LABELS[k] || k;
 
@@ -2824,7 +2829,7 @@
   function renderEquip() {
     const $ = ui.$;
     const stats = equipStats();
-    [1, 2, 3].forEach((n) => { const el = $(`eqS${n}`); if (ui.root.activeElement !== el) el.value = stats[n - 1] || ''; });
+    [1, 2, 3, 4, 5].forEach((n) => { const el = $(`eqS${n}`); if (ui.root.activeElement !== el) el.value = stats[n - 1] || ''; });
     const enabled = equipEnabled();
     const cur = Object.fromEntries((eqState?.slots || []).map((s) => [s.slot, s.cur]));
     const changing = new Set((eqPlanState?.changes || []).map((c) => c.slot));
