@@ -28,6 +28,8 @@ const DM = {
     autoBuyEnergy: false, // dès 20 d'énergie ou moins : rachète l'énergie au max (kamas), le farm ne s'arrête pas
     delayMin: 3,         // secondes entre deux combats
     delayMax: 8,
+    errorReloadSec: 5,   // page d'erreur du site (508 « Resource Limit Is Reached », 5xx…) : rechargée après N s
+    reloadGapSec: 30,    // anti-blocage : au plus un rechargement toutes les N s
     bossAlerts: true,    // alerte Discord quand le boss de chasse apparaît (indépendant du ON/OFF)
     notifyWanted: true,  // notifications Discord par type (voir DM.NOTIF)
     notifyDefeat: true,

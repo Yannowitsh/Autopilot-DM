@@ -1882,10 +1882,11 @@
   const FIGHT_STALL_MS = 40 * 1000;      // un combat en Auto se joue en ~10 s
   const PRESENCE_STALL_MS = 15 * 1000;   // combat toujours figé après avoir répondu à « Es-tu toujours là ? »
   const BLANK_STALL_MS = 20 * 1000;      // page vide
-  const ERROR_STALL_MS = 4 * 1000;       // page d'erreur serveur affichée
   const PENDING_MAX_MS = 15 * 1000;      // requête du jeu sans réponse (normalement < 1 s)
   const LOST_FIGHT_MS = 25 * 1000;       // /combat sans fin de combat ni aucune requête depuis le chargement
-  const RELOAD_MIN_GAP_MS = 30 * 1000;   // jamais plus d'un rechargement toutes les 30 s
+  // Réglables dans la popup : délai avant de recharger une page d'erreur, écart minimal entre deux rechargements.
+  const errorStallMs = () => Math.max(1, +cfg.errorReloadSec || 5) * 1000;
+  const reloadGapMs = () => Math.max(5, +cfg.reloadGapSec || 30) * 1000;
   const MAX_STUCK_RELOADS = 3;           // au-delà : retour à la page d'accueil du mode
   const ERROR_PAGE = /Application error|client-side exception|Internal Server Error|Bad Gateway|Service (Temporarily )?Unavailable|Gateway Time-?out|Web server is down|Connection timed out|This page couldn.t load|Resource Limit|Erreur serveur|\b(erreur|error)\s*5\d\d\b/i;
   const ERROR_TITLE = /^\s*((erreur|error)\s*)?5\d\d\b|\b(erreur|error)\s*5\d\d\b/i;   // titre « Erreur 508 », « 503 Service… »
@@ -1923,7 +1924,7 @@
     let why = null;
     if (launchAt && now - launchAt > LAUNCH_TIMEOUT_MS) why = 'lancement du combat sans réponse';
     else if (busy && now - busySince > BUSY_TIMEOUT_MS + cfg.delayMax * 1000) why = 'pilote bloqué';
-    else if (oddKind === 'error' && now - oddSince > ERROR_STALL_MS) why = 'erreur serveur';
+    else if (oddKind === 'error' && now - oddSince > errorStallMs()) why = 'erreur serveur';
     else if (oddKind === 'blank' && now - oddSince > BLANK_STALL_MS) why = 'page vide';
     else if (pendingFor(now) > PENDING_MAX_MS) why = `requête sans réponse depuis ${Math.round(pendingFor(now) / 1000)} s`;
     else if (!waitingPresence && presenceAt && inFight && now - presenceAt > PRESENCE_STALL_MS) why = 'combat figé après la vérification de présence';
@@ -1932,7 +1933,7 @@
     // (seulement si netwatch.js tourne dans la page, sinon le compteur de requêtes reste à 0)
     if (!why && !waitingPresence && inFight && cfg.botFight && document.documentElement.dataset.dmNetwatch
         && !pageActions() && !pendingFor(now) && now - pageLoadedAt > LOST_FIGHT_MS) why = 'combat introuvable (perdu par le serveur)';
-    if (!why || now - (cfg.lastStuckReload || 0) < RELOAD_MIN_GAP_MS) return false;
+    if (!why || now - (cfg.lastStuckReload || 0) < reloadGapMs()) return false;
     launchAt = 0;
     progress();
     const n = (cfg.stuckReloads || 0) + 1;

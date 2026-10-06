@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const NUM = ['minEnergy', 'resumeEnergy', 'delayMin', 'delayMax', 'updateCheckMin'];
+const NUM = ['minEnergy', 'resumeEnergy', 'delayMin', 'delayMax', 'errorReloadSec', 'reloadGapSec', 'updateCheckMin'];
 const BOOL = ['sellKeepAbove', 'bossAuto'];
 
 async function render() {
