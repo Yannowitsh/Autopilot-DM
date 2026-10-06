@@ -11,10 +11,14 @@ Extension Chrome : enchaîne l'Aventure ou la chasse, résout la vérification d
 
 ## Mises à jour
 
-Quand une nouvelle version sort, la popup de l'extension l'indique (un message s'affiche aussi en jeu) :
+Quand une nouvelle version sort, la popup de l'extension l'indique et un message s'affiche en jeu :
 
-1. Double-clique **`mettre-a-jour.bat`** dans le dossier `extension`.
-2. Clique **« ↻ Recharger l'extension »** dans la popup (ou ↻ sur `chrome://extensions`).
+1. Clique **« ⬇️ Installer »** dans la popup, ou sur le message en jeu.
+2. Sur la page qui s'ouvre, clique **« Installer la mise à jour »**. L'extension télécharge la nouvelle version, remplace ses fichiers et se recharge toute seule. Les onglets du jeu se rechargent aussi.
+
+**La première fois**, Chrome te demande de choisir le dossier `extension`, celui indiqué dans `chrome://extensions` → Détails → « Chargée depuis », puis d'autoriser sa modification. Coche **« Autoriser à chaque visite »** si Chrome le propose : ensuite, c'est un seul clic.
+
+En secours, tu peux aussi double-cliquer **`mettre-a-jour.bat`** dans le dossier `extension`, puis recharger l'extension dans `chrome://extensions`.
 
 Tes réglages (webhook Discord, objets verrouillés, file d'échange…) sont conservés : ils sont stockés dans Chrome, pas dans le dossier.
 

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Mise à jour · Autopilot-DM</title>
+  <style>
+    :root { --bg: #1b1d22; --panel: #262a31; --text: #e8e6e1; --muted: #9aa0a8; --ok: #6cc070; --err: #e0675c; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, sans-serif; display: grid; place-items: start center; min-height: 100vh; }
+    main { width: min(560px, calc(100% - 32px)); margin: 48px 0; display: flex; flex-direction: column; gap: 14px; }
+    h1 { font-size: 20px; margin: 0; }
+    .panel { background: var(--panel); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+    .muted { color: var(--muted); }
+    button { border: 0; border-radius: 8px; padding: 10px 14px; font: 600 14px system-ui, sans-serif; cursor: pointer; color: #fff; background: #2b5d8a; }
+    button.ghost { background: #3a3f48; }
+    button:disabled { opacity: .5; cursor: default; }
+    .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+    code { background: #14161a; padding: 1px 5px; border-radius: 4px; }
+    #log { margin: 0; padding-left: 18px; }
+    #log li.err { color: var(--err); }
+    #log li.ok { color: var(--ok); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>🤖 Autopilot-DM · mise à jour</h1>
+  <div class="panel">
+    <div>Version installée : <b id="cur">—</b> · disponible sur GitHub : <b id="avail">…</b></div>
+    <div class="muted" id="folderInfo">—</div>
+    <div class="btns">
+      <button id="go" disabled data-tip="Télécharge la dernière version depuis GitHub, remplace les fichiers du dossier de l’extension, puis recharge l’extension. Tes réglages sont conservés.">⬇️ Installer la mise à jour</button>
+      <button id="pick" class="ghost" data-tip="Choisir (ou changer) le dossier de l’extension sur ton PC : celui que tu as sélectionné dans chrome://extensions avec « Charger l’extension non empaquetée ».">📁 Choisir le dossier</button>
+    </div>
+  </div>
+  <div class="panel">
+    <strong>Déroulement</strong>
+    <ol id="log"><li class="muted">En attente.</li></ol>
+  </div>
+  <div class="panel muted" style="font-size:13px">
+    <div><b>Première fois :</b> Chrome te demande de choisir le dossier de l’extension (celui qui contient <code>manifest.json</code>), puis d’autoriser la modification. Coche « Autoriser à chaque visite » si Chrome le propose : les fois suivantes, un seul clic suffira.</div>
+    <div>Ton dossier est indiqué dans <code>chrome://extensions</code> → Autopilot-DM → Détails → « Chargée depuis ».</div>
+  </div>
+</main>
+<script src="shared.js"></script>
+<script src="update.js"></script>
+</body>
+</html>

@@ -175,7 +175,7 @@ $('checkNow').onclick = async () => {
   const upd = DM.pendingUpdate(await DM.getAll());
   $('msg').textContent = upd ? `🆕 Version ${upd} disponible (voir en haut).` : `À jour (v${chrome.runtime.getManifest().version}).`;
 };
-$('reloadExt').onclick = () => chrome.runtime.sendMessage({ type: 'reloadExtension' });
+$('installUpdate').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('update.html') });
 $('openRepo').onclick = () => chrome.tabs.create({ url: DM.REPO_URL });
 loadForm();
 render();

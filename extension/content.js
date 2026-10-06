@@ -936,13 +936,14 @@
   }
 
   let toastEl, toastTimer;
-  function tradeToast(text, cls) {
+  function tradeToast(text, cls, onClick = null) {
     if (!toastEl?.isConnected) {
       toastEl = document.createElement('div');
       document.body.appendChild(toastEl);
     }
     toastEl.textContent = text;
-    toastEl.style.cssText = `position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:2147483647;padding:10px 16px;border-radius:10px;font:600 14px system-ui,sans-serif;color:#fff;box-shadow:0 4px 16px #0008;background:${cls === 'err' ? '#a8322a' : '#2e7d32'}`;
+    toastEl.onclick = onClick;
+    toastEl.style.cssText = `cursor:${onClick ? 'pointer' : 'default'};position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:2147483647;padding:10px 16px;border-radius:10px;font:600 14px system-ui,sans-serif;color:#fff;box-shadow:0 4px 16px #0008;background:${cls === 'err' ? '#a8322a' : '#2e7d32'}`;
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => toastEl.remove(), 6000);
   }
@@ -2184,7 +2185,8 @@
     let shown = false;
     try { shown = sessionStorage.getItem('dmUpdateShown') === upd; if (upd) sessionStorage.setItem('dmUpdateShown', upd); } catch { /* stockage indisponible */ }
     if (upd && !shown) {
-      tradeToast(`🆕 Autopilot-DM ${upd} disponible : lance mettre-a-jour.bat puis « Recharger » dans la popup.`, 'ok');
+      tradeToast(`🆕 Autopilot-DM ${upd} disponible — clique ici pour l’installer.`, 'ok',
+        () => chrome.runtime.sendMessage({ type: 'openUpdate' }).catch(() => {}));
     }
     await attackFromLink();
     runBuyTab();

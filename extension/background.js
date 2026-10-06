@@ -210,9 +210,13 @@ async function checkUpdate(force = false) {
   }
 }
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   ensureAlarm();
   checkUpdate(true);
+  // Nouvelle version : les onglets du jeu tournent encore l'ancien script (déconnecté) → on les recharge.
+  if (reason === 'update') {
+    for (const t of await chrome.tabs.query({ url: DM.ORIGIN + '/*' })) chrome.tabs.reload(t.id).catch(() => {});
+  }
   chrome.storage.local.remove(['fastForward', 'ffArmAt', 'ffTries']);   // ancienne « avance rapide » des combats (retirée en 1.34.0)
 });
 chrome.runtime.onStartup.addListener(() => { ensureAlarm(); checkUpdate(); });
@@ -262,6 +266,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return true;
       }
       case 'reloadExtension': setTimeout(() => chrome.runtime.reload(), 100); return true;
+      case 'openUpdate': await chrome.tabs.create({ url: chrome.runtime.getURL('update.html') }); return true;
       case 'bossGo': return bossGo(sender.tab?.id);
       case 'bossDone': return bossFinish(msg.result);
       case 'buyEnergy': return buyStart(sender.tab?.id);
