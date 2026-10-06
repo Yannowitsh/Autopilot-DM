@@ -3148,7 +3148,6 @@
       return { S: a.S, active: st.active, alloc: a.alloc, turn: a.turn };
     };
     let evals = 0;
-    let tieRef = null;   // dégâts et PV du build actuel (départage des objectifs Prospection / Sagesse)
     const score = (build) => {
       evals++;
       const ev = evalBuild(build);
@@ -3159,13 +3158,12 @@
       // chaque PA vaut PA_VALUE_PCT % de l'objectif, même au-delà des PA offensifs (buffs, soins, cartes de classe…) :
       // un PA n'est plus échangé contre une broutille (ex. trophée PO = +0,4 % de dégâts par PO)
       // (objectif Dégâts sans PA offensifs fixés : chaque PA sert déjà à taper, pas de bonus en plus)
-      const paMult = goalStat || paOff ? (1 + PA_VALUE_PCT / 100) ** pa : 1;
+      const paMult = paOff ? (1 + PA_VALUE_PCT / 100) ** pa : 1;
       if (goalStat) {
-        // à stat égale : dégâts et PV pèsent autant, en proportion de ton build actuel (+5 % de PV vaut +5 % de dégâts),
-        // puis on garde ce que tu portes ; le tout vaut moins d'un point de la stat visée, donc reste secondaire
-        const tie = tieRef ? ev.turn.dmg / tieRef.dmg + pv / tieRef.pv : 0;
+        // Prospection / Sagesse : seule la stat visée compte (ni dégâts, ni PV, ni PA au-delà des minimums) ;
+        // à stat égale, on garde ce que tu portes : un objet n'est changé que s'il en apporte plus
         const kept = slots.reduce((n, s) => n + (build[s.slot] === current[s.slot] ? 1 : 0), 0);
-        return goal.value(ev.S) * paMult + tie * 0.01 + kept * 1e-6;
+        return goal.value(ev.S) + kept * 1e-6;
       }
       return ev.turn.dmg * paMult + pv * 1e-4;   // à dégâts égaux, le plus de PV
     };
@@ -3240,8 +3238,6 @@
       return { build, best };
     }
 
-    const ref0 = evalBuild(current, false);
-    tieRef = { dmg: Math.max(1, ref0.turn.dmg), pv: Math.max(1, pvOf(ref0.S)) };
     say('Recherche du meilleur build…');
     let top = await climb(startBuild);
     const RESTARTS = 40;
@@ -3362,12 +3358,12 @@
       <div style="width:min(900px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
         <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🧬 Optimiseur de build${DM.tip("Cherche l’équipement qui maximise l’objectif choisi. Par défaut, tes dégâts sur un tour : le meilleur enchaînement de sorts de dégâts qui tient dans tes PA offensifs (tous tes PA si tu n’en fixes pas), sur une cible sans résistances. Prend en compte fusion, prestige, bonus de panoplie (dofusdb) et PA gagnés par l’équipement. Les PV minimum évitent un build trop fragile.")}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
         <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
-          <label data-tip="Ce que l’optimiseur maximise.&#10;Dégâts par tour : sur une cible sans résistances.&#10;Kralamoure : contre le boss de guilde, ses résistances (20 % Neutre, Terre, Feu et Air, 30 % Eau) appliquées à chaque coup ; le combat dure 10 tours, seul le total de dégâts compte.&#10;Prospection : celle de l’équipement et des panoplies + 1 par 10 de Chance ; avec « Redistribuer mes points », tous tes points vont en Chance.&#10;Sagesse : idem, points en Sagesse.&#10;À égalité : dégâts et PV comptent autant (en % de ton build actuel), puis l’objet que tu portes déjà est gardé.">Objectif <select data-o="goal" style="${inp}">${Object.entries(BUILD_GOALS).map(([k, g]) => `<option value="${k}">${g.label}</option>`).join('')}</select></label>
+          <label data-tip="Ce que l’optimiseur maximise.&#10;Dégâts par tour : sur une cible sans résistances.&#10;Kralamoure : contre le boss de guilde, ses résistances (20 % Neutre, Terre, Feu et Air, 30 % Eau) appliquées à chaque coup ; le combat dure 10 tours, seul le total de dégâts compte.&#10;Prospection : celle de l’équipement et des panoplies + 1 par 10 de Chance ; avec « Redistribuer mes points », tous tes points vont en Chance.&#10;Sagesse : idem, points en Sagesse.&#10;Seule cette stat compte (les dégâts et PV n’entrent pas en jeu, utilise PV / PA minimum pour un plancher) ; à égalité, l’objet que tu portes déjà est gardé.">Objectif <select data-o="goal" style="${inp}">${Object.entries(BUILD_GOALS).map(([k, g]) => `<option value="${k}">${g.label}</option>`).join('')}</select></label>
           <label data-tip="Ne propose que des objets jusqu’à ce niveau. Au-dessus de ton niveau actuel, c’est une prévision : PV, PA de base et points de caractéristiques (5 par niveau) de ce niveau-là ; les objets trop hauts pour toi aujourd’hui ne sont pas équipés et les points ne sont pas appliqués. Vide = ton niveau actuel.">Niveau max <input data-o="lvlMax" type="number" min="1" max="200" placeholder="le mien" style="${inp};width:70px"></label>
           <label data-tip="PA de ton tour qui servent à taper ; le reste va à tes buffs, shields, soins… Les dégâts comptés sont ceux du meilleur enchaînement de sorts offensifs (autant de sorts que ces PA le permettent). Les PA au-delà gardent leur valeur (+3 % chacun). Vide = tous tes PA servent à taper.">PA offensifs <input data-o="paOff" type="number" min="1" max="12" placeholder="tous" style="${inp};width:70px"></label>
           <label data-tip="Affichage seulement : nombre de sorts offensifs conseillés pour ton deck avec le build proposé (bouton « Écrire dans le deck 3 »). Ne change pas les objets choisis.">Sorts conseillés <select data-o="deckN" style="${inp}">${[2, 3, 4, 5, 6, 7, 8].map((n) => `<option value="${n}">${n}</option>`).join('')}</select></label>
           <label>PV minimum <input data-o="pvMin" type="number" min="0" placeholder="aucun" style="${inp};width:90px"></label>
-          <label data-tip="Le build garde au moins ce nombre de PA (base 6, 7 dès le niveau 100, + PA de l’équipement et des panoplies, 12 au maximum). Vide = sans contrainte. Au-delà du minimum, chaque PA compte quand même pour +3 % de l’objectif : il n’est pas sacrifié pour un petit bonus.">PA minimum <input data-o="paMin" type="number" min="0" max="12" placeholder="aucun" style="${inp};width:70px"></label>
+          <label data-tip="Le build garde au moins ce nombre de PA (base 6, 7 dès le niveau 100, + PA de l’équipement et des panoplies, 12 au maximum). Vide = sans contrainte. En objectif Dégâts avec des PA offensifs fixés, chaque PA au-delà compte quand même pour +3 % : il n’est pas sacrifié pour un petit bonus.">PA minimum <input data-o="paMin" type="number" min="0" max="12" placeholder="aucun" style="${inp};width:70px"></label>
           <label style="cursor:pointer"><input data-o="deckOnly" type="checkbox"> Sorts du deck actif uniquement</label>
           <label style="cursor:pointer" data-tip="Considère tous tes points de caractéristiques comme redistribuables (comme après une réinitialisation) : l’optimiseur choisit en même temps l’équipement et la répartition. Décoché : tes points restent comme ils sont."><input data-o="realloc" type="checkbox"> Redistribuer mes points</label>
           <label style="cursor:pointer" data-tip="Ajoute les objets de ton autre compte (onglet ouvert en navigation privée ou normale), sauf ceux encore liés (reçus ou achetés il y a moins de 24 h). Un bouton les met dans la file d’échange de ce compte."><input data-o="bank" type="checkbox"> Inclure la banque (autre compte)</label>
