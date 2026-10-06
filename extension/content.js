@@ -2472,6 +2472,8 @@
   // Pour chaque carte jouée : les lignes de dégâts qui suivent dans le journal (jusqu'à la carte / au tour suivant),
   // appariées dans l'ordre aux lignes de la carte du même élément. Observé = v + absorbé (bouclier).
   // Estimation « sans rés. » = formule de la tierlist ; « avec rés. » = (x − rés. fixe) × (1 − % rés.) de la cible.
+  // Zone : seule la cible visée prend 100 % ; les autres cibles touchées prennent ~60 % (vérifié sur un récap de combat).
+  const ZONE_FALLOFF = 0.6;
   const EL_RES_PCT = ['resPctNeutre', 'resPctTerre', 'resPctFeu', 'resPctEau', 'resPctAir'];
   const EL_RES = ['resNeutre', 'resTerre', 'resFeu', 'resEau', 'resAir'];
   function damageTest(fight, spells) {
@@ -2499,12 +2501,15 @@
         const e = lines[li];
         const crit = !!(D.crit ?? L.crit);
         const fatal = log[j + 1]?.t === 'death' && log[j + 1].who === D.who;
-        const row = { card: L.card, ap: card?.ap, target: tg.name, el: D.el, v: (+D.v || 0) + (+D.absorbed || 0), crit, fatal, buffed };
+        const secondary = !!L.target && D.who !== L.target;   // autre cible touchée par la zone
+        const row = { card: L.card, ap: card?.ap, target: tg.name, el: D.el, v: (+D.v || 0) + (+D.absorbed || 0), crit, fatal, buffed,
+          secondary };
         if (e) {
           const n = e.k === 'poison' ? Math.max(1, +(e.turns || e.dur) || 1) : 1;
           const mult = 1 + (S(EL_STAT[D.el]) + S('puissance')) / 100, fixed = S('dommages') + S(EL_DMG[D.el]);
           const val = (b) => (crit ? b * CRIT_MULT * mult + fixed + S('dommagesCritiques') : b * mult + fixed) * pct;
-          row.lo = val(+e.min || 0) * n; row.hi = val(+(e.max ?? e.min) || 0) * n;
+          const zf = secondary ? ZONE_FALLOFF : 1;
+          row.lo = val(+e.min || 0) * n * zf; row.hi = val(+(e.max ?? e.min) || 0) * n * zf;
           const rp = Math.min(+tg.resCap || 100, (+tg.stats?.[EL_RES_PCT[D.el]] || 0) + (+tg.stats?.resPctAll || 0));
           const rf = +tg.stats?.[EL_RES[D.el]] || 0;
           const adj = (x) => Math.max(0, (x - rf) * (1 - rp / 100));
@@ -2542,10 +2547,11 @@
     const text = [
       `Test calcul dégâts — combat ${fight.kind || ''} du ${new Date(fight.at).toLocaleString('fr-FR')} (${fight.status || ''})`,
       `Stats : ${statLine}`,
-      ...rows.map((r) => `${r.card} (${r.ap ?? '?'} PA) → ${r.target} : ${r.v} ${EL(r.el)}${r.crit ? ' CRIT' : ''}${r.fatal ? ' (coup fatal)' : ''}${r.buffed ? ' [buff]' : ''}`
-        + (r.lo != null ? ` | estimé ${r1(r.lo)}-${r1(r.hi)} sans rés. | ${r1(r.loR)}-${r1(r.hiR)} avec rés. (${r.rp} %, ${r.rf} fixe) | ratio ${r.ratio.toFixed(2)}` : ' | ligne de la carte introuvable')),
+      ...rows.map((r) => `${r.card} (${r.ap ?? '?'} PA) → ${r.target} : ${r.v} ${EL(r.el)}${r.crit ? ' CRIT' : ''}${r.secondary ? ' [zone ×0,6]' : ''}${r.fatal ? ' (coup fatal)' : ''}${r.buffed ? ' [buff]' : ''}`
+        + (r.lo != null ? ` | estimé ${r1(r.lo)}-${r1(r.hi)} sans rés. | ${r1(r.loR)}-${r1(r.hiR)} avec rés. (${r.rp} %, ${r.rf} fixe) | ratio ${r.ratio.toFixed(2)}` : ` | ${card(r)}`)),
     ].join('\n');
     const okRows = rows.filter((r) => r.lo != null && !r.fatal && !r.buffed);
+    function card(r) { return r.ap == null ? 'arme ou carte hors collection : non gérée' : 'ligne de la carte introuvable'; }
     const inRange = okRows.filter((r) => r.v >= Math.floor(r.loR) - 1 && r.v <= Math.ceil(r.hiR) + 1).length;
     ov.innerHTML = box(`
       <div style="display:flex;gap:8px;align-items:center"><b style="flex:1;font-size:15px">🧪 Test du calcul — dernier combat (${esc(new Date(fight.at).toLocaleString('fr-FR'))})</b>
@@ -2559,7 +2565,7 @@
             const ok = r.lo != null && r.v >= Math.floor(r.loR) - 1 && r.v <= Math.ceil(r.hiR) + 1;
             const col = r.lo == null || r.fatal || r.buffed ? '#b9a98c' : ok ? '#6fcf7a' : '#ff7b6b';
             return `<tr style="border-top:1px solid #3a3024">
-              <td>${esc(r.card)}${r.crit ? ' <b style="color:#f0c04a">CRIT</b>' : ''}${r.buffed ? ' <span title="Un buff était actif : les stats ont pu changer">[buff]</span>' : ''}</td>
+              <td>${esc(r.card)}${r.crit ? ' <b style="color:#f0c04a">CRIT</b>' : ''}${r.secondary ? ' <span title="Autre cible touchée par la zone : estimation ×0,6">[zone ×0,6]</span>' : ''}${r.buffed ? ' <span title="Un buff était actif : les stats ont pu changer">[buff]</span>' : ''}${r.lo == null ? ` <span style="color:#8a7d66">(${esc(card(r))})</span>` : ''}</td>
               <td>${esc(r.target)}${r.fatal ? ' ☠' : ''}</td>
               <td style="color:${ELEMENTS[r.el]?.color || '#888'}">${EL(r.el)}</td>
               <td style="text-align:right;font-weight:700;color:${col}">${r.v}</td>
