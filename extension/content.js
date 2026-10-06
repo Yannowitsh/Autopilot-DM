@@ -2687,7 +2687,7 @@
     return JSON.parse(JSON.stringify({ ...rest, goalKey, bestiary: r.bestiary ? { count: r.bestiary.count, at: r.bestiary.at, zones } : null }));
   }
   function unpackBuild(d) {
-    const r = { ...d, goal: BUILD_GOALS[d.goalKey] || BUILD_GOALS.dps, pvOf: buildPvOf(d.sheet.level), paOf: buildPaOf(d.sheet.level) };
+    const r = { ...d, goal: BUILD_GOALS[d.goalKey] || BUILD_GOALS.dps, pvOf: buildPvOf(d.statLevel || d.sheet.level), paOf: buildPaOf(d.statLevel || d.sheet.level) };
     r.target = r.goal.target || null;
     // même objet des deux côtés (rien à changer sur l'emplacement) : identité rétablie après le passage en JSON
     for (const s of r.slots) if (r.final[s.slot] && r.final[s.slot].uid === r.current[s.slot]?.uid) r.final[s.slot] = r.current[s.slot];
@@ -2997,6 +2997,11 @@
     say('Lecture des sorts…');
     const sp = await fetchSpells();
     const level = sheet.level;
+    // Niveau max (option) : objets jusqu'à ce niveau. Au-dessus du niveau actuel, prévision : PV, PA de base et points
+    // de caractéristiques de ce niveau (5 points par niveau). Vide = niveau actuel.
+    const planLevel = Math.max(1, Math.min(200, Math.round(+opts.lvlMax || 0))) || level;
+    const statLevel = Math.max(level, planLevel);
+    const planCapital = sheet.capital + 5 * (statLevel - level);
     let gearMult = 1 + sheet.prestige * PRESTIGE_GEAR_PCT / 100;   // recalé plus bas sur la fiche (fitGearMult)
     const withPrestige = (eff) => {
       if (gearMult === 1) return eff;
@@ -3005,7 +3010,7 @@
       return o;
     };
     let pool = [
-      ...state.entries.filter((e) => !(e.lvl > level)).map((e) => ({ ...e, src: 'inv' })),
+      ...state.entries.filter((e) => !(e.lvl > planLevel)).map((e) => ({ ...e, src: 'inv' })),
       ...state.slots.filter((s) => s.cur).map((s) => ({ ...s.cur, src: 'worn', wornSlot: s.slot })),
     ];
     let bank = null;
@@ -3014,12 +3019,12 @@
       const r = await send({ type: 'peerGear' }).catch((e) => ({ ok: false, error: e.message }));
       if (!r?.ok) throw new Error(`Banque : ${r?.error || 'onglet de l’autre compte injoignable'}`);
       bank = { name: r.name || 'banque', count: r.entries.length, bound: r.bound || 0 };
-      pool.push(...r.entries.filter((e) => !(e.lvl > level)).map((e) => ({ ...e, src: 'bank', bankName: bank.name })));
+      pool.push(...r.entries.filter((e) => !(e.lvl > planLevel)).map((e) => ({ ...e, src: 'bank', bankName: bank.name })));
     }
     const hdvFailed = [];
     if (opts.hdv) {
       say('Lecture de l’HDV…');
-      pool.push(...await fetchHdvGear([...new Set(state.slots.map((s) => s.accepts))], level, hdvFailed));
+      pool.push(...await fetchHdvGear([...new Set(state.slots.map((s) => s.accepts))], planLevel, hdvFailed));
     }
     // bestiaire : objets lootables que tu n'as pas (ni porté, ni inventaire, ni banque, ni en vente à l'HDV fouillé)
     let bestiary = null;
@@ -3027,7 +3032,7 @@
       const b = await fetchBestiary(say);
       // seulement ce que tu possèdes : un objet aussi en vente à l'HDV reste lootable (sinon, au-dessus du budget, il disparaissait)
       const have = new Set(pool.filter((c) => c.src !== 'hdv').map((c) => c.id));
-      const add = b.items.filter((it) => !have.has(it.id) && !(it.lvl > level));
+      const add = b.items.filter((it) => !have.has(it.id) && !(it.lvl > planLevel));
       pool.push(...add.map((it) => ({ id: it.id, name: it.n, lvl: it.lvl, type: it.s, rarity: it.r, icon: it.icon, fusion: 0,
         setName: it.setName, two: it.two, eff: fusedStats(it.st, it.s, 0), src: 'drop' })));
       bestiary = { drops: b.drops, boss: b.boss, zones: b.zones, count: add.length, at: b.at };
@@ -3081,7 +3086,7 @@
       }
       return { S, active };
     };
-    const paOf = buildPaOf(level), pvOf = buildPvOf(level);
+    const paOf = buildPaOf(statLevel), pvOf = buildPvOf(statLevel);
     const turnOf = (S) => bestTurnPA(spells, S, paOff ? Math.min(paOff, paOf(S)) : paOf(S));
     // Gain de dégâts d'un point dans chaque stat d'élément, pour les sorts du tour `used` (formule linéaire par stat).
     const pointWeights = (used, S) => {
@@ -3098,7 +3103,7 @@
     const allocate = (gear) => {
       const alloc = Object.fromEntries(POINT_STATS.map((k) => [k, 0]));
       const S0 = { ...gear };
-      let R0 = sheet.capital;
+      let R0 = planCapital;
       const buy = (S, al, k, R) => { const c = pointCost(sheet.tiers[k] || ELEM_POINT_TIERS, al[k]); if (c > R) return R; al[k]++; S[k] = (S[k] || 0) + 1; return R - c; };
       if (pvMin) while (pvOf(S0) < pvMin) { const r = buy(S0, alloc, 'vitalite', R0); if (r === R0) break; R0 = r; }
       if (goal.points) {   // objectif Sagesse, Prospection : tout le reste du capital dans la stat qui la donne
@@ -3300,7 +3305,7 @@
       const types = [...new Set(drops.map((c) => c.type))];
       if (types.length) {
         if (!opts.hdv) say('Objets à looter : recherche à l’HDV…');
-        const offers = opts.hdv ? pool.filter((c) => c.src === 'hdv') : await fetchHdvGear(types, level, hdvFailed);
+        const offers = opts.hdv ? pool.filter((c) => c.src === 'hdv') : await fetchHdvGear(types, planLevel, hdvFailed);
         for (const c of drops) {
           const o = offers.filter((x) => x.id === c.id).sort((a, b) => a.price - b.price)[0];
           if (o) c.offer = { price: o.price, listingId: o.listingId, seller: o.seller, fusion: o.fusion };
@@ -3312,7 +3317,7 @@
     const curTurn = cur.turn, nxtTurn = nxt.turn;
     // contrôle du modèle : stats calculées pour l'équipement actuel vs fiche du jeu
     const checks = [
-      ['PV', pvOf(cur.S), sheet.pv], ['PA', paOf(cur.S), sheet.pa],
+      ['PV', buildPvOf(level)(cur.S), sheet.pv], ['PA', buildPaOf(level)(cur.S), sheet.pa],   // fiche = niveau actuel
       ...Object.keys(sheet.bonus).map((k) => [STAT_LABELS[k] || k, cur.S[k] || 0, (sheet.base[k] || 0) + sheet.bonus[k]]),
     ].filter(([, a, b]) => Number.isFinite(b));
     // deck conseillé : deckN sorts offensifs (ceux du tour d'abord, les plus forts ; complétés par les plus forts du build)
@@ -3322,7 +3327,7 @@
     // cartes non offensives déjà dans le deck 3 (buffs, soins…) : conservées, c'est toi qui les choisis
     const dmgIds = new Set(sp.spells.map((x) => x.id));
     const keepCards = sp.deckIds(DECK_TARGET).filter((id) => !dmgIds.has(id) && !deck.some((x) => x.id === id)).slice(0, DECK_CARDS - deck.length);
-    return { sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, paOff, deckN, setFx, hdv: opts.hdv, target, goal, bestiary,
+    return { sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, paOff, deckN, planLevel, statLevel, planCapital, setFx, hdv: opts.hdv, target, goal, bestiary,
       pvMin, pvShort: pvMin && pvOf(nxt.S) < pvMin, paMin, paShort: paMin && paOf(nxt.S) < paMin, bank, budget, hdvFailed, realloc: opts.realloc !== false, cost: costOf(final), deck: deck.map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })),
       deckChunks: sp.chunks, keepCards };
   }
@@ -3349,6 +3354,7 @@
         <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🧬 Optimiseur de build${DM.tip("Cherche l’équipement qui maximise l’objectif choisi. Par défaut, tes dégâts sur un tour : le meilleur enchaînement de sorts de dégâts qui tient dans tes PA offensifs (tous tes PA si tu n’en fixes pas), sur une cible sans résistances. Prend en compte fusion, prestige, bonus de panoplie (dofusdb) et PA gagnés par l’équipement. Les PV minimum évitent un build trop fragile.")}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
         <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
           <label data-tip="Ce que l’optimiseur maximise.&#10;Dégâts par tour : sur une cible sans résistances.&#10;Kralamoure : contre le boss de guilde, ses résistances (20 % Neutre, Terre, Feu et Air, 30 % Eau) appliquées à chaque coup ; le combat dure 10 tours, seul le total de dégâts compte.&#10;Prospection : celle de l’équipement et des panoplies + 1 par 10 de Chance ; avec « Redistribuer mes points », tous tes points vont en Chance.&#10;Sagesse : idem, points en Sagesse.&#10;À égalité, le build qui fait le plus de dégâts.">Objectif <select data-o="goal" style="${inp}">${Object.entries(BUILD_GOALS).map(([k, g]) => `<option value="${k}">${g.label}</option>`).join('')}</select></label>
+          <label data-tip="Ne propose que des objets jusqu’à ce niveau. Au-dessus de ton niveau actuel, c’est une prévision : PV, PA de base et points de caractéristiques (5 par niveau) de ce niveau-là ; les objets trop hauts pour toi aujourd’hui ne sont pas équipés et les points ne sont pas appliqués. Vide = ton niveau actuel.">Niveau max <input data-o="lvlMax" type="number" min="1" max="200" placeholder="le mien" style="${inp};width:70px"></label>
           <label data-tip="PA de ton tour qui servent à taper ; le reste va à tes buffs, shields, soins… Les dégâts comptés sont ceux du meilleur enchaînement de sorts offensifs (autant de sorts que ces PA le permettent). Les PA au-delà gardent leur valeur (+3 % chacun). Vide = tous tes PA servent à taper.">PA offensifs <input data-o="paOff" type="number" min="1" max="12" placeholder="tous" style="${inp};width:70px"></label>
           <label data-tip="Affichage seulement : nombre de sorts offensifs conseillés pour ton deck avec le build proposé (bouton « Écrire dans le deck 3 »). Ne change pas les objets choisis.">Sorts conseillés <select data-o="deckN" style="${inp}">${[2, 3, 4, 5, 6, 7, 8].map((n) => `<option value="${n}">${n}</option>`).join('')}</select></label>
           <label>PV minimum <input data-o="pvMin" type="number" min="0" placeholder="aucun" style="${inp};width:90px"></label>
@@ -3582,7 +3588,7 @@
       const eq = e.target.closest('[data-a="equip"]');
       if (eq && result && !eq.disabled) {
         const changes = result.slots.map((s) => ({ s, to: result.final[s.slot], from: result.current[s.slot] }))
-          .filter(({ to, from }) => to && !['hdv', 'bank', 'drop'].includes(to.src) && to !== from)
+          .filter(({ to, from }) => to && !['hdv', 'bank', 'drop'].includes(to.src) && to !== from && !(to.lvl > result.sheet.level))
           .map(({ s, to, from }) => ({ slot: s.slot, label: s.label, from, to }))
           .sort((a, b) => (a.slot === 'arme' ? -1 : b.slot === 'arme' ? 1 : 0));
         // déjà équipés lors d'un essai précédent (interrompu par une erreur) : on ne les refait pas
@@ -3674,7 +3680,8 @@
       const hdvCost = Object.values(r.final).filter((c) => c?.src === 'hdv').reduce((n, c) => n + c.price, 0);
       const deckHtml = r.deck.map((d, i) => `<span style="white-space:nowrap">${i + 1}. ${esc(d.sp.name)} <span style="color:#8a7d66">(${d.sp.ap} PA, ~${fmt(d.v)})</span></span>`).join(' · ');
       const badChecks = r.checks.filter(([, a, b]) => Math.abs(a - b) > Math.max(2, Math.abs(b) * 0.02));
-      const owned = r.slots.some((s) => r.final[s.slot] && !['hdv', 'bank', 'drop'].includes(r.final[s.slot].src) && r.final[s.slot] !== r.current[s.slot]);
+      const owned = r.slots.some((s) => r.final[s.slot] && !['hdv', 'bank', 'drop'].includes(r.final[s.slot].src) && r.final[s.slot] !== r.current[s.slot] && !(r.final[s.slot].lvl > r.sheet.level));
+      const ahead = (r.statLevel || r.sheet.level) > r.sheet.level;   // prévision à un niveau pas encore atteint
       $('[data-k="out"]').innerHTML = `
         <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:baseline">
           ${gs ? `<div>${esc(STAT_LABELS[gs] || gs)}${r.goal.also ? ' (Chance comprise)' : ''} : <b>${fmt(gA)}</b> → <b style="font-size:17px;color:#6fcf7a">${fmt(gB)}</b> ${gB - gA > 0 ? `<span style="color:#6fcf7a">(+${fmt(gB - gA)})</span>` : '<span style="color:#b9a98c">(ton build est déjà le meilleur trouvé)</span>'}</div>
@@ -3682,6 +3689,7 @@
     : `<div>Dégâts par tour${r.target ? ` sur ${esc(r.target.name)} (résistances comprises)` : ''} : <b>${fmt(r.curTurn.dmg)}</b> → <b style="font-size:17px;color:#6fcf7a">${fmt(r.nxtTurn.dmg)}</b> ${gain > 0.5 ? `<span style="color:#6fcf7a">(+${fmt(gain)}, +${(gain / Math.max(1, r.curTurn.dmg) * 100).toFixed(1)} %)</span>` : '<span style="color:#b9a98c">(ton build est déjà le meilleur trouvé)</span>'}</div>`}
           ${hdvCost ? `<div style="color:#f0c04a">🛒 Achats HDV restants : ${fmt(hdvCost)} K${r.budget ? ` / budget ${fmt(r.budget)} K` : ''}</div>` : r.budget ? `<div style="color:#b9a98c">Budget ${fmt(r.budget)} K : aucun achat nécessaire</div>` : ''}
         </div>
+        ${r.planLevel && r.planLevel !== r.sheet.level ? `<div style="font-size:12px;color:#8fd4ee">📅 ${ahead ? `Prévision au niveau ${r.planLevel} (tu es niveau ${r.sheet.level}) : objets jusqu’au niveau ${r.planLevel}, PV, PA et ${fmt(r.planCapital)} points de caractéristiques de ce niveau. Les objets au-dessus de ton niveau actuel ne seront pas équipés.` : `Objets limités au niveau ${r.planLevel} (tu es niveau ${r.sheet.level}).`}</div>` : ''}
         ${r.bestiary ? `<div style="font-size:12px;color:#c99bff">🐉 Bestiaire : ${r.bestiary.count} objet(s) lootable(s) à ton niveau que tu n’as pas, pris en compte (copie du ${new Date(r.bestiary.at).toLocaleString('fr-FR')})${drops.length ? ` — ${drops.length} à looter dans le build proposé${drops.some((c) => c.offer) ? `, dont ${drops.filter((c) => c.offer).length} en vente à l’HDV` : ''}` : ''}.</div>` : ''}
         ${r.bank ? `<div style="font-size:12px;color:#8fb8ee">🏦 Banque ${esc(r.bank.name)} : ${r.bank.count} objet(s) disponible(s)${r.bank.bound ? `, ${r.bank.bound} lié(s) ignoré(s)` : ''}.</div>` : ''}
         ${r.paShort ? `<div style="color:#ff7b6b;font-weight:700">⚠️ PA minimum (${r.paMin}) impossible à atteindre avec tes objets : le build ci-dessous est celui qui a le plus de PA (${r.paOf(r.nxt.S)}).</div>` : ''}
@@ -3691,10 +3699,11 @@
         <table style="border-collapse:collapse;width:100%;font-size:12px"><tr style="color:#b9a98c;text-align:left"><th style="padding:3px 6px">Emplacement</th><th>Actuel</th><th></th><th>Proposé</th></tr>${rows}</table>
         <div style="font-size:12px"><b>Panoplies</b> — actuel : ${sets(r.cur)} · proposé : ${sets(r.nxt)}</div>
         ${r.realloc ? `<div style="font-size:12px;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:6px 8px">
-          <b>📊 Points de caractéristiques</b> — ${fmt(r.sheet.capital)} points au total (${fmt(r.sheet.pointsFree)} libres actuellement)<br>
+          <b>📊 Points de caractéristiques</b> — ${fmt(r.planCapital ?? r.sheet.capital)} points au total${ahead ? ` au niveau ${r.statLevel} (${fmt(r.sheet.capital)} aujourd’hui)` : ` (${fmt(r.sheet.pointsFree)} libres actuellement)`}<br>
           ${POINT_STATS.map((k) => { const a = r.sheet.base[k] || 0, b = r.nxt.alloc[k] || 0; return `<span style="white-space:nowrap;${a === b ? 'color:#8a7d66' : ''}">${esc(STAT_LABELS[k] || k)} ${fmt(a)} → <b>${fmt(b)}</b></span>`; }).join(' · ')}
           <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            ${POINT_STATS.every((k) => (r.sheet.base[k] || 0) === (r.nxt.alloc[k] || 0)) ? '<span style="color:#6fcf7a">✔ Tes points sont déjà répartis ainsi.</span>'
+            ${ahead ? `<span style="color:#8fd4ee">📅 Répartition du niveau ${r.statLevel} : à appliquer une fois ce niveau atteint (relance alors la recherche).</span>`
+              : POINT_STATS.every((k) => (r.sheet.base[k] || 0) === (r.nxt.alloc[k] || 0)) ? '<span style="color:#6fcf7a">✔ Tes points sont déjà répartis ainsi.</span>'
               : `<button data-a="points" style="${btn};background:#2e6fbf" title="Réinitialise tes points si une stat doit baisser, puis les répartit comme indiqué (2e clic pour confirmer)">📊 Appliquer cette répartition</button>`}
             <span style="color:#8a7d66;font-size:11px">L’équipement, lui, s’équipe avec le bouton plus bas.</span></div></div>` : ''}
         <div style="font-size:12px;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:6px 8px">
