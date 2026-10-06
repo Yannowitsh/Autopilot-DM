@@ -754,7 +754,7 @@
     const on = !!cfg.lockedItems?.[btn.dataset.key];
     const text = on ? '🔒 Verrouillé' : '🔓 Verrouiller';
     if (btn.textContent !== text) btn.textContent = text;
-    btn.title = on ? 'Protégé de l’Autosell (extension) — cliquer pour déverrouiller' : 'Empêcher l’Autosell de vendre cet objet';
+    btn.dataset.tip = on ? 'Protégé de l’Autosell (extension) — cliquer pour déverrouiller' : 'Empêcher l’Autosell de vendre cet objet';
     btn.style.cssText = on
       ? 'background:#b07400;color:#fff;border-color:#b07400;white-space:nowrap'
       : 'background:transparent;white-space:nowrap';
@@ -1053,8 +1053,8 @@
     const esc = (s) => String(s).replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
     const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:4px 10px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif';
     const color = queueMsgCls === 'err' ? '#e0675c' : queueMsgCls === 'ok' ? '#6cc070' : '#bbb';
-    const head = `<div style="display:flex;align-items:center;gap:6px"><b style="flex:1">🔁 File d’échange (${total})</b>
-        <button data-act="pick" title="Choisir plusieurs objets dans une liste filtrable" style="${btn};background:#5a4a33" ${tradeBusy ? 'disabled' : ''}>📋 Sélection</button>
+    const head = `<div style="display:flex;align-items:center;gap:6px"><b style="flex:1">🔁 File d’échange (${total})${DM.tip("Objets à envoyer à ton autre compte (connecté en navigation privée ou normale). « Tout échanger » met chaque exemplaire en vente à 1 kamas et le fait acheter aussitôt par l’autre compte. File propre à chaque personnage.")}</b>
+        <button data-act="pick" data-tip="Ouvre la liste de tous tes objets vendables, avec filtres (nom, rareté, emplacement, niveau) et cases à cocher, pour remplir la file d’un coup." style="${btn};background:#5a4a33" ${tradeBusy ? 'disabled' : ''}>📋 Sélection</button>
         <button data-act="fold" title="${queueFolded ? 'Déplier' : 'Replier'}" style="${btn};padding:4px 7px;background:transparent">${queueFolded ? '▾' : '▴'}</button></div>`;
     const html = queueFolded && !queueRun ? head : `
       ${head}
@@ -1115,18 +1115,18 @@
     const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:6px 12px;color:#fff;cursor:pointer;font:600 13px system-ui,sans-serif';
     ov.innerHTML = `
       <div style="width:min(760px,100%);max-height:88vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
-        <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📋 Sélection d’objets à échanger</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
+        <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📋 Sélection d’objets à échanger${DM.tip("Tous tes objets vendables (les objets équipés n’apparaissent pas). Coche ceux à envoyer ; Maj + clic coche une plage ; pour un objet en plusieurs exemplaires, choisis la quantité à droite.")}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
         <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
           <input data-f="q" placeholder="Rechercher un nom…" style="${inp};flex:1;min-width:150px">
           <select data-f="rarity" style="${inp}"><option value="">Toutes raretés</option>${DM.RARITIES.map((r, i) => `<option value="${i}">${r}</option>`).join('')}</select>
           <select data-f="slot" style="${inp}"><option value="">Tous emplacements</option>${slots.map((s) => `<option value="${s}">${esc(SLOT_NAMES[s] || s)}</option>`).join('')}</select>
           <input data-f="min" type="number" min="1" placeholder="Niv. min" style="${inp};width:80px">
           <input data-f="max" type="number" min="1" placeholder="Niv. max" style="${inp};width:80px">
-          <label style="white-space:nowrap"><input data-f="hideBound" type="checkbox"> masquer liés</label>
-          <label style="white-space:nowrap"><input data-f="hideLocked" type="checkbox"> masquer 🔒</label>
+          <label style="white-space:nowrap"><input data-f="hideBound" type="checkbox"> masquer liés${DM.tip("Cache les objets achetés à l’HDV il y a moins de 24 h : ils te sont liés et ne peuvent pas encore être revendus ni échangés.")}</label>
+          <label style="white-space:nowrap"><input data-f="hideLocked" type="checkbox"> masquer 🔒${DM.tip("Cache les objets que tu as verrouillés contre l’Autosell.")}</label>
         </div>
         <div style="display:flex;gap:6px;align-items:center">
-          <button data-a="all" style="${btn};background:#3a3125">☑ Cocher les objets affichés</button>
+          <button data-a="all" style="${btn};background:#3a3125" data-tip="Coche tous les objets visibles avec les filtres actuels (tous leurs exemplaires). Combine avec les filtres pour sélectionner en masse.">☑ Cocher les objets affichés</button>
           <button data-a="none" style="${btn};background:transparent">☐ Tout décocher</button>
           <span data-k="count" style="flex:1;text-align:right;color:#bbb"></span>
         </div>
@@ -1134,8 +1134,8 @@
         <div style="font-size:11px;color:#999">Astuce : Maj + clic coche/décoche toute la plage depuis la dernière case cliquée.</div>
         <div style="display:flex;gap:8px;justify-content:flex-end">
           <button data-a="x" style="${btn};background:transparent">Annuler</button>
-          <button data-a="save" style="${btn};background:#5a4a33">➕ Mettre en file</button>
-          <button data-a="go" style="${btn};background:#2b5d8a">🔁 Échanger maintenant</button>
+          <button data-a="save" style="${btn};background:#5a4a33" data-tip="Remplace la file d’échange par cette sélection, sans rien envoyer.">➕ Mettre en file</button>
+          <button data-a="go" style="${btn};background:#2b5d8a" data-tip="Met la sélection en file et lance tout de suite l’envoi vers ton autre compte.">🔁 Échanger maintenant</button>
         </div>
       </div>`;
     const $ = (s) => ov.querySelector(s);
@@ -1171,7 +1171,7 @@
         const tier = r.fusion ? ` <span style="color:#e2b04a;font-size:11px">· ${r.fusion >= FUSION_MAX ? 'Rayonnant' : `Tiers ${r.fusion + 1}`}</span>` : '';
         const note = r.bound ? `<span style="color:#7cb7e8;font-size:11px">lié jusqu’à ${esc(new Date(r.boundUntil).toLocaleString('fr-FR', { weekday: 'short', hour: '2-digit', minute: '2-digit' }))}</span>` : r.locked ? '<span style="font-size:11px">🔒</span>' : '';
         const qty = r.qty > 1 && !r.bound
-          ? `<input data-qty="${i}" type="number" min="1" max="${r.qty}" value="${sel.get(r.key) || r.qty}" style="${inp};width:58px;padding:2px 4px" title="Exemplaires à échanger (sur ${r.qty})"> / ${r.qty}`
+          ? `<input data-qty="${i}" type="number" min="1" max="${r.qty}" value="${sel.get(r.key) || r.qty}" style="${inp};width:58px;padding:2px 4px" data-tip="Exemplaires à échanger (sur ${r.qty})"> / ${r.qty}`
           : '';
         return `<li style="display:flex;align-items:center;gap:8px;padding:4px 8px;border-bottom:1px solid #2a231a;${r.bound ? 'opacity:.5' : ''}">
           <input data-i="${i}" type="checkbox" ${on ? 'checked' : ''} ${r.bound ? 'disabled' : ''} style="width:16px;height:16px">
@@ -1259,8 +1259,8 @@
         wrap.className = 'dm-trade';
         wrap.style.cssText = 'margin-top:8px';
         wrap.innerHTML = '<div style="display:flex;gap:6px">'
-          + '<button type="button" data-k="go" class="btn !py-1.5 text-sm" style="flex:1;background:#2b5d8a;color:#fff;border-color:#2b5d8a">🔁 Échanger (1 K → autre compte)</button>'
-          + '<button type="button" data-k="add" class="btn !py-1.5 text-sm" style="white-space:nowrap;background:transparent" title="Ajouter à la file d’échange (re-cliquer = un exemplaire de plus)">➕ File</button>'
+          + '<button type="button" data-k="go" class="btn !py-1.5 text-sm" style="flex:1;background:#2b5d8a;color:#fff;border-color:#2b5d8a" data-tip="Met cet objet en vente à 1 kamas à l’HDV et le fait acheter immédiatement par ton autre compte (autre fenêtre, normale ↔ privée). Si l’achat échoue, l’annonce est retirée.">🔁 Échanger (1 K → autre compte)</button>'
+          + '<button type="button" data-k="add" class="btn !py-1.5 text-sm" style="white-space:nowrap;background:transparent" data-tip="Ajouter à la file d’échange (re-cliquer = un exemplaire de plus)">➕ File</button>'
           + '</div><div class="text-xs" style="margin-top:4px;min-height:1em"></div>';
         const go = wrap.querySelector('[data-k="go"]');
         const add = wrap.querySelector('[data-k="add"]');
@@ -1805,73 +1805,74 @@
     root.innerHTML = `<style>${MENU_CSS}</style>
       <div class="panel" hidden>
         <div class="sec">
-          <div class="head"><span>🤖 Pilote auto</span><span class="muted" data-k="stats"></span></div>
+          <div class="head"><span>🤖 Pilote auto${DM.tip("Démarre ou arrête le pilote sur cet onglet. Il enchaîne les combats en Auto selon l’activité choisie ci-dessous. Compteur : victoires / défaites du pilote.")}</span><span class="muted" data-k="stats"></span></div>
           <div class="status" data-k="status"></div>
           <button data-k="toggle"></button>
         </div>
         <div class="sec">
-          <div class="head"><span>🗺️ Activité</span><span class="muted" data-k="energy"></span></div>
+          <div class="head"><span>🗺️ Activité${DM.tip("Aventure : étapes du Chemin.\nChasse : refait en boucle un groupe d’une zone.\nAscension : étages de boss (niveau 200).\nÀ droite : ta dernière énergie connue.")}</span><span class="muted" data-k="energy"></span></div>
           <div class="seg">
             <button data-mode="aventure">Aventure</button>
             <button data-mode="chasse">Chasse</button>
-            <button data-mode="ascension" title="Étages de boss, débloqué au niveau 200">Ascension</button>
+            <button data-mode="ascension" data-tip="Étages de boss, débloqué au niveau 200">Ascension</button>
           </div>
           <div data-k="zoneBox">
-            <div class="muted" style="margin-bottom:4px">Zone</div>
-            <div class="row"><select data-k="zone"></select><button data-k="reload" title="Recharger les zones">↻</button></div>
+            <div class="muted" style="margin-bottom:4px">Zone${DM.tip("Zone farmée en mode Chasse (zones à ton niveau). Par défaut le pilote attaque le groupe le plus dur ; si tu attaques toi-même un groupe, c’est celui-là qui est relancé.")}</div>
+            <div class="row"><select data-k="zone"></select><button data-k="reload" data-tip="Recharger la liste des zones depuis le jeu.">↻</button></div>
             <div class="row" style="align-items:center;justify-content:space-between;margin-top:5px">
               <span class="muted" data-k="groupInfo"></span>
-              <button data-k="groupReset" title="Revenir au groupe le plus dur" style="padding:2px 7px;font-size:12px">↺ plus dur</button>
+              <button data-k="groupReset" data-tip="Oublier le groupe choisi à la main et revenir au groupe le plus dur de la zone." style="padding:2px 7px;font-size:12px">↺ plus dur</button>
             </div>
             <div class="muted" style="margin-top:4px">Astuce : clique toi-même sur « Attaquer » dans n’importe quelle zone, le pilote relancera ce groupe en Auto.</div>
           </div>
         </div>
         <div class="sec">
-          <div class="head"><span>🧹 Autosell</span></div>
+          <div class="head"><span>🧹 Autosell${DM.tip("Vend au marchand, en un clic, tous les objets non équipés sauf ceux que tu conserves. 1er clic : aperçu ; 2e clic dans les 8 s : vente.")}</span></div>
           <div class="muted">Vend les objets non équipés (familiers, dofus, Rayonnants et objets 🔒 conservés).</div>
-          <label class="check"><input type="checkbox" data-k="keepAbove"> Garder les objets au-dessus de mon niveau</label>
-          <div class="muted" style="margin-top:4px">Garder les raretés :</div>
+          <label class="check"><input type="checkbox" data-k="keepAbove"> Garder les objets au-dessus de mon niveau${DM.tip("Ne vend pas les objets d’un niveau supérieur à ton personnage : tu pourras les porter plus tard.")}</label>
+          <div class="muted" style="margin-top:4px">Garder les raretés :${DM.tip("Les objets des raretés cochées ne sont jamais vendus par l’Autosell.")}</div>
           <div class="rars">${DM.RARITIES.map((n, i) => `<label class="check"><input type="checkbox" data-k="rar${i}"> ${n}</label>`).join('')}</div>
           <button data-k="sell">${SELL_LABEL}</button>
           <div class="status" data-k="sellMsg"></div>
           <details data-k="lockBox">
-            <summary class="muted" data-k="lockTitle"></summary>
+            <summary class="muted"><span data-k="lockTitle"></span>${DM.tip("Objets protégés de l’Autosell. Pour en ajouter : ouvre un objet dans /inventaire et clique « 🔓 Verrouiller ». ✕ pour déverrouiller.")}</summary>
             <ul class="locks" data-k="locks"></ul>
           </details>
         </div>
         <div class="sec">
-          <div class="head"><span>✨ Fusion</span><span class="muted">3 identiques → tier +1</span></div>
+          <div class="head"><span>✨ Fusion${DM.tip("3 exemplaires d’un même objet au même tier → 1 exemplaire du tier suivant (+10 % de stats), jusqu’au tier Rayonnant. Les objets portés ne sont pas touchés.")}</span><span class="muted">3 identiques → tier +1</span></div>
           <div class="row">
-            <button data-k="fuseScan" style="flex:1">Chercher les doublons</button>
-            <button data-k="fuseAll" title="Fusionne tout ce qui est listé, en cascade">Tout fusionner</button>
+            <button data-k="fuseScan" style="flex:1" data-tip="Liste les objets que tu peux fusionner, avec le résultat des fusions en cascade.">Chercher les doublons</button>
+            <button data-k="fuseAll" data-tip="Fusionne tout ce qui est listé, en cascade (3 base → 1 T2, 3 T2 → 1 T3…).">Tout fusionner</button>
           </div>
           <div class="status" data-k="fuseMsg"></div>
           <ul class="fuse" data-k="fuseList"></ul>
         </div>
         <div class="sec">
-          <div class="head"><span>🎯 Avis de recherche</span><span class="muted" data-k="scanAge"></span></div>
+          <div class="head"><span>🎯 Avis de recherche${DM.tip("Parcourt toutes les zones de chasse et repère les groupes contenant des monstres recherchés. Chaque trouvaille s’affiche ici et peut être envoyée sur Discord.")}</span><span class="muted" data-k="scanAge"></span></div>
           <div class="row">
-            <button data-k="scan" style="flex:1">Scanner les zones</button>
-            <button data-k="scanResume" title="Ne rescanner que les zones en échec">Reprendre</button>
+            <button data-k="scan" style="flex:1" data-tip="Scanne toutes les zones dans la plage de niveaux choisie (les groupes changent toutes les ~3 min).">Scanner les zones</button>
+            <button data-k="scanResume" data-tip="Ne rescanne que les zones en échec lors du dernier scan.">Reprendre</button>
           </div>
           <div class="row" style="align-items:center;gap:6px;font-size:12px">
-            <span class="muted">Niveaux</span>
+            <span class="muted">Niveaux${DM.tip("Ne scanne que les zones dont les niveaux croisent cette plage. Vide = pas de limite.")}</span>
             <input type="number" data-k="lvlMin" min="0" max="200" placeholder="min" class="num">
             <span class="muted">à</span>
             <input type="number" data-k="lvlMax" min="0" max="200" placeholder="max" class="num">
             <span class="muted" style="margin-left:auto">plus hauts d’abord</span>
           </div>
           <div class="row" style="align-items:center;gap:6px;font-size:12px">
-            <span class="muted">Au moins</span>
+            <span class="muted">Au moins${DM.tip("Ne garde que les groupes contenant au moins ce nombre de monstres recherchés : plusieurs avis dans le même combat.")}</span>
             <input type="number" data-k="minPerGroup" min="1" max="8" class="num">
             <span class="muted">avis dans le même combat</span>
           </div>
-          <label class="check"><input type="checkbox" data-k="wantedLoop"> Scanner en continu (à chaque renouvellement des groupes)</label>
+          <label class="check"><input type="checkbox" data-k="wantedLoop"> Scanner en continu (à chaque renouvellement des groupes)${DM.tip("Relance automatiquement un scan juste après chaque renouvellement des groupes, tant que l’onglet reste ouvert.")}</label>
           <div class="status" data-k="scanMsg"></div>
           <ul class="wanted" data-k="wanted"></ul>
         </div>
       </div>
       <div class="bubble" title="Autopilot-DM">🤖</div>`;
+    DM.installTips(root);
     const $ = (k) => root.querySelector(`[data-k="${k}"]`);
     const panel = root.querySelector('.panel');
     const bubble = root.querySelector('.bubble');
@@ -2177,6 +2178,7 @@
   (async () => {
     cfg = await DM.getAll();
     myTabId = await chrome.runtime.sendMessage({ type: 'whoami' }).catch(() => null);
+    DM.installTips(document);   // bulles d'info des boutons d'échange / de la file / du sélecteur
     renderUi();
     const upd = DM.pendingUpdate(cfg);   // une fois par onglet : nouvelle version sur GitHub
     let shown = false;

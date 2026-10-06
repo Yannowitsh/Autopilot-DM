@@ -2,9 +2,8 @@
 const DM = {
   ORIGIN: 'https://dofusmasters.houk.fr',
 
-  // Mises à jour : le manifest du dépôt GitHub public fait foi (vérifié toutes les UPDATE_EVERY_MS).
+  // Mises à jour : le manifest du dépôt GitHub public fait foi (vérifié toutes les `updateCheckMin` minutes).
   REPO: 'Yannowitsh/Autopilot-DM',
-  UPDATE_EVERY_MS: 3 * 3600000,
   get UPDATE_MANIFEST() { return `https://raw.githubusercontent.com/${DM.REPO}/main/extension/manifest.json`; },
   get REPO_URL() { return `https://github.com/${DM.REPO}`; },
   // « 1.32.0 » > « 1.31.4 » ?
@@ -43,6 +42,7 @@ const DM = {
     huntZone: null,      // id de zone (/chasse?zone=…)
     huntGroup: null,     // n° de groupe choisi à la main en jeu (null = le plus dur)
     huntZoneName: '',
+    updateCheckMin: 180, // vérification d'une nouvelle version sur GitHub, en minutes (0 = jamais automatiquement)
     wins: 0,
     losses: 0,
   },
@@ -52,11 +52,16 @@ const DM = {
 
   // Types de notifications Discord, activables un par un dans la popup (clé = réglage dans le stockage).
   NOTIF: [
-    { kind: 'wanted', key: 'notifyWanted', label: '🎯 Avis de recherche trouvés' },
-    { kind: 'boss', key: 'bossAlerts', label: '🐉 Boss de chasse (apparition)' },
-    { kind: 'defeat', key: 'notifyDefeat', label: '❌ Combat perdu (pilote arrêté)' },
-    { kind: 'energy', key: 'notifyEnergy', label: '🔋 Énergie basse / reprise' },
-    { kind: 'errors', key: 'notifyErrors', label: '⚠️ Problèmes (déconnexion, énergie illisible)' },
+    { kind: 'wanted', key: 'notifyWanted', label: '🎯 Avis de recherche trouvés',
+      tip: 'Message dès que le scan des zones trouve un groupe contenant un monstre recherché, avec un lien « attaque directe ».' },
+    { kind: 'boss', key: 'bossAlerts', label: '🐉 Boss de chasse (apparition)',
+      tip: 'Message quand le boss de zone apparaît (et la pré-alerte si elle est réglée). Fonctionne même pilote arrêté.' },
+    { kind: 'defeat', key: 'notifyDefeat', label: '❌ Combat perdu (pilote arrêté)',
+      tip: 'Message quand le pilote s’arrête après une défaite : immédiatement en chasse, après plusieurs défaites d’affilée en aventure.' },
+    { kind: 'energy', key: 'notifyEnergy', label: '🔋 Énergie basse / reprise',
+      tip: 'Message quand le pilote se met en pause faute d’énergie, puis quand il reprend.' },
+    { kind: 'errors', key: 'notifyErrors', label: '⚠️ Problèmes (déconnexion, énergie illisible)',
+      tip: 'Message en cas de souci technique : déconnexion du jeu, énergie impossible à lire, etc.' },
   ],
 
   // Valeurs observées : un boss toutes les 20 min, calé sur l'heure (xx:00, xx:20, xx:40), présent 5 min.
@@ -113,6 +118,48 @@ const DM = {
       } catch { /* contexte d'extension invalidé */ }
     });
     return DM.logQueue;
+  },
+
+  // ---------- Bulles d'information au survol ----------
+  // Tout élément [data-tip] affiche une bulle explicative au survol ; DM.tip(texte) produit une pastille « i » à insérer.
+  // root : document ou shadow root à surveiller ; la bulle est en position fixe, recadrée dans la fenêtre.
+  tipAttr: (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+  tip(text) {
+    return `<span class="dm-i" data-tip="${DM.tipAttr(text)}">i</span>`;
+  },
+  installTips(root = document) {
+    const mount = root === document ? document.body : root;
+    if (!mount || mount.querySelector?.(':scope > .dm-tip')) return;
+    const style = document.createElement('style');
+    style.textContent = `
+      .dm-i { display: inline-grid; place-items: center; width: 14px; height: 14px; margin-left: 5px; border-radius: 50%;
+        background: #3a3f48; color: #cfd3d8; font: italic 700 10px/1 Georgia, serif; cursor: help; vertical-align: middle;
+        flex: none; user-select: none; }
+      .dm-i:hover { background: #2b5d8a; color: #fff; }
+      .dm-tip { position: fixed; z-index: 2147483647; max-width: 260px; padding: 7px 9px; border-radius: 8px;
+        background: #0f1114; color: #e8e6e1; border: 1px solid #3a3f48; box-shadow: 0 4px 14px rgba(0,0,0,.6);
+        font: 12px/1.4 system-ui, sans-serif; white-space: pre-line; pointer-events: none; display: none; text-align: left; }`;
+    const tip = document.createElement('div');
+    tip.className = 'dm-tip';
+    mount.append(style, tip);
+    const show = (el) => {
+      tip.textContent = el.dataset.tip;
+      tip.style.display = 'block';
+      const r = el.getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight;
+      const x = Math.max(6, Math.min(r.left + r.width / 2 - w / 2, innerWidth - w - 6));
+      let y = r.bottom + 6;
+      if (y + h > innerHeight - 6) y = Math.max(6, r.top - h - 6);   // pas la place dessous : au-dessus
+      tip.style.left = `${x}px`;
+      tip.style.top = `${y}px`;
+    };
+    root.addEventListener('mouseover', (e) => {
+      const el = e.target.closest?.('[data-tip]');
+      if (el) show(el); else tip.style.display = 'none';
+    });
+    root.addEventListener('mouseout', (e) => { if (!e.relatedTarget?.closest?.('[data-tip]')) tip.style.display = 'none'; });
+    root.addEventListener('scroll', () => { tip.style.display = 'none'; }, true);
+    // clic sur la pastille « i » dans un <label> / <summary> : ne coche rien, n'ouvre rien
+    root.addEventListener('click', (e) => { if (e.target.closest?.('.dm-i')) e.preventDefault(); }, true);
   },
 
   fetchT(url, opts = {}, ms = 20000) {

@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const NUM = ['minEnergy', 'resumeEnergy', 'delayMin', 'delayMax'];
+const NUM = ['minEnergy', 'resumeEnergy', 'delayMin', 'delayMax', 'updateCheckMin'];
 const BOOL = ['sellKeepAbove', 'bossAuto'];
 
 async function render() {
@@ -153,7 +153,10 @@ async function renderNotifs() {
     cb.type = 'checkbox';
     cb.checked = s[n.key] !== false;
     cb.onchange = () => chrome.storage.local.set({ [n.key]: cb.checked });
-    label.append(n.label, cb);
+    const text = document.createElement('span');
+    text.innerHTML = DM.tip(n.tip);
+    text.prepend(n.label);
+    label.append(text, cb);
     box.appendChild(label);
   }
   $('bossPreAlertMin').value = s.bossPreAlertMin;
@@ -164,7 +167,14 @@ renderNotifs();
 chrome.storage.onChanged.addListener(render);
 chrome.runtime.sendMessage({ type: 'refreshBoss' }).then(render);
 chrome.runtime.sendMessage({ type: 'checkUpdate' }).then(render);
+DM.installTips(document);
 $('version').textContent = `v${chrome.runtime.getManifest().version}`;
+$('checkNow').onclick = async () => {
+  $('msg').textContent = 'Vérification…';
+  await chrome.runtime.sendMessage({ type: 'checkUpdate', force: true });
+  const upd = DM.pendingUpdate(await DM.getAll());
+  $('msg').textContent = upd ? `🆕 Version ${upd} disponible (voir en haut).` : `À jour (v${chrome.runtime.getManifest().version}).`;
+};
 $('reloadExt').onclick = () => chrome.runtime.sendMessage({ type: 'reloadExtension' });
 $('openRepo').onclick = () => chrome.tabs.create({ url: DM.REPO_URL });
 loadForm();

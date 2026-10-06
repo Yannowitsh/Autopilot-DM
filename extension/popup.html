@@ -26,52 +26,59 @@
   <div id="update" class="panel" hidden style="border-color:#2b5d8a">
     <div>🆕 Version <b id="updateVersion"></b> disponible.</div>
     <div class="muted" style="font-size:12px;margin:4px 0">1. Double-clique <b>mettre-a-jour.bat</b> (dossier de l’extension) · 2. Clique « Recharger ».</div>
-    <div class="btns"><button id="reloadExt">↻ Recharger l’extension</button><button id="openRepo">GitHub</button></div>
+    <div class="btns">
+      <button id="reloadExt" data-tip="Recharge l’extension depuis son dossier, pour appliquer les fichiers téléchargés par mettre-a-jour.bat. Les réglages sont conservés.">↻ Recharger l’extension</button>
+      <button id="openRepo" data-tip="Ouvre la page GitHub de l’extension (code, README, historique des versions).">GitHub</button>
+    </div>
   </div>
-  <button id="toggle">…</button>
+  <button id="toggle" data-tip="Démarre ou arrête le pilote sur l’onglet du jeu actif (ou en ouvre un). Le pilote enchaîne les combats en Auto selon le mode choisi dans les réglages.">…</button>
 
   <div class="panel">
-    <div class="row"><span class="muted">État</span><span id="status">—</span></div>
-    <div class="row"><span class="muted">Énergie</span><span id="energy">—</span></div>
-    <div class="row"><span class="muted">Victoires / défaites</span><span id="stats">—</span></div>
-    <div class="row"><span class="muted">Boss de chasse</span><span id="boss">—</span></div>
+    <div class="row"><span class="muted">État<span class="dm-i" data-tip="Ce que le pilote fait en ce moment (combat, pause énergie, attente…).">i</span></span><span id="status">—</span></div>
+    <div class="row"><span class="muted">Énergie<span class="dm-i" data-tip="Dernière énergie lue en jeu, et l’heure de cette lecture. Chaque combat lancé par le pilote en consomme.">i</span></span><span id="energy">—</span></div>
+    <div class="row"><span class="muted">Victoires / défaites<span class="dm-i" data-tip="Combats lancés par le pilote depuis la dernière remise à zéro. Les combats faits à la main ne comptent pas.">i</span></span><span id="stats">—</span></div>
+    <div class="row"><span class="muted">Boss de chasse<span class="dm-i" data-tip="Le boss de zone apparaît à heures fixes et reste quelques minutes : présent maintenant, ou heure de sa prochaine apparition.">i</span></span><span id="boss">—</span></div>
     <div class="btns">
-      <button id="resume" title="Lève la pause énergie en cours">Reprendre maintenant</button>
-      <button id="reset">Remettre stats à 0</button>
+      <button id="resume" data-tip="Lève tout de suite la pause énergie en cours, sans attendre le seuil de reprise.">Reprendre maintenant</button>
+      <button id="reset" data-tip="Remet le compteur victoires / défaites à zéro.">Remettre stats à 0</button>
     </div>
   </div>
 
   <div class="panel">
     <strong>Inventaire</strong>
     <span class="muted">Vend les objets non équipés (les familiers, dofus, Rayonnants et objets verrouillés 🔒 sont conservés).</span>
-    <label>Garder les objets au-dessus de mon niveau <input type="checkbox" id="sellKeepAbove"></label>
-    <span class="muted">Garder les raretés :</span>
+    <label><span>Garder les objets au-dessus de mon niveau<span class="dm-i" data-tip="Ne vend pas les objets d’un niveau supérieur à ton personnage : tu pourras les porter plus tard.">i</span></span> <input type="checkbox" id="sellKeepAbove"></label>
+    <span class="muted">Garder les raretés :<span class="dm-i" data-tip="Les objets des raretés cochées ne sont jamais vendus par l’Autosell. Enregistré dès que tu coches.">i</span></span>
     <div id="rars" style="display:grid;grid-template-columns:1fr 1fr;gap:2px 10px"></div>
-    <button id="autosell">🧹 Autosell</button>
+    <button id="autosell" data-tip="1er clic : aperçu (nombre d’objets et kamas estimés). 2e clic : vente au marchand de tout ce qui n’est pas conservé.">🧹 Autosell</button>
     <div id="sellMsg" class="muted"></div>
   </div>
 
   <div class="panel">
     <strong>Réglages</strong>
-    <label>Mode <select id="mode">
+    <label><span>Mode<span class="dm-i" data-tip="Aventure : suit les étapes du Chemin.&#10;Chasse : refait en boucle le groupe le plus dur d’une zone (ou celui que tu as attaqué à la main).&#10;Ascension : étages de boss, débloqués au niveau 200.">i</span></span> <select id="mode">
       <option value="aventure">Aventure (Chemin)</option>
       <option value="chasse">Chasse auto</option>
       <option value="ascension">Ascension (niv. 200)</option>
     </select></label>
-    <label id="zoneRow">Zone <span style="display:flex;gap:4px;min-width:0">
+    <label id="zoneRow"><span>Zone<span class="dm-i" data-tip="Zone de chasse farmée en mode Chasse. La liste montre les zones à ton niveau ; ↻ la recharge.">i</span></span> <span style="display:flex;gap:4px;min-width:0">
       <select id="huntZone" style="max-width:190px"></select>
-      <button id="reloadZones" title="Recharger la liste des zones" style="padding:2px 6px">↻</button>
+      <button id="reloadZones" data-tip="Recharger la liste des zones de chasse depuis le jeu." style="padding:2px 6px">↻</button>
     </span></label>
-    <label>Webhook Discord</label>
+    <label><span>Webhook Discord<span class="dm-i" data-tip="Adresse d’un webhook de ton serveur Discord (Paramètres du salon → Intégrations → Webhooks). Les alertes y sont envoyées. Laisse vide pour ne rien envoyer.">i</span></span></label>
     <input type="text" id="webhookUrl" placeholder="https://discord.com/api/webhooks/…">
-    <label>Pause si énergie &lt; <input type="number" id="minEnergy" min="0"></label>
-    <label>Reprise si énergie ≥ <input type="number" id="resumeEnergy" min="0"></label>
-    <label title="Dès 20 d'énergie ou moins, rachète l'énergie jusqu'au max (enregistré dès que tu coches)">Racheter l’énergie auto (≤ 20 → max) <input type="checkbox" id="autoBuyEnergy"></label>
-    <label>Délai entre combats (s) <span><input type="number" id="delayMin" min="0"> – <input type="number" id="delayMax" min="0"></span></label>
-    <label title="Quand le boss apparaît, le farm finit son combat, un onglet tente le boss une fois, puis le farm reprend">Tenter le boss de chasse auto <input type="checkbox" id="bossAuto"></label>
+    <label><span>Pause si énergie &lt;<span class="dm-i" data-tip="Le pilote se met en pause quand l’énergie passe sous ce seuil, pour ne pas tomber à zéro.">i</span></span> <input type="number" id="minEnergy" min="0"></label>
+    <label><span>Reprise si énergie ≥<span class="dm-i" data-tip="Pendant une pause énergie, le pilote vérifie l’énergie régulièrement et reprend dès qu’elle atteint ce seuil.">i</span></span> <input type="number" id="resumeEnergy" min="0"></label>
+    <label><span>Racheter l’énergie auto (≤ 20 → max)<span class="dm-i" data-tip="Dès 20 d’énergie ou moins, rachète l’énergie jusqu’au maximum avec tes kamas, sans arrêter le farm. Enregistré dès que tu coches.">i</span></span> <input type="checkbox" id="autoBuyEnergy"></label>
+    <label><span>Délai entre combats (s)<span class="dm-i" data-tip="Pause aléatoire entre ces deux valeurs avant chaque relance, pour un rythme plus humain.">i</span></span> <span><input type="number" id="delayMin" min="0"> – <input type="number" id="delayMax" min="0"></span></label>
+    <label><span>Tenter le boss de chasse auto<span class="dm-i" data-tip="Quand le boss apparaît, le farm finit son combat, un nouvel onglet tente le boss une fois, puis le farm reprend.">i</span></span> <input type="checkbox" id="bossAuto"></label>
+    <label><span>Vérif. mises à jour (min)<span class="dm-i" data-tip="Toutes les combien de minutes l’extension regarde sur GitHub si une nouvelle version existe. 0 = jamais automatiquement (le bouton ↻ vérifie à la demande).">i</span></span> <span style="display:flex;gap:4px">
+      <input type="number" id="updateCheckMin" min="0">
+      <button id="checkNow" data-tip="Vérifier tout de suite s’il existe une nouvelle version." style="padding:2px 6px">↻</button>
+    </span></label>
     <div class="btns">
-      <button id="save">Enregistrer</button>
-      <button id="test">Tester Discord</button>
+      <button id="save" data-tip="Enregistre les réglages de ce bloc (mode, zone, webhook, énergie, délais, mises à jour).">Enregistrer</button>
+      <button id="test" data-tip="Enregistre, puis envoie un message de test sur ton webhook Discord.">Tester Discord</button>
     </div>
     <div id="msg" class="muted"></div>
   </div>
@@ -80,11 +87,11 @@
     <strong>Notifications Discord</strong>
     <span class="muted">Enregistré dès que tu coches / décoches.</span>
     <div id="notifs" style="display:flex;flex-direction:column;gap:6px"></div>
-    <label>Pré-alerte boss (min avant, 0 = non) <input type="number" id="bossPreAlertMin" min="0"></label>
+    <label><span>Pré-alerte boss (min avant, 0 = non)<span class="dm-i" data-tip="Envoie aussi un message N minutes avant l’apparition du boss de chasse. 0 = pas de pré-alerte.">i</span></span> <input type="number" id="bossPreAlertMin" min="0"></label>
   </div>
 
   <div class="panel">
-    <strong>Journal (débogage)</strong>
+    <strong>Journal (débogage)<span class="dm-i" data-tip="Historique technique de ce que fait l’extension. En cas de problème, copie-le et colle-le à la personne qui t’aide. Ton webhook n’y figure pas.">i</span></strong>
     <span class="muted" id="logInfo">—</span>
     <div class="btns">
       <button id="logCopy">📋 Copier le journal</button>

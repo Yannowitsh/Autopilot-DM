@@ -194,10 +194,11 @@ function ensureAlarm() {
   chrome.alarms.create('main', { periodInMinutes: 0.5 });
 }
 
-// Nouvelle version sur GitHub ? (au plus une requête toutes les UPDATE_EVERY_MS, sauf force)
+// Nouvelle version sur GitHub ? (au plus une requête toutes les `updateCheckMin` minutes ; 0 = jamais, sauf force)
 async function checkUpdate(force = false) {
-  const { updateCheckedAt = 0 } = await chrome.storage.local.get('updateCheckedAt');
-  if (!force && Date.now() - updateCheckedAt < DM.UPDATE_EVERY_MS) return;
+  const { updateCheckedAt = 0, updateCheckMin } = await DM.getAll();
+  const every = Math.max(0, Number(updateCheckMin) || 0) * 60000;
+  if (!force && (!every || Date.now() - updateCheckedAt < every)) return;
   try {
     const r = await DM.fetchT(DM.UPDATE_MANIFEST, { cache: 'no-store' }, 15000);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -255,7 +256,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return !enabled;
       }
       case 'refreshBoss': await refreshBoss(); return true;
-      case 'checkUpdate': await checkUpdate(true); return true;
+      case 'checkUpdate': {   // msg.force : bouton « Vérifier maintenant » ; sinon (ouverture de la popup) seulement si la vérif auto est active
+        const { updateCheckMin } = await DM.getAll();
+        if (msg.force || updateCheckMin > 0) await checkUpdate(true);
+        return true;
+      }
       case 'reloadExtension': setTimeout(() => chrome.runtime.reload(), 100); return true;
       case 'bossGo': return bossGo(sender.tab?.id);
       case 'bossDone': return bossFinish(msg.result);
