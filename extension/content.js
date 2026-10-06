@@ -2426,7 +2426,7 @@
         continue;
       }
       const ap = +card.ap || 0;
-      spells.push({ id: card.id, key: ent.key, name: card.n, desc: card.d || '', icon: card.icon, ap, rarity: card.r,
+      spells.push({ id: card.id, key: ent.key, usable: ent.usable !== false, name: card.n, desc: card.d || '', icon: card.icon, ap, rarity: card.r,
         fusion: +card.f || 0, card: { ...card, eff }, ...dmg, perAp: ap ? dmg.avg / ap : Infinity });
     }
     const favs = new Set((res(props.initialFavorites) || []).map(Number));
@@ -2606,6 +2606,12 @@
   const OFFENSE_KEYS = ['force', 'intelligence', 'chance', 'agilite', 'puissance', 'dommages', 'dommagesNeutre', 'dommagesTerre',
     'dommagesFeu', 'dommagesEau', 'dommagesAir', 'critique', 'dommagesCritiques', 'dmgPctSorts', 'pa', 'po'];
   const BUILD_OPTS_KEY = 'dmBuildOpts';
+  const SAVE_DECK_FALLBACK = '60aca5c0a9a6852940d3385c5d3ad45fe51092e4ed';   // saveDeck([{ id, f }], indice du deck : 0 = deck 1)
+  const DECK_TARGET = 2;                                                        // deck 3
+  const DECK_CARDS = 10;
+  let saveDeckId = null;
+  // Liste noire de l'optimiseur : objets (par id, toutes fusions) à ne jamais proposer. cfg.buildBlacklist = { id: nom }
+  const buildBlacklist = () => cfg.buildBlacklist || {};
 
   // Bonus de panoplie par nom (dofusdb, en cache 7 jours) : { nom: [[{k, v}], …] | null }
   async function fetchSetBonuses(names) {
@@ -2740,6 +2746,8 @@
       pool.push(...await fetchHdvGear([...new Set(state.slots.map((s) => s.accepts))], level));
     }
     pool = pool.map((c, i) => ({ ...c, uid: i, eff: withPrestige(c.eff) }));
+    const banned = new Set(Object.keys(buildBlacklist()).map(Number));
+    const budget = opts.hdv && +opts.budget > 0 ? +opts.budget : 0;   // 0 = pas de limite
     say('Bonus de panoplie (dofusdb)…');
     const setFx = await fetchSetBonuses([...new Set(pool.map((c) => c.setName).filter(Boolean))]);
 
@@ -2754,7 +2762,7 @@
     const useful = (c) => c.src === 'worn' || c.setName || OFFENSE_KEYS.some((k) => (c.eff[k] || 0) > 0)
       || (pvMin && ((c.eff.vitalite || 0) > 0 || (c.eff.pv || 0) > 0));
     const cands = {};
-    for (const s of slots) cands[s.accepts] ||= pool.filter((c) => c.type === s.accepts && useful(c));
+    for (const s of slots) cands[s.accepts] ||= pool.filter((c) => c.type === s.accepts && useful(c) && !banned.has(c.id) && !(budget && c.price > budget));
 
     const statsOf = (build) => {
       const S = { ...sheet.base };
@@ -2784,13 +2792,17 @@
       return bestTurn(spells, S, paOf(S), K).dmg + pv * 1e-4;   // à dégâts égaux, le plus de PV
     };
     // contraintes : un même objet (id) une seule fois ; arme à deux mains → pas de bouclier ; un exemplaire possédé par objet
+    const costOf = (build) => Object.values(build).reduce((n, c) => n + (c?.src === 'hdv' ? c.price : 0), 0);
     const valid = (build) => {
       const ids = new Set();
       for (const c of Object.values(build)) { if (!c) continue; if (ids.has(c.id)) return false; ids.add(c.id); }
+      if (budget && costOf(build) > budget) return false;   // achats HDV dans le budget
       return !(build.arme?.two && build.bouclier);
     };
     const current = Object.fromEntries(slots.map((s) => [s.slot, s.cur ? pool.find((c) => c.src === 'worn' && c.wornSlot === s.slot) : null]));
-    const canEmpty = (slot) => !current[slot] || slot === 'bouclier';
+    // objet porté mis en liste noire : l'emplacement peut être vidé, et on part sans lui
+    const canEmpty = (slot) => !current[slot] || slot === 'bouclier' || banned.has(current[slot].id);
+    const startBuild = Object.fromEntries(Object.entries(current).map(([k, c]) => [k, c && banned.has(c.id) ? null : c]));
 
     async function climb(start) {
       let build = { ...start }, best = score(build);
@@ -2837,7 +2849,7 @@
     }
 
     say('Recherche du meilleur build…');
-    let top = await climb(current);
+    let top = await climb(startBuild);
     const RESTARTS = 25;
     for (let r = 0; r < RESTARTS; r++) {
       say(`Recherche du meilleur build… (essai ${r + 2}/${RESTARTS + 1}, ${evals} builds testés)`);
@@ -2871,8 +2883,13 @@
       ['PV', pvOf(cur.S), sheet.pv], ['PA', paOf(cur.S), sheet.pa],
       ...Object.keys(sheet.bonus).map((k) => [STAT_LABELS[k] || k, cur.S[k] || 0, (sheet.base[k] || 0) + sheet.bonus[k]]),
     ].filter(([, a, b]) => Number.isFinite(b));
+    // deck conseillé : les sorts du tour, puis les sorts offensifs jouables les plus forts avec le build proposé
+    const ranked = spells.filter((x) => x.usable).map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })).sort((a, b) => b.v - a.v);
+    const deck = [...nxtTurn.used.map((u) => u.sp)];
+    for (const { sp: x } of ranked) { if (deck.length >= DECK_CARDS) break; if (!deck.includes(x)) deck.push(x); }
     return { sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, K, setFx, hdv: opts.hdv,
-      pvMin, pvShort: pvMin && pvOf(nxt.S) < pvMin };
+      pvMin, pvShort: pvMin && pvOf(nxt.S) < pvMin, budget, cost: costOf(final), deck: deck.map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })),
+      deckChunks: sp.chunks };
   }
 
   async function openBuildOptimizer() {
@@ -2898,9 +2915,11 @@
           <label>PV minimum <input data-o="pvMin" type="number" min="0" placeholder="aucun" style="${inp};width:90px"></label>
           <label style="cursor:pointer"><input data-o="deckOnly" type="checkbox"> Sorts du deck actif uniquement</label>
           <label style="cursor:pointer" data-tip="Ajoute les objets en vente à l’HDV (jusqu’à 400 annonces par emplacement) : le build peut alors contenir des objets à acheter, avec leur prix."><input data-o="hdv" type="checkbox"> Fouiller l’HDV</label>
+          <label data-k="budgetBox" data-tip="Total maximum des achats HDV du build proposé. Vide = pas de limite.">Budget <input data-o="budget" type="number" min="0" placeholder="illimité" style="${inp};width:110px"> K</label>
           <button data-a="go" style="${btn};background:#8a5a1a;margin-left:auto">Lancer</button>
         </div>
         <div data-k="msg" style="font-size:12px;color:#b9a98c;min-height:1em"></div>
+        <details data-k="bl" style="font-size:12px"><summary style="cursor:pointer;color:#b9a98c"></summary><div data-k="blList" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px"></div></details>
         <div data-k="out" style="overflow-y:auto;display:flex;flex-direction:column;gap:10px"></div>
       </div>`;
     document.body.appendChild(ov);
@@ -2910,12 +2929,96 @@
       el.addEventListener('change', () => {
         o[el.dataset.o] = el.type === 'checkbox' ? el.checked : el.value;
         try { localStorage.setItem(BUILD_OPTS_KEY, JSON.stringify(o)); } catch { /* idem */ }
+        syncOpts();
       });
     }
+    const syncOpts = () => { $('[data-k="budgetBox"]').style.display = o.hdv ? '' : 'none'; };
+    syncOpts();
+    // liste noire : visible et modifiable ici
+    const renderBl = () => {
+      const bl = buildBlacklist(), n = Object.keys(bl).length;
+      $('[data-k="bl"]').style.display = n ? '' : 'none';
+      $('[data-k="bl"] summary').textContent = `🚫 Liste noire (${n}) — objets jamais proposés`;
+      $('[data-k="blList"]').innerHTML = Object.entries(bl).map(([id, name]) =>
+        `<span style="background:#2a231a;border:1px solid #5a4a33;border-radius:6px;padding:2px 6px">${esc(name)} <button data-unban="${esc(id)}" title="Retirer de la liste noire" style="background:none;border:0;color:#ff7b6b;cursor:pointer">✕</button></span>`).join('');
+    };
+    renderBl();
+    let armed = null, armTimer = null;   // bouton d'achat en attente de confirmation
+    const disarm = () => { armed = null; clearTimeout(armTimer); };
     const say = (t, err) => { $('[data-k="msg"]').textContent = t; $('[data-k="msg"]').style.color = err ? '#ff7b6b' : '#b9a98c'; };
     let result = null, running = false;
     ov.addEventListener('click', async (e) => {
       if (e.target.closest('[data-a="x"]')) return close();
+      const unban = e.target.closest('[data-unban]');
+      if (unban) {
+        const bl = { ...buildBlacklist() };
+        delete bl[unban.dataset.unban];
+        await save({ buildBlacklist: bl });
+        renderBl();
+        say('Objet retiré de la liste noire : relance la recherche pour en tenir compte.');
+        return;
+      }
+      const ban = e.target.closest('[data-ban]');
+      if (ban) {
+        await save({ buildBlacklist: { ...buildBlacklist(), [ban.dataset.ban]: ban.dataset.name } });
+        renderBl();
+        ban.closest('td').style.textDecoration = 'line-through';
+        ban.remove();
+        say(`🚫 ${ban.dataset.name} en liste noire — clique « Lancer » pour une nouvelle recherche sans lui.`);
+        return;
+      }
+      const buy = e.target.closest('[data-buy]');
+      if (buy && result && !buy.disabled) {
+        const c = Object.values(result.final).find((x) => x?.src === 'hdv' && String(x.listingId) === buy.dataset.buy);
+        if (!c) return;
+        if (armed !== buy) {   // 1er clic : confirmation
+          disarm();
+          armed = buy;
+          buy.textContent = `⚠️ Confirmer ${fmt(c.price)} K`;
+          armTimer = setTimeout(() => { if (armed === buy) { buy.textContent = '🛒 Acheter'; disarm(); } }, 6000);
+          return;
+        }
+        disarm();
+        buy.disabled = true;
+        buy.textContent = 'Achat…';
+        try {
+          await hdvCall('buyListing', [c.listingId]);
+          Object.assign(c, { src: 'inv', bought: true });   // possédé : « Équiper ce build » le prendra
+          DM.log(`optimiseur : achat HDV ${c.name} (${c.price} K, annonce ${c.listingId})`);
+          render();
+        } catch (err) {
+          buy.disabled = false;
+          buy.textContent = `❌ ${err.message}`;
+        }
+        return;
+      }
+      const dk = e.target.closest('[data-a="deck"]');
+      if (dk && result && !dk.disabled) {
+        if (armed !== dk) {
+          disarm();
+          armed = dk;
+          dk.textContent = '⚠️ Confirmer : écraser le deck 3';
+          armTimer = setTimeout(() => { if (armed === dk) { dk.textContent = '🃏 Écrire dans le deck 3'; disarm(); } }, 6000);
+          return;
+        }
+        disarm();
+        dk.disabled = true;
+        try {
+          if (!saveDeckId) saveDeckId = await findAction(result.deckChunks || [], 'saveDeck', SAVE_DECK_FALLBACK);
+          await callAction('deck', saveDeckId, [result.deck.map((d) => ({ id: d.sp.id, f: 0 })), DECK_TARGET]);
+          dk.textContent = '✔ Deck 3 enregistré (choisis-le sur /deck pour l’emmener en combat)';
+        } catch (err) {
+          if (!err.game) saveDeckId = null;
+          dk.disabled = false;
+          dk.textContent = `❌ ${err.message}`;
+        }
+        return;
+      }
+      if (e.target.closest('[data-a="copyDeck"]') && result) {
+        const b = e.target.closest('[data-a="copyDeck"]');
+        try { await navigator.clipboard.writeText(result.deck.map((d, i) => `${i + 1}. ${d.sp.name} (${d.sp.ap} PA, ~${Math.round(d.v)})`).join('\n')); b.textContent = '✔ Copié'; } catch { b.textContent = '❌ Copie impossible'; }
+        return;
+      }
       if (e.target.closest('[data-a="go"]') && !running) {
         running = true;
         $('[data-a="go"]').disabled = true;
@@ -2953,11 +3056,13 @@
     function render() {
       const r = result;
       const gain = r.nxtTurn.dmg - r.curTurn.dmg;
-      const item = (c) => (c ? `${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain;vertical-align:middle">` : ''} ${esc(itemLabel(c))}${c.src === 'hdv' ? ` <span style="color:#f0c04a">🛒 ${fmt(c.price)} K</span>` : ''}` : '<i style="color:#8a7d66">vide</i>');
+      const item = (c) => (c ? `${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain;vertical-align:middle">` : ''} ${esc(itemLabel(c))}${c.src === 'hdv' ? ` <span style="color:#f0c04a">🛒 ${fmt(c.price)} K</span>` : ''}${c.bought ? ' <span style="color:#6fcf7a">✔ acheté</span>' : ''}` : '<i style="color:#8a7d66">vide</i>');
+      const sbtn = 'border:1px solid #5a4a33;border-radius:6px;padding:2px 7px;color:#fff;cursor:pointer;font:600 11px system-ui,sans-serif;background:#2a231a;margin-left:4px';
+      const tools = (c) => (!c ? '' : `${c.src === 'hdv' ? `<button data-buy="${esc(c.listingId)}" style="${sbtn};background:#8a5a1a" title="Acheter cette annonce (vendeur : ${esc(c.seller)}) — 2e clic pour confirmer">🛒 Acheter</button>` : ''}<button data-ban="${+c.id}" data-name="${esc(c.name)}" style="${sbtn}" title="Mettre en liste noire : ne plus jamais proposer cet objet">🚫</button>`);
       const rows = r.slots.map((s) => {
         const a = r.current[s.slot], b = r.final[s.slot];
         const same = a === b || (a && b && a.id === b.id && a.fusion === b.fusion);
-        return `<tr style="border-top:1px solid #3a3024;${same ? 'color:#8a7d66' : ''}"><td style="padding:3px 6px">${esc(s.label)}</td><td>${item(a)}</td><td>${same ? '=' : '→'}</td><td style="${same ? '' : 'font-weight:700'}">${item(b)}</td></tr>`;
+        return `<tr style="border-top:1px solid #3a3024;${same ? 'color:#8a7d66' : ''}"><td style="padding:3px 6px">${esc(s.label)}</td><td>${item(a)}</td><td>${same ? '=' : '→'}</td><td style="${same ? '' : 'font-weight:700'}">${item(b)}${same ? '' : tools(b)}</td></tr>`;
       }).join('');
       const turn = (t) => t.used.map((u) => `${esc(u.sp.name)} (${u.sp.ap} PA, ${fmt(u.v)})`).join(' + ') || '—';
       const keys = ['pa', 'pv', ...OFFENSE_KEYS.filter((k) => k !== 'pa'), 'vitalite'];
@@ -2970,17 +3075,25 @@
       }).filter(Boolean).join(' · ');
       const sets = (st) => st.active.map((a) => `${esc(a.name)} (${a.count})`).join(', ') || 'aucune';
       const hdvCost = Object.values(r.final).filter((c) => c?.src === 'hdv').reduce((n, c) => n + c.price, 0);
+      const deckHtml = r.deck.map((d, i) => `<span style="white-space:nowrap">${i + 1}. ${esc(d.sp.name)} <span style="color:#8a7d66">(${d.sp.ap} PA, ~${fmt(d.v)})</span></span>`).join(' · ');
       const badChecks = r.checks.filter(([, a, b]) => Math.abs(a - b) > Math.max(2, Math.abs(b) * 0.02));
       const owned = r.slots.some((s) => r.final[s.slot] && r.final[s.slot].src !== 'hdv' && r.final[s.slot] !== r.current[s.slot]);
       $('[data-k="out"]').innerHTML = `
         <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:baseline">
           <div>Dégâts par tour : <b>${fmt(r.curTurn.dmg)}</b> → <b style="font-size:17px;color:#6fcf7a">${fmt(r.nxtTurn.dmg)}</b> ${gain > 0.5 ? `<span style="color:#6fcf7a">(+${fmt(gain)}, +${(gain / Math.max(1, r.curTurn.dmg) * 100).toFixed(1)} %)</span>` : '<span style="color:#b9a98c">(ton build est déjà le meilleur trouvé)</span>'}</div>
-          ${hdvCost ? `<div style="color:#f0c04a">🛒 Coût des achats HDV : ${fmt(hdvCost)} K</div>` : ''}
+          ${hdvCost ? `<div style="color:#f0c04a">🛒 Achats HDV restants : ${fmt(hdvCost)} K${r.budget ? ` / budget ${fmt(r.budget)} K` : ''}</div>` : r.budget ? `<div style="color:#b9a98c">Budget ${fmt(r.budget)} K : aucun achat nécessaire</div>` : ''}
         </div>
         ${r.pvShort ? `<div style="color:#ff7b6b;font-weight:700">⚠️ PV minimum (${fmt(r.pvMin)}) impossible à atteindre avec tes objets : le build ci-dessous est celui qui a le plus de PV (${fmt(r.pvOf(r.nxt.S))}).</div>` : ''}
         <div style="font-size:12px"><b>Sorts du tour</b> — actuel : ${turn(r.curTurn)}<br><b style="color:#6fcf7a">proposé</b> : ${turn(r.nxtTurn)}</div>
         <table style="border-collapse:collapse;width:100%;font-size:12px"><tr style="color:#b9a98c;text-align:left"><th style="padding:3px 6px">Emplacement</th><th>Actuel</th><th></th><th>Proposé</th></tr>${rows}</table>
         <div style="font-size:12px"><b>Panoplies</b> — actuel : ${sets(r.cur)} · proposé : ${sets(r.nxt)}</div>
+        <div style="font-size:12px;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:6px 8px">
+          <b>🃏 Deck conseillé (${r.deck.length} cartes)</b> — sorts du tour en premier, puis les plus forts avec ce build :<br>${deckHtml}
+          <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
+            <button data-a="deck" style="${btn};background:#2e6fbf" title="Remplace le contenu de ton deck 3 par ces cartes (2e clic pour confirmer)">🃏 Écrire dans le deck 3</button>
+            <button data-a="copyDeck" style="${btn}">📋 Copier la liste</button>
+          </div>
+        </div>
         <div style="font-size:12px;line-height:1.6">${statRows}</div>
         <div style="display:flex;gap:8px;align-items:center">
           <button data-a="equip" style="${btn};background:#2e7d32" ${owned ? '' : 'disabled'}>✅ Équiper ce build${Object.values(r.final).some((c) => c?.src === 'hdv') ? ' (objets possédés seulement)' : ''}</button>
