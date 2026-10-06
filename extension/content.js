@@ -2671,6 +2671,14 @@
   let saveDeckId = null;
   // Liste noire de l'optimiseur : objets (par id, toutes fusions) à ne jamais proposer. cfg.buildBlacklist = { id: nom }
   const buildBlacklist = () => cfg.buildBlacklist || {};
+  // Objets favoris (cœur dans l'optimiseur, bulle ❤️) : cfg.buildFavs = { id: { name, icon, lvl, type, setName } }
+  const buildFavs = () => cfg.buildFavs || {};
+  const toggleFav = (c) => {
+    const favs = { ...buildFavs() };
+    if (favs[c.id]) delete favs[c.id];
+    else favs[c.id] = { name: c.name, icon: c.icon || null, lvl: c.lvl ?? null, type: c.type || null, setName: c.setName || null };
+    return save({ buildFavs: favs });
+  };
 
   // Bonus de panoplie par nom (dofusdb, en cache 7 jours) : { nom: [[{k, v}], …] | null }
   async function fetchSetBonuses(names) {
@@ -2766,19 +2774,20 @@
   async function fetchBestiary(say) {
     try {
       const c = JSON.parse(localStorage.getItem(BESTIARY_KEY) || 'null');
-      if (c?.items && c.boss && Date.now() - c.at < BESTIARY_MS) return c;
+      if (c?.v === 2 && Date.now() - c.at < BESTIARY_MS) return c;
     } catch { /* copie absente ou illisible */ }
     say?.('Import du bestiaire (copie locale absente ou de plus d’un jour)…');
     const { flight } = await fetchFlight('/bestiaire');
     const { props } = rscProps(flight, (x) => Array.isArray(x.monsters) && Array.isArray(x.items));
     if (!props) throw new Error('Bestiaire illisible');
-    const zones = Object.fromEntries((props.zones || []).map((z) => [z.id, z.area && z.area !== z.n ? `${z.n} (${z.area})` : z.n]));
+    // zones : id (le même que /chasse?zone=) → [nom (région), niveau min, niveau max]
+    const zones = Object.fromEntries((props.zones || []).map((z) => [z.id, [z.area && z.area !== z.n ? `${z.n} (${z.area})` : z.n, z.min, z.max]]));
     const items = props.items.filter((it) => it?.id).map((it) => ({ id: it.id, n: it.n, lvl: it.lvl, s: it.s, icon: it.icon, r: it.r,
       st: it.st || {}, setName: it.setName || null, two: !!it.w?.twoHanded }));
-    const drops = {};   // id objet → [[monstre, niveau min, niveau max, ta chance %, zones]], meilleure chance d'abord
+    const drops = {};   // id objet → [[monstre, niveau min, niveau max, ta chance %, ids de zones]], meilleure chance d'abord
     for (const m of props.monsters) {
       for (const [id, , mine] of Array.isArray(m.d) ? m.d : []) {
-        (drops[id] ||= []).push([m.n, m.lo, m.hi, +mine || 0, (m.z || []).map((z) => zones[z] || `zone ${z}`)]);
+        (drops[id] ||= []).push([m.n, m.lo, m.hi, +mine || 0, m.z || []]);
       }
     }
     for (const id in drops) drops[id].sort((a, b) => b[3] - a[3]);
@@ -2797,7 +2806,8 @@
       for (const k in x) walk(x[k]);
     };
     for (const id in rows) walk(rows[id]);
-    const boss = {};   // id objet → [[boss, niveau, étape du Chemin, chance %, zone, vaincu]]
+    const boss = {};   // id objet → [[boss, niveau, étape du Chemin, chance %, zone, vaincu, id de zone de chasse ou null]]
+    const zoneByName = new Map((props.zones || []).map((z) => [z.n, z.id]));
     const doc = new DOMParser().parseFromString(bp.html, 'text/html');
     for (const panel of doc.querySelectorAll('main .panel')) {
       const head = panel.querySelector('img[src*="/img/monsters/"]')?.nextElementSibling;
@@ -2807,13 +2817,14 @@
       const zt = zoneEl.textContent, st = stepEl.textContent;
       const src = [nameEl.textContent.trim(), +(zt.match(/niveau\s*(\d+)/) || [])[1] || 0, +(st.match(/étape\s*(\d+)/) || [])[1] || 0,
         0, zt.replace(/\s*·\s*niveau.*$/, '').trim(), /vaincu/.test(st)];
+      src[6] = zoneByName.get(src[4]) ?? null;
       for (const li of lis) {
         const it = known.get(li.querySelector('[title]')?.getAttribute('title'));
         const pct = li.textContent.match(/([\d,.]+)\s*%/);
         if (it) (boss[it.id] ||= []).push(Object.assign([...src], { 3: pct ? +pct[1].replace(',', '.') : 0 }));
       }
     }
-    const out = { at: Date.now(), items, drops, boss };
+    const out = { v: 2, at: Date.now(), items, drops, boss, zones };
     try { localStorage.setItem(BESTIARY_KEY, JSON.stringify(out)); } catch (e) { DM.log(`bestiaire : copie locale impossible (${e.message})`); }
     DM.log(`bestiaire : ${items.length} objets, ${props.monsters.length} monstres importés`);
     return out;
@@ -3004,7 +3015,7 @@
       const add = b.items.filter((it) => !have.has(it.id) && !(it.lvl > level));
       pool.push(...add.map((it) => ({ id: it.id, name: it.n, lvl: it.lvl, type: it.s, rarity: it.r, icon: it.icon, fusion: 0,
         setName: it.setName, two: it.two, eff: fusedStats(it.st, it.s, 0), src: 'drop' })));
-      bestiary = { drops: b.drops, boss: b.boss, count: add.length, at: b.at };
+      bestiary = { drops: b.drops, boss: b.boss, zones: b.zones, count: add.length, at: b.at };
     }
     say('Bonus de panoplie (dofusdb)…');
     const setFx = await fetchSetBonuses([...new Set(pool.map((c) => c.setName).filter(Boolean))]);
@@ -3308,6 +3319,13 @@
     let result = null, running = false;
     ov.addEventListener('click', async (e) => {
       if (e.target.closest('[data-a="x"]')) return close();
+      const fav = e.target.closest('[data-fav]');
+      if (fav && result) {
+        const [slot, side] = fav.dataset.fav.split('|');
+        const c = side === 'cur' ? result.current[slot] : result.final[slot];
+        if (c) { await toggleFav(c); render(); }
+        return;
+      }
       const unban = e.target.closest('[data-unban]');
       if (unban) {
         const bl = { ...buildBlacklist() };
@@ -3497,7 +3515,8 @@
       const r = result;
       const gain = r.nxtTurn.dmg - r.curTurn.dmg;
       const gs = r.goal.stat, gA = gs ? r.goal.value(r.cur.S) : 0, gB = gs ? r.goal.value(r.nxt.S) : 0;
-      const item = (c, slot, side) => (c ? `<span data-hover="${esc(slot)}|${side}" style="cursor:help">${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain;vertical-align:middle">` : ''} ${esc(itemLabel(c))}${c.src === 'hdv' ? ` <span style="color:#f0c04a">🛒 ${fmt(c.price)} K</span>` : ''}${c.src === 'bank' ? ` <span style="color:#8fb8ee">🏦 ${esc(c.bankName)}</span>` : ''}${c.src === 'drop' ? ` <span style="color:#c99bff">🐉 à looter</span>${c.offer ? ` <span style="color:#f0c04a">· en vente ${fmt(c.offer.price)} K${c.offer.fusion ? ` (fusion ${c.offer.fusion})` : ''}</span>` : ''}` : ''}${c.bought ? ' <span style="color:#6fcf7a">✔ acheté</span>' : ''}</span>` : '<i style="color:#8a7d66">vide</i>');
+      const heart = (c, slot, side) => `<button data-fav="${esc(slot)}|${side}" title="${buildFavs()[c.id] ? 'Retirer des favoris' : 'Ajouter aux favoris (bulle ❤️ en bas à gauche)'}" style="background:none;border:0;cursor:pointer;padding:0 2px;font-size:13px;color:${buildFavs()[c.id] ? '#ff5c7a' : '#8a7d66'}">${buildFavs()[c.id] ? '❤' : '♡'}</button>`;
+      const item = (c, slot, side) => (c ? `${heart(c, slot, side)}<span data-hover="${esc(slot)}|${side}" style="cursor:help">${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain;vertical-align:middle">` : ''} ${esc(itemLabel(c))}${c.src === 'hdv' ? ` <span style="color:#f0c04a">🛒 ${fmt(c.price)} K</span>` : ''}${c.src === 'bank' ? ` <span style="color:#8fb8ee">🏦 ${esc(c.bankName)}</span>` : ''}${c.src === 'drop' ? ` <span style="color:#c99bff">🐉 à looter</span>${c.offer ? ` <span style="color:#f0c04a">· en vente ${fmt(c.offer.price)} K${c.offer.fusion ? ` (fusion ${c.offer.fusion})` : ''}</span>` : ''}` : ''}${c.bought ? ' <span style="color:#6fcf7a">✔ acheté</span>' : ''}</span>` : '<i style="color:#8a7d66">vide</i>');
       const sbtn = 'border:1px solid #5a4a33;border-radius:6px;padding:2px 7px;color:#fff;cursor:pointer;font:600 11px system-ui,sans-serif;background:#2a231a;margin-left:4px';
       const tools = (c) => (!c ? '' : `${c.src === 'bank' ? (c.queued ? '<span style="color:#6fcf7a;margin-left:4px">✔ en file d’échange</span>' : `<button data-bankq="${esc(c.uid)}" style="${sbtn};background:#2e6fbf" title="Ajoute cet objet à la file d’échange de ${esc(c.bankName)} : lance « Tout échanger » depuis son onglet, puis équipe-le">📦 File d’échange</button>`) : ''}${c.src === 'drop' && c.offer ? `<button data-buy="${esc(c.offer.listingId)}" style="${sbtn};background:#8a5a1a" title="Acheter cette annonce (vendeur : ${esc(c.offer.seller)}) — 2e clic pour confirmer">🛒 Acheter</button>` : ''}${c.src === 'hdv' ? `<button data-buy="${esc(c.listingId)}" style="${sbtn};background:#8a5a1a" title="Acheter cette annonce (vendeur : ${esc(c.seller)}) — 2e clic pour confirmer">🛒 Acheter</button>` : ''}<button data-ban="${+c.id}" data-name="${esc(c.name)}" style="${sbtn}" title="Mettre en liste noire : ne plus jamais proposer cet objet">🚫</button>`);
       // monstres qui lâchent un objet à looter : les 3 meilleures chances (prospection comprise), niveaux et zones
@@ -3506,7 +3525,7 @@
       const srcLine = (c) => {
         const lines = [
           ...(c.bossSources || []).slice(0, 2).map(([n, lvl, step, p, z, done]) => `👑 ${esc(n)} (Boss du Chemin, étape ${step}${done ? ', vaincu' : ''}, niv. ${lvl}) : ${p ? pctTxt(p) : '?'} — ${esc(z)}`),
-          ...(c.sources || []).slice(0, 3).map(([n, lo, hi, p, z]) => `${esc(n)} (niv. ${lo === hi ? lo : `${lo}–${hi}`}) : ${p ? pctTxt(p) : 'objet bonus de victoire'} — ${esc(z.join(', ') || 'zone inconnue')}`),
+          ...(c.sources || []).slice(0, 3).map(([n, lo, hi, p, z]) => `${esc(n)} (niv. ${lo === hi ? lo : `${lo}–${hi}`}) : ${p ? pctTxt(p) : 'objet bonus de victoire'} — ${esc(z.map((id) => r.bestiary.zones[id]?.[0] || `zone ${id}`).join(', ') || 'zone inconnue')}`),
         ];
         const more = Math.max(0, (c.bossSources || []).length - 2) + Math.max(0, (c.sources || []).length - 3);
         return `<div style="font-weight:400;font-size:11px;color:#b9a98c">${lines.join('<br>') || 'Ni monstre ni boss du bestiaire ne le lâche (coffres, objet bonus…).'}${more ? `<br>+ ${more} autre(s) source(s)` : ''}</div>`;
@@ -3571,6 +3590,69 @@
           Panoplies de la fiche : ${r.sheet.sets.map((x) => `${esc(x.name)} (${x.count}/${x.max}) ${esc(x.text)}`).join(' ; ') || 'aucune'}.
           Prestige ${r.sheet.prestige}, niveau ${r.sheet.level}.</details>`;
     }
+  }
+
+  // Favoris : chaque objet se déplie sur ses sources (bestiaire) ; une zone ouvre ses groupes de chasse.
+  async function openFavorites() {
+    document.querySelector('.dm-picker')?.remove();
+    const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+    const ov = document.createElement('div');
+    ov.className = 'dm-picker';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:#000a;display:grid;place-items:center;padding:16px;font:13px system-ui,sans-serif;color:#eee';
+    const close = () => { ov.remove(); document.removeEventListener('keydown', onKey, true); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+    document.addEventListener('keydown', onKey, true);
+    ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
+    const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:4px 9px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
+    ov.innerHTML = `<div style="width:min(720px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
+      <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">❤️ Objets favoris${DM.tip('Ajoute des objets avec le cœur ♡ de l’optimiseur de build. Clique sur un objet pour voir les boss et monstres qui le lâchent, avec tes chances ; clique sur une zone pour ouvrir ses groupes de chasse.')}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
+      <div data-k="msg" style="font-size:12px;color:#b9a98c"></div>
+      <div data-k="list" style="overflow-y:auto;display:flex;flex-direction:column;gap:6px"></div></div>`;
+    document.body.appendChild(ov);
+    const $ = (q) => ov.querySelector(q);
+    const say = (t) => { $('[data-k="msg"]').textContent = t; };
+    let b = null;
+    try { b = await fetchBestiary(say); say(''); } catch (e) { say(`Bestiaire illisible (${e.message}) : sources indisponibles.`); }
+    const pctTxt = (x) => `${(x >= 1 ? x.toFixed(1) : x.toFixed(2)).replace('.', ',')} %`;
+    const zoneBtn = (id) => `<button data-zone="${+id}" style="${btn};background:#2e6fbf" title="Ouvrir les groupes de chasse de cette zone">🗺️ ${esc(b?.zones[id]?.[0] || `Zone ${id}`)}${b?.zones[id] ? ` <span style="font-weight:400;color:#cfe0ff">niv. ${b.zones[id][1]}–${b.zones[id][2]}</span>` : ''}</button>`;
+    const sources = (id) => {
+      const bosses = b?.boss[id] || [], mobs = b?.drops[id] || [];
+      // monstres regroupés par zone (meilleure chance d'abord) : un clic sur la zone = ses groupes de chasse
+      const byZone = new Map();
+      for (const [n, lo, hi, p, zs] of mobs) {
+        for (const z of zs.length ? zs : [null]) {
+          if (!byZone.has(z)) byZone.set(z, []);
+          byZone.get(z).push(`${esc(n)} <span style="color:#8a7d66">(niv. ${lo === hi ? lo : `${lo}–${hi}`})</span> : ${p ? pctTxt(p) : 'objet bonus de victoire'}`);
+        }
+      }
+      const html = [
+        ...bosses.map(([n, lvl, step, p, z, done, zid]) => `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">👑 <b>${esc(n)}</b> <span style="color:#8a7d66">Boss du Chemin, étape ${step}${done ? ' (vaincu)' : ''}, niv. ${lvl}</span> : ${p ? pctTxt(p) : '?'} ${zid != null ? zoneBtn(zid) : `<span style="color:#8a7d66">— ${esc(z)}</span>`}</div>`),
+        ...[...byZone].map(([z, list]) => `<div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap">${z == null ? '<span style="color:#8a7d66">Zone inconnue</span>' : zoneBtn(z)}<span style="flex:1;min-width:200px">${list.join(' · ')}</span></div>`),
+      ];
+      return html.join('') || '<div style="color:#8a7d66">Ni monstre ni boss du bestiaire ne le lâche (coffres, objet bonus, boutique…).</div>';
+    };
+    const render = () => {
+      const favs = Object.entries(buildFavs()).sort((x, y) => (y[1].lvl || 0) - (x[1].lvl || 0));
+      $('[data-k="list"]').innerHTML = favs.length ? favs.map(([id, f]) => `<details style="background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:6px 8px">
+        <summary style="cursor:pointer;display:flex;align-items:center;gap:6px">${f.icon ? `<img src="/img/items/${+f.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain">` : ''}
+          <b style="flex:1">${esc(f.name)}</b><span style="color:#8a7d66;font-size:12px">${esc(SLOT_NAMES[f.type] || f.type || '')}${f.lvl ? ` · niv. ${f.lvl}` : ''}${f.setName ? ` · ${esc(f.setName)}` : ''}</span>
+          ${f.type ? `<a href="/hdv?emplacement=${encodeURIComponent(f.type)}" target="_blank" style="${btn};text-decoration:none" title="Ouvrir l’HDV sur cet emplacement (nouvel onglet)">🛒 HDV</a>` : ''}
+          <button data-unfav="${esc(id)}" style="${btn}" title="Retirer des favoris">✕</button></summary>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;font-size:12px">${sources(+id)}</div></details>`).join('')
+        : '<div style="color:#b9a98c">Aucun favori : dans l’optimiseur de build, clique sur le cœur ♡ à côté d’un objet.</div>';
+    };
+    render();
+    ov.addEventListener('click', async (e) => {
+      if (e.target.closest('[data-a="x"]')) return close();
+      const un = e.target.closest('[data-unfav]');
+      if (un) { e.preventDefault(); await toggleFav({ id: un.dataset.unfav }); render(); return; }
+      const z = e.target.closest('[data-zone]');
+      if (z) {
+        // onglet du pilote : on ne l'emmène pas ailleurs, la zone s'ouvre dans un nouvel onglet
+        const url = `/chasse?zone=${+z.dataset.zone}`;
+        if (isOwner()) window.open(url, '_blank'); else location.href = url;
+      }
+    });
   }
 
   async function openSpellList() {
@@ -3748,6 +3830,7 @@
       display: grid; place-items: center; font-size: 22px; cursor: pointer; user-select: none;
       background: #262a31; border: 3px solid var(--st, #666); box-shadow: 0 2px 10px rgba(0,0,0,.5); transition: transform .15s; }
     .bubble:hover { transform: scale(1.08); }
+    .bubble.fav { left: 64px; width: 36px; height: 36px; bottom: 16px; font-size: 16px; border-width: 2px; border-color: #c0485a; }
     .panel { position: fixed; left: 12px; bottom: 64px; z-index: 2147483647; width: 290px; max-width: calc(100vw - 24px);
       max-height: calc(100vh - 80px); overflow-y: auto; background: #1b1d22; color: #e8e6e1;
       border: 1px solid #3a3f48; border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.55);
@@ -3909,11 +3992,13 @@
           <ul class="wanted" data-k="wanted"></ul>
         </div>
       </div>
-      <div class="bubble" title="Autopilot-DM">🤖</div>`;
+      <div class="bubble" title="Autopilot-DM">🤖</div>
+      <div class="bubble fav" title="Objets favoris : où les looter">❤️</div>`;
     DM.installTips(root);
     const $ = (k) => root.querySelector(`[data-k="${k}"]`);
     const panel = root.querySelector('.panel');
     const bubble = root.querySelector('.bubble');
+    root.querySelector('.bubble.fav').addEventListener('click', () => { setOpen(false); openFavorites(); });
 
     // Ouverture du panneau mémorisée pour l'onglet : il reste ouvert après les rechargements de l'avance rapide.
     const setOpen = (open) => {
