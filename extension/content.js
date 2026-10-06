@@ -3092,16 +3092,44 @@
     });
 
     const fmt = (n) => Math.round(n).toLocaleString('fr-FR');
+    // Survol d'un objet : ses stats (prestige compris) et l'écart avec l'objet de l'autre colonne du même emplacement.
+    const hover = document.createElement('div');
+    hover.style.cssText = 'position:fixed;z-index:2147483647;max-width:300px;padding:8px 10px;border-radius:8px;background:#0f1114;border:1px solid #5a4a33;box-shadow:0 4px 14px #000a;font:12px/1.45 system-ui,sans-serif;color:#e8e6e1;pointer-events:none;display:none';
+    ov.appendChild(hover);
+    const statIdxOf = (k) => { const i = STAT_ORDER.indexOf(k); return i < 0 ? 999 : i; };
+    const statLine = (k, v, signed) => `<div style="color:${signed ? (v > 0 ? '#6fcf7a' : '#ff7b6b') : v < 0 ? '#ff7b6b' : 'inherit'}">${v > 0 ? '+' : ''}${fmt(v)} ${esc(STAT_LABELS[k] || k)}</div>`;
+    ov.addEventListener('mouseover', (e) => {
+      const el = e.target.closest('[data-hover]');
+      if (!el || !result) { hover.style.display = 'none'; return; }
+      const [slot, side] = el.dataset.hover.split('|');
+      const c = side === 'cur' ? result.current[slot] : result.final[slot];
+      const other = side === 'cur' ? result.final[slot] : result.current[slot];
+      if (!c) { hover.style.display = 'none'; return; }
+      const keys = (o) => Object.keys(o || {}).filter((k) => o[k]).sort((a, b) => statIdxOf(a) - statIdxOf(b));
+      const diffKeys = [...new Set([...keys(c.eff), ...keys(other?.eff)])].sort((a, b) => statIdxOf(a) - statIdxOf(b))
+        .filter((k) => (c.eff[k] || 0) !== (other?.eff?.[k] || 0));
+      hover.innerHTML = `<div style="font-weight:800">${esc(itemLabel(c))}</div>
+        <div style="color:#8a7d66;font-size:11px">Niveau ${c.lvl ?? '?'}${c.setName ? ` · ${esc(c.setName)}` : ''}${c.src === 'hdv' ? ` · HDV ${fmt(c.price)} K (${esc(c.seller)})` : c.src === 'worn' ? ' · porté' : ' · inventaire'}${c.two ? ' · deux mains' : ''}</div>
+        <div style="margin-top:4px">${keys(c.eff).map((k) => statLine(k, c.eff[k])).join('') || '<i>aucune stat</i>'}</div>
+        ${other !== c ? `<div style="margin-top:6px;border-top:1px solid #3a3024;padding-top:4px;color:#b9a98c">${side === 'new' ? `Par rapport à ${other ? esc(itemLabel(other)) : 'l’emplacement vide'}` : `En passant à ${other ? esc(itemLabel(other)) : 'vide'}`} :</div>
+          ${diffKeys.map((k) => statLine(k, side === 'new' ? (c.eff[k] || 0) - (other?.eff?.[k] || 0) : (other?.eff?.[k] || 0) - (c.eff[k] || 0), true)).join('') || '<i>aucun écart</i>'}
+          <div style="color:#8a7d66;font-size:11px;margin-top:3px">Hors bonus de panoplie (voir la ligne « Panoplies »).</div>` : ''}`;
+      hover.style.display = 'block';
+      const rc = el.getBoundingClientRect(), w = hover.offsetWidth, h = hover.offsetHeight;
+      hover.style.left = `${Math.max(6, Math.min(rc.left, innerWidth - w - 6))}px`;
+      hover.style.top = `${rc.bottom + h + 8 > innerHeight ? Math.max(6, rc.top - h - 6) : rc.bottom + 6}px`;
+    });
+    ov.addEventListener('mouseout', (e) => { if (!e.relatedTarget?.closest?.('[data-hover]')) hover.style.display = 'none'; });
     function render() {
       const r = result;
       const gain = r.nxtTurn.dmg - r.curTurn.dmg;
-      const item = (c) => (c ? `${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain;vertical-align:middle">` : ''} ${esc(itemLabel(c))}${c.src === 'hdv' ? ` <span style="color:#f0c04a">🛒 ${fmt(c.price)} K</span>` : ''}${c.bought ? ' <span style="color:#6fcf7a">✔ acheté</span>' : ''}` : '<i style="color:#8a7d66">vide</i>');
+      const item = (c, slot, side) => (c ? `<span data-hover="${esc(slot)}|${side}" style="cursor:help">${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain;vertical-align:middle">` : ''} ${esc(itemLabel(c))}${c.src === 'hdv' ? ` <span style="color:#f0c04a">🛒 ${fmt(c.price)} K</span>` : ''}${c.bought ? ' <span style="color:#6fcf7a">✔ acheté</span>' : ''}</span>` : '<i style="color:#8a7d66">vide</i>');
       const sbtn = 'border:1px solid #5a4a33;border-radius:6px;padding:2px 7px;color:#fff;cursor:pointer;font:600 11px system-ui,sans-serif;background:#2a231a;margin-left:4px';
       const tools = (c) => (!c ? '' : `${c.src === 'hdv' ? `<button data-buy="${esc(c.listingId)}" style="${sbtn};background:#8a5a1a" title="Acheter cette annonce (vendeur : ${esc(c.seller)}) — 2e clic pour confirmer">🛒 Acheter</button>` : ''}<button data-ban="${+c.id}" data-name="${esc(c.name)}" style="${sbtn}" title="Mettre en liste noire : ne plus jamais proposer cet objet">🚫</button>`);
       const rows = r.slots.map((s) => {
         const a = r.current[s.slot], b = r.final[s.slot];
         const same = a === b || (a && b && a.id === b.id && a.fusion === b.fusion);
-        return `<tr style="border-top:1px solid #3a3024;${same ? 'color:#8a7d66' : ''}"><td style="padding:3px 6px">${esc(s.label)}</td><td>${item(a)}</td><td>${same ? '=' : '→'}</td><td style="${same ? '' : 'font-weight:700'}">${item(b)}${same ? '' : tools(b)}</td></tr>`;
+        return `<tr style="border-top:1px solid #3a3024;${same ? 'color:#8a7d66' : ''}"><td style="padding:3px 6px">${esc(s.label)}</td><td>${item(a, s.slot, 'cur')}</td><td>${same ? '=' : '→'}</td><td style="${same ? '' : 'font-weight:700'}">${item(b, s.slot, 'new')}${same ? '' : tools(b)}</td></tr>`;
       }).join('');
       const turn = (t) => t.used.map((u) => `${esc(u.sp.name)} (${u.sp.ap} PA, ${fmt(u.v)})`).join(' + ') || '—';
       const keys = ['pa', 'pv', ...OFFENSE_KEYS.filter((k) => k !== 'pa'), 'vitalite'];
