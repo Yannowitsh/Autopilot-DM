@@ -88,14 +88,19 @@
   const huntEnd = () => [...document.querySelectorAll('a')].some((a) => /Autres groupes de la zone/.test(a.textContent));
 
   const groupNumber = (panel) => +(panel?.querySelector('.title')?.textContent.trim().match(/^Groupe\s*(\d+)$/)?.[1] || 0);
+  // Carte d'un groupe de chasse : « .panel » avant la v2 du site, carte « pageKit…__card » (classe CSS module) depuis.
+  const GROUP_CARD = '.panel, [class*="__card"]';
+  const groupCardOf = (el) => el?.closest?.(GROUP_CARD) || null;
+  // Cartes « Groupe N » de la page (ou d'un document parsé), repérées par leur titre.
+  const groupCards = (root = document) => [...root.querySelectorAll('.title')]
+    .filter((t) => /^Groupe\s*\d+$/.test(t.textContent.trim())).map(groupCardOf).filter((p) => p && groupNumber(p));
 
   // Panneau du groupe visé sur /chasse?zone=… : celui choisi à la main (cfg.huntGroup),
   // sinon le plus dur (« Groupe 3 », ou le numéro le plus élevé).
   function targetGroup() {
     let best = null, bestN = -1;
-    for (const p of document.querySelectorAll('.panel')) {
+    for (const p of groupCards()) {
       const n = groupNumber(p);
-      if (!n) continue;
       if (cfg.huntGroup && n === cfg.huntGroup) return p;
       if (n > bestN) { best = p; bestN = n; }
     }
@@ -118,10 +123,10 @@
     const b = e.target.closest?.('button');
     if (!b || b.disabled || !/^Attaquer$/.test(b.textContent.trim())) return;
     const zone = +new URLSearchParams(location.search).get('zone');
-    const group = groupNumber(b.closest('.panel'));
+    const group = groupNumber(groupCardOf(b));
     if (!zone || !group) return;
     const name = document.querySelector('h1')?.textContent.trim() || cfg.huntZoneName;
-    const monsters = groupMonsters(b.closest('.panel'));
+    const monsters = groupMonsters(groupCardOf(b));
     const o = { mode: 'chasse', huntZone: zone, huntZoneName: name, huntGroup: group, huntTarget: { zone, group, monsters } };
     if (isOwner()) {   // le pilote prend la main : Auto puis relance en boucle
       Object.assign(o, { botFight: true, pauseReason: null });
@@ -219,7 +224,7 @@
     const t = document.body?.textContent || '';
     let m = t.match(/Énergie\s*:\s*(\d+)\s*\/\s*(\d+)/);           // /chasse?zone=… « Énergie : 98/100 »
     if (m) return { energy: +m[1], energyMax: +m[2] };
-    m = t.match(/coût\s*\d+\s*Énergie\s*\(tu en as\s*(\d+)\)/);    // /aventure « coût 1 Énergie (tu en as 76) »
+    m = t.match(/coût\s*\d+\s*énergie\s*\(tu en as\s*(\d+)\)/i);   // /aventure « coût 1 énergie (tu en as 76) »
     if (m) return { energy: +m[1], energyMax: cfg.energyMax || 100 };
     return null;
   }
@@ -235,8 +240,10 @@
       const r = await DM.fetchT('/jeu', { credentials: 'same-origin', cache: 'no-store' });
       if (r.redirected && /connexion/.test(r.url)) return { error: 'déconnecté', fatal: true };
       if (!r.ok) return { error: r.status === 508 || r.status === 503 ? `site saturé (HTTP ${r.status})` : `HTTP ${r.status}` };
-      const doc = new DOMParser().parseFromString(await r.text(), 'text/html');
-      const m = doc.body.textContent.match(/Énergie\s*(\d+)\s*\/\s*(\d+)/);
+      const html = await r.text();
+      // v2 du site : compteur RegenValue, props « "regen":{"value":N,"max":M » dans le payload ; sinon le texte affiché
+      const m = html.replace(/\\"/g, '"').match(/"regen":\{"value":(\d+),"max":(\d+)/)
+        || new DOMParser().parseFromString(html, 'text/html').body.textContent.match(/Énergie\s*(\d+)\s*\/\s*(\d+)/);
       if (!m) return { error: 'énergie introuvable sur /jeu' };
       await save({ energy: +m[1], energyMax: +m[2], energyAt: Date.now() });
       return +m[1];
@@ -246,7 +253,7 @@
   }
 
   // ---------- Achat d'énergie automatique ----------
-  // L'onglet du pilote demande l'achat au service worker, qui ouvre /aventure?dmBuy=1 dans un onglet à part.
+  // L'onglet du pilote demande l'achat au service worker, qui ouvre /jeu?dmBuy=1 dans un onglet à part (v2 du site : le widget d'achat est sur /jeu).
   // Cet onglet clique les boutons du widget « Acheter (… K le point, encore N aujourd'hui) » (+1 / +10 / +N (max)),
   // puis rend compte ; le service worker le ferme, lève la pause et recharge l'onglet du pilote sur sa page d'accueil.
   // Prix (constantes ENERGY du site) : 300 K le point jusqu'au 600e acheté dans la journée,
@@ -293,9 +300,9 @@
     return null;
   }
 
-  // Onglet d'achat (/aventure?dmBuy=1) : achète puis rend compte au service worker (« buyDone »).
+  // Onglet d'achat (/jeu?dmBuy=1) : achète puis rend compte au service worker (« buyDone »).
   async function runBuyTab() {
-    if (!location.pathname.startsWith('/aventure') || !new URLSearchParams(location.search).has('dmBuy')) return;
+    if (!location.pathname.startsWith('/jeu') || !new URLSearchParams(location.search).has('dmBuy')) return;
     const done = (res) => {
       DM.log('achat[onglet]: fin', res);
       return send({ type: 'buyDone', ...res }).catch(() => {});
@@ -306,9 +313,9 @@
       .filter((b) => b.offsetParent !== null && !b.disabled && /^\+\d+/.test(b.textContent.trim()))
       .map((b) => ({ b, k: +b.textContent.trim().match(/^\+(\d+)/)[1] }));
     try {
-      const { flight } = await fetchFlight('/aventure');
+      const { flight } = await fetchFlight('/jeu');
       const m = flight.match(/"energy":(\d+),"kamas":(\d+),"left":(\d+)/);
-      if (!m) throw new Error('widget d’achat introuvable sur /aventure');
+      if (!m) throw new Error('widget d’achat introuvable sur /jeu');
       const props = { energy: +m[1], kamas: +m[2], left: +m[3] };
       const plan = planBuy(props);
       DM.log('achat[onglet]: état', props, 'plan', plan);
@@ -584,7 +591,7 @@
       await sleep(humanDelay());
       const btn = isOwner() && attack();
       if (!btn) return;
-      rememberHuntTarget(btn.closest('.panel'));
+      rememberHuntTarget(groupCardOf(btn));
       await save({ botFight: true });
       spendEnergy();
       lastAutoClick = 0;   // le combat démarre en manuel : le mode Auto sera activé au tick suivant
@@ -656,7 +663,7 @@
   // /inventaire est une page Next.js : l'inventaire est dans le payload RSC (self.__next_f.push)
   // et la vente passe par la server action « sellItems » ([{ itemId, fusion, qty }, …]).
   // `entries` ne contient que les objets non portés ; le serveur refuse de toute façon de vendre un objet porté.
-  const SELL_ACTION_FALLBACK = '406e0b152d7eeb65f891df20554b9d310fd5dfd04c';
+  const SELL_ACTION_FALLBACK = '606e0b152d7eeb65f891df20554b9d310fd5dfd04c';
   const NEVER_SELL_SLOTS = new Set(['familier', 'dofus']);   // jamais vendus par l'Autosell
   // Valeur de fusion du tier max « Rayonnant » (= FUSION.max du jeu : 0 = Tiers 1 … 3 = Tiers 4, 4 = Rayonnant, le « tier 5 »).
   // Jamais vendu automatiquement (comme « Tout cocher » sur le site).
@@ -754,7 +761,7 @@
 
   // Comme callAction, mais renvoie aussi le texte brut (la page re-rendue suit le résultat).
   async function postAction(segment, actionId, args, query = '') {
-    const tree = encodeURIComponent(JSON.stringify(['', { children: [segment, { children: ['__PAGE__', {}, null, null, 4096] }, null, null, 4096] }, null, null, 4112]));
+    const tree = encodeURIComponent(JSON.stringify(['', { children: [segment, { children: ['__PAGE__', {}, null, null, 4096] }, null, null, 4096] }, null, null, 4116]));
     const r = await DM.fetchT(`/${segment}${query}`, {
       method: 'POST',
       credentials: 'same-origin',
@@ -1784,7 +1791,7 @@
     return done;
   }
 
-  // Bouton « ⚡ Tout fusionner » sous le bouton du jeu « Fusionner 3 → T2 (130/3) » (fiche d'objet de /inventaire) :
+  // Bouton « ⚡ Tout fusionner » sous le bouton du jeu « Fusionner 3 → Tiers 2 (130/3) » (fiche d'objet de /inventaire) :
   // enchaîne toutes les fusions possibles à ce tier (130/3 → 43), sans cascade vers les tiers suivants. 2e clic = confirmation.
   // Le jeu désactive son bouton (objet verrouillé, pas assez d'exemplaires) : le nôtre suit.
   function scanFuseButtons() {
@@ -1793,7 +1800,7 @@
       const m = b.textContent.match(/Fusionner\s*\d+\s*→\s*(.+?)\s*\((\d+)\s*\/\s*(\d+)\)/);
       let extra = b.nextElementSibling?.classList.contains('dm-fuse-all') ? b.nextElementSibling : null;
       const n = m ? Math.floor(+m[2] / +m[3]) : 0;
-      const target = !m ? 0 : /Rayonnant/.test(m[1]) ? FUSION_MAX : +(m[1].match(/T(\d)/)?.[1] || 0) - 1;
+      const target = !m ? 0 : /Rayonnant/.test(m[1]) ? FUSION_MAX : +(m[1].match(/T(?:iers\s*)?(\d)/)?.[1] || 0) - 1;
       if (n < 2 || target < 1) { if (!extra?.dataset.busy) extra?.remove(); continue; }
       if (!extra) {
         extra = document.createElement('button');
@@ -2136,9 +2143,8 @@
     const html = await r.text();
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const groups = [];
-    for (const p of doc.querySelectorAll('.panel')) {
+    for (const p of groupCards(doc)) {
       const n = groupNumber(p);
-      if (!n) continue;
       const monsters = [...p.querySelectorAll('li')].map((li) => ({
         name: li.querySelector('.font-bold')?.textContent.trim() || li.querySelector('img')?.alt || '',
         lvl: +(li.textContent.match(/Niveau\s*(\d+)/)?.[1] || 0) || null,
@@ -2408,12 +2414,12 @@
     // Le pilote (démarré s'il était arrêté) passe sur cet onglet : il attaque, active l'Auto puis relance en boucle.
     await send({ type: 'claim', start: true }).catch(() => {});
   }
-  const targetGroupByNumber = (n) => [...document.querySelectorAll('.panel')].find((p) => groupNumber(p) === n);
+  const targetGroupByNumber = (n) => groupCards().find((p) => groupNumber(p) === n);
 
   // Sur une page de zone, on met en évidence les monstres d'avis de recherche.
   function highlightWanted() {
     if (!location.pathname.startsWith('/chasse')) return;
-    for (const li of document.querySelectorAll('.panel li')) {
+    for (const li of groupCards().flatMap((p) => [...p.querySelectorAll('li')])) {
       if (li.dataset.dmWanted) continue;
       const name = li.querySelector('.font-bold')?.textContent.trim();
       if (!name) continue;
@@ -2813,7 +2819,7 @@
     for (let attempt = 0; ; attempt++) {
       try {
         if (!pointsActionIds[name]) pointsActionIds[name] = await findAction((await fetchFlight('/personnage')).chunks, name, POINTS_ACTION_FALLBACK[name]);
-        const tree = encodeURIComponent(JSON.stringify(['', { children: ['personnage', { children: ['__PAGE__', {}, null, null, 4096] }, null, null, 4096] }, null, null, 4112]));
+        const tree = encodeURIComponent(JSON.stringify(['', { children: ['personnage', { children: ['__PAGE__', {}, null, null, 4096] }, null, null, 4096] }, null, null, 4116]));
         const r = await DM.fetchT('/personnage', {
           method: 'POST', credentials: 'same-origin',
           headers: { Accept: 'text/x-component', 'Content-Type': 'text/plain;charset=UTF-8', 'Next-Action': pointsActionIds[name], 'Next-Router-State-Tree': tree },
@@ -2899,8 +2905,10 @@
     const boss = {};   // id objet → [[boss, niveau, étape du Chemin, chance %, zone, vaincu, id de zone de chasse ou null]]
     const zoneByName = new Map((props.zones || []).map((z) => [z.n, z.id]));
     const doc = new DOMParser().parseFromString(bp.html, 'text/html');
-    for (const panel of doc.querySelectorAll('main .panel')) {
-      const head = panel.querySelector('img[src*="/img/monsters/"]')?.nextElementSibling;
+    for (const panel of doc.querySelectorAll('main .panel, main [class*="__card"]')) {
+      // v2 du site : l'image du boss est dans un <span> (sprite), le bloc nom / zone / étape est le voisin de ce span
+      const img = panel.querySelector('img[src*="/img/monsters/"]');
+      const head = img?.nextElementSibling || img?.parentElement?.nextElementSibling;
       const lis = panel.querySelectorAll('li');
       if (!head || head.children.length < 3 || !lis.length) continue;
       const [nameEl, zoneEl, stepEl] = head.children;

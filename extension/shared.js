@@ -201,15 +201,31 @@ const DM = {
     return s.mode === 'chasse' && s.huntZone ? `chasse : ${s.huntZoneName || 'zone ' + s.huntZone}${s.huntGroup ? ` · G${s.huntGroup}` : ''}` : 'aventure';
   },
 
-  // Liste des zones de chasse lue sur /chasse (liens « /chasse?zone=… »).
-  // all = false : zones proposées à ton niveau (/chasse), gardées en cache pour le choix de zone ;
-  // all = true  : toutes les zones du jeu (/chasse?toutes=1, ~220), pour le scan des avis de recherche.
+  // Liste des zones de chasse lue sur /chasse.
+  // all = false : zones proposées à ton niveau, gardées en cache pour le choix de zone ;
+  // all = true  : toutes les zones du jeu (~220), pour le scan des avis de recherche.
+  // v2 du site : composant ZoneBrowser, props { level, mine: [ids à ton niveau], zones: [{ id, n, area, min, max }] }
+  // dans le payload RSC (la page n'affiche qu'une partie des zones). Sinon, liens « /chasse?zone=… » de la page.
   // Utilise DOMParser : popup ou content script uniquement (pas le service worker).
   async fetchZones({ all = false } = {}) {
-    const r = await DM.fetchT(DM.ORIGIN + (all ? '/chasse?toutes=1' : '/chasse'), { credentials: 'include', cache: 'no-store' });
+    const r = await DM.fetchT(DM.ORIGIN + '/chasse', { credentials: 'include', cache: 'no-store' });
     if (r.redirected && /connexion/.test(r.url)) throw new Error('déconnecté');
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const doc = new DOMParser().parseFromString(await r.text(), 'text/html');
+    const html = await r.text();
+    const browser = DM.zoneBrowserProps(html);
+    if (browser) {
+      const mid = (z) => (z.min + z.max) / 2;
+      const mine = new Set(browser.mine || []);
+      const list = all ? browser.zones
+        : browser.zones.filter((z) => mine.has(z.id)).sort((a, b) => Math.abs(mid(a) - browser.level) - Math.abs(mid(b) - browser.level));
+      const zones = list.map((z) => ({ id: z.id, name: z.n, region: z.area || '', lvlMin: z.min ?? null, lvlMax: z.max ?? null,
+        label: z.min != null ? `${z.n} (${z.min}–${z.max})` : z.n }));
+      if (zones.length) {
+        if (!all) await chrome.storage.local.set({ huntZones: zones });
+        return zones;
+      }
+    }
+    const doc = new DOMParser().parseFromString(html, 'text/html');
     const zones = [];
     for (const a of doc.querySelectorAll('a[href*="/chasse?zone="]')) {
       const id = +new URL(a.getAttribute('href'), DM.ORIGIN).searchParams.get('zone');
@@ -222,6 +238,31 @@ const DM = {
     if (!zones.length) throw new Error('aucune zone trouvée');
     if (!all) await chrome.storage.local.set({ huntZones: zones });
     return zones;
+  },
+
+  // Props du ZoneBrowser de /chasse (objet contenant "mine" et "zones") lues dans le payload RSC de la page, ou null.
+  zoneBrowserProps(html) {
+    let flight = '';
+    for (const m of html.matchAll(/self\.__next_f\.push\(\[1,("(?:[^"\\]|\\.)*")\]\)/g)) {
+      try { flight += JSON.parse(m[1]); } catch { /* morceau illisible */ }
+    }
+    const start = flight.search(/\{"level":\d+,"mine":\[/);
+    if (start < 0) return null;
+    // fin de l'objet : accolades équilibrées, hors chaînes
+    let depth = 0, inStr = false;
+    for (let i = start; i < flight.length; i++) {
+      const c = flight[i];
+      if (inStr) { if (c === '\\') i++; else if (c === '"') inStr = false; continue; }
+      if (c === '"') inStr = true;
+      else if (c === '{' || c === '[') depth++;
+      else if ((c === '}' || c === ']') && --depth === 0) {
+        try {
+          const p = JSON.parse(flight.slice(start, i + 1));
+          return Array.isArray(p.zones) ? p : null;
+        } catch { return null; }
+      }
+    }
+    return null;
   },
 
   hhmm(ts) {

@@ -123,7 +123,7 @@ async function buyStart(farmTabId) {
   const s = await DM.getAll();
   if (!s.enabled || !s.autoBuyEnergy) { DM.log(`achat[sw]: refusé (pilote ${s.enabled ? 'ON' : 'OFF'}, achat auto ${s.autoBuyEnergy ? 'ON' : 'OFF'})`); return false; }
   if (s.energyBuy && Date.now() - s.energyBuy.at < BUY_TAB_MAX_MS) return true;
-  const tab = await chrome.tabs.create({ url: DM.ORIGIN + '/aventure?dmBuy=1', active: false });
+  const tab = await chrome.tabs.create({ url: DM.ORIGIN + '/jeu?dmBuy=1', active: false });
   await chrome.storage.local.set({ energyBuy: { tabId: tab.id, farmTabId, at: Date.now() } });
   DM.log(`achat[sw]: onglet d’achat ${tab.id} ouvert pour l’onglet ${farmTabId}`);
   return true;
