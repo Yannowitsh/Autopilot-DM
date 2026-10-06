@@ -677,8 +677,24 @@
   }
 
   // Page Next.js : payload RSC concaténé (« flight ») + chunks JS (pour retrouver les server actions).
+  // Simple lecture (GET) : en cas d'erreur serveur (5xx, « Resource Limit » 508…) ou réseau, on réessaie
+  // FLIGHT_RETRY_WAITS fois en espaçant ; fetchFlight.onRetry(message) permet d'afficher la progression.
+  const FLIGHT_RETRY_WAITS = [2000, 5000, 10000, 20000];
   async function fetchFlight(path) {
-    const r = await DM.fetchT(path, { credentials: 'same-origin', cache: 'no-store' });
+    let r;
+    for (let i = 0; ; i++) {
+      let why = null;
+      try {
+        r = await DM.fetchT(path, { credentials: 'same-origin', cache: 'no-store' });
+        if (r.status >= 500) why = `HTTP ${r.status}`;
+      } catch (e) {
+        why = e.name === 'TimeoutError' ? 'délai dépassé' : 'erreur réseau';
+      }
+      if (!why) break;
+      if (i >= FLIGHT_RETRY_WAITS.length) throw new Error(`${path} : ${why} (après ${i + 1} essais)`);
+      fetchFlight.onRetry?.(`${path} : ${why} — nouvel essai ${i + 2}/${FLIGHT_RETRY_WAITS.length + 1} dans ${FLIGHT_RETRY_WAITS[i] / 1000} s…`);
+      await sleep(FLIGHT_RETRY_WAITS[i]);
+    }
     if (r.redirected && /connexion/.test(r.url)) throw new Error('Déconnecté');
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const html = await r.text();
@@ -2623,8 +2639,14 @@
     for (let i = 0; i < missing.length; i += 25) {
       const batch = missing.slice(i, i + 25);
       const q = batch.map((n) => `name.fr[$in][]=${encodeURIComponent(n)}`).join('&');
-      const r = await DM.fetchT(`https://api.dofusdb.fr/item-sets?${q}&$limit=50&$select[]=name&$select[]=effects&lang=fr`, {}, 20000);
-      if (!r.ok) throw new Error(`dofusdb : HTTP ${r.status}`);
+      const url = `https://api.dofusdb.fr/item-sets?${q}&$limit=50&$select[]=name&$select[]=effects&lang=fr`;
+      let r = null;
+      for (const wait of [0, 2000, 5000, 10000]) {
+        if (wait) await sleep(wait);
+        r = await DM.fetchT(url, {}, 20000).catch(() => null);
+        if (r?.ok) break;
+      }
+      if (!r?.ok) throw new Error(`dofusdb : ${r ? `HTTP ${r.status}` : 'injoignable'} (après 4 essais)`);
       const found = {};
       for (const set of (await r.json()).data || []) {
         found[set.name?.fr] = (set.effects || []).map((lvl) => (lvl || []).map((e) => ({ k: CHAR_KEYS[e.characteristic], v: +e.from || 0 })).filter((e) => e.k && e.v));
@@ -2703,10 +2725,17 @@
     return { dmg: best, used };
   }
 
-  async function fetchHdvGear(types, level) {
+  async function fetchHdvGear(types, level, failed = []) {
     const out = [];
     for (const type of types) {
-      const { flight } = await fetchFlight(`/hdv?emplacement=${encodeURIComponent(type)}`);
+      let flight;
+      try {
+        ({ flight } = await fetchFlight(`/hdv?emplacement=${encodeURIComponent(type)}`));
+      } catch (e) {
+        failed.push(type);   // déjà réessayé plusieurs fois : on continue sans cet emplacement
+        DM.log(`optimiseur : HDV ${type} illisible (${e.message})`);
+        continue;
+      }
       const { rows, props } = rscProps(flight, (x) => Array.isArray(x.listings));
       for (const raw of props ? rscResolve(rows, props.listings) || [] : []) {
         const l = rscResolve(rows, raw), it = rscResolve(rows, l?.item);
@@ -2742,9 +2771,10 @@
       ...state.entries.filter((e) => !(e.lvl > level)).map((e) => ({ ...e, src: 'inv' })),
       ...state.slots.filter((s) => s.cur).map((s) => ({ ...s.cur, src: 'worn', wornSlot: s.slot })),
     ];
+    const hdvFailed = [];
     if (opts.hdv) {
       say('Lecture de l’HDV…');
-      pool.push(...await fetchHdvGear([...new Set(state.slots.map((s) => s.accepts))], level));
+      pool.push(...await fetchHdvGear([...new Set(state.slots.map((s) => s.accepts))], level, hdvFailed));
     }
     pool = pool.map((c, i) => ({ ...c, uid: i, eff: withPrestige(c.eff) }));
     const banned = new Set(Object.keys(buildBlacklist()).map(Number));
@@ -2892,7 +2922,7 @@
     const dmgIds = new Set(sp.spells.map((x) => x.id));
     const keepCards = sp.deckIds(DECK_TARGET).filter((id) => !dmgIds.has(id) && !deck.some((x) => x.id === id)).slice(0, DECK_CARDS - deck.length);
     return { sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, K, setFx, hdv: opts.hdv,
-      pvMin, pvShort: pvMin && pvOf(nxt.S) < pvMin, budget, cost: costOf(final), deck: deck.map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })),
+      pvMin, pvShort: pvMin && pvOf(nxt.S) < pvMin, budget, hdvFailed, cost: costOf(final), deck: deck.map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })),
       deckChunks: sp.chunks, keepCards };
   }
 
@@ -3029,12 +3059,14 @@
         $('[data-k="out"]').innerHTML = '';
         try {
           const t0 = Date.now();
+          fetchFlight.onRetry = (m) => say(`⏳ ${m}`);
           result = await optimizeBuild(o, say);
           say(`Terminé : ${result.evals} builds testés en ${((Date.now() - t0) / 1000).toFixed(1)} s.`);
           render();
         } catch (err) {
           say(`❌ ${err.message || err}`, true);
         } finally {
+          fetchFlight.onRetry = null;
           running = false;
           $('[data-a="go"]').disabled = false;
         }
@@ -3090,6 +3122,7 @@
           <div>Dégâts par tour : <b>${fmt(r.curTurn.dmg)}</b> → <b style="font-size:17px;color:#6fcf7a">${fmt(r.nxtTurn.dmg)}</b> ${gain > 0.5 ? `<span style="color:#6fcf7a">(+${fmt(gain)}, +${(gain / Math.max(1, r.curTurn.dmg) * 100).toFixed(1)} %)</span>` : '<span style="color:#b9a98c">(ton build est déjà le meilleur trouvé)</span>'}</div>
           ${hdvCost ? `<div style="color:#f0c04a">🛒 Achats HDV restants : ${fmt(hdvCost)} K${r.budget ? ` / budget ${fmt(r.budget)} K` : ''}</div>` : r.budget ? `<div style="color:#b9a98c">Budget ${fmt(r.budget)} K : aucun achat nécessaire</div>` : ''}
         </div>
+        ${r.hdvFailed.length ? `<div style="color:#f0a040">⚠️ HDV illisible pour : ${r.hdvFailed.map((t) => esc(SLOT_NAMES[t] || t)).join(', ')} (site saturé) — ces emplacements n’ont pas d’objet HDV proposé.</div>` : ''}
         ${r.pvShort ? `<div style="color:#ff7b6b;font-weight:700">⚠️ PV minimum (${fmt(r.pvMin)}) impossible à atteindre avec tes objets : le build ci-dessous est celui qui a le plus de PV (${fmt(r.pvOf(r.nxt.S))}).</div>` : ''}
         <div style="font-size:12px"><b>Sorts du tour</b> — actuel : ${turn(r.curTurn)}<br><b style="color:#6fcf7a">proposé</b> : ${turn(r.nxtTurn)}</div>
         <table style="border-collapse:collapse;width:100%;font-size:12px"><tr style="color:#b9a98c;text-align:left"><th style="padding:3px 6px">Emplacement</th><th>Actuel</th><th></th><th>Proposé</th></tr>${rows}</table>

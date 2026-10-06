@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Autopilot-DM",
-  "version": "1.51.1",
+  "version": "1.51.2",
   "description": "Enchaîne automatiquement les étapes de l’Aventure ou la chasse (groupe le plus dur d’une zone), résout la vérification de présence, surveille l’énergie, échange des objets entre deux comptes via l’HDV et alerte sur Discord (défaite, énergie basse, boss de chasse).",
   "permissions": ["storage", "alarms"],
   "incognito": "spanning",
