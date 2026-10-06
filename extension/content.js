@@ -701,7 +701,7 @@
     let flight = '';
     for (const m of html.matchAll(/self\.__next_f\.push\(\[1,("(?:[^"\\]|\\.)*")\]\)/g)) flight += JSON.parse(m[1]);
     const chunks = [...new Set([...html.matchAll(/\/_next\/static\/chunks\/[^"'\\\s]+?\.js(?:\?[^"'\\\s]*)?/g)].map((m) => m[0]))];
-    return { flight, chunks };
+    return { flight, chunks, html };
   }
 
   // Lignes JSON du payload RSC (« id:{…} ») + premier objet (non tableau) qui satisfait `pred`.
@@ -2758,6 +2758,67 @@
     return base;
   }
 
+  // Bestiaire (/bestiaire) : tous les objets lootables (stats complètes) et, pour chacun, les monstres qui le lâchent, leurs
+  // zones et tes chances (prospection comprise, calculées par le jeu ; 0 = « objet bonus de victoire », pas un drop normal),
+  // plus les Boss du Chemin (onglet boss, HTML rendu seulement : objets lâchés à ~90 %). Copie locale d'un jour.
+  const BESTIARY_KEY = 'dmBestiary';
+  const BESTIARY_MS = 24 * 3600 * 1000;
+  async function fetchBestiary(say) {
+    try {
+      const c = JSON.parse(localStorage.getItem(BESTIARY_KEY) || 'null');
+      if (c?.items && c.boss && Date.now() - c.at < BESTIARY_MS) return c;
+    } catch { /* copie absente ou illisible */ }
+    say?.('Import du bestiaire (copie locale absente ou de plus d’un jour)…');
+    const { flight } = await fetchFlight('/bestiaire');
+    const { props } = rscProps(flight, (x) => Array.isArray(x.monsters) && Array.isArray(x.items));
+    if (!props) throw new Error('Bestiaire illisible');
+    const zones = Object.fromEntries((props.zones || []).map((z) => [z.id, z.area && z.area !== z.n ? `${z.n} (${z.area})` : z.n]));
+    const items = props.items.filter((it) => it?.id).map((it) => ({ id: it.id, n: it.n, lvl: it.lvl, s: it.s, icon: it.icon, r: it.r,
+      st: it.st || {}, setName: it.setName || null, two: !!it.w?.twoHanded }));
+    const drops = {};   // id objet → [[monstre, niveau min, niveau max, ta chance %, zones]], meilleure chance d'abord
+    for (const m of props.monsters) {
+      for (const [id, , mine] of Array.isArray(m.d) ? m.d : []) {
+        (drops[id] ||= []).push([m.n, m.lo, m.hi, +mine || 0, (m.z || []).map((z) => zones[z] || `zone ${z}`)]);
+      }
+    }
+    for (const id in drops) drops[id].sort((a, b) => b[3] - a[3]);
+    // Boss du Chemin : objets (stats lues dans le payload, par nom) et boss qui les lâchent (lus dans le HTML rendu)
+    say?.('Import des Boss du Chemin…');
+    const bp = await fetchFlight('/bestiaire?onglet=boss');
+    const known = new Map(items.map((it) => [it.n, it]));
+    const { rows } = rscProps(bp.flight, () => false);
+    const walk = (x) => {
+      if (x == null || typeof x !== 'object') return;
+      if (!Array.isArray(x) && Number.isInteger(x.id) && x.n && x.s && x.st && typeof x.st === 'object' && !known.has(x.n)) {
+        const it = { id: x.id, n: x.n, lvl: x.lvl, s: x.s, icon: x.icon, r: x.r, st: x.st, setName: x.setName || null, two: !!x.w?.twoHanded };
+        known.set(x.n, it);
+        items.push(it);
+      }
+      for (const k in x) walk(x[k]);
+    };
+    for (const id in rows) walk(rows[id]);
+    const boss = {};   // id objet → [[boss, niveau, étape du Chemin, chance %, zone, vaincu]]
+    const doc = new DOMParser().parseFromString(bp.html, 'text/html');
+    for (const panel of doc.querySelectorAll('main .panel')) {
+      const head = panel.querySelector('img[src*="/img/monsters/"]')?.nextElementSibling;
+      const lis = panel.querySelectorAll('li');
+      if (!head || head.children.length < 3 || !lis.length) continue;
+      const [nameEl, zoneEl, stepEl] = head.children;
+      const zt = zoneEl.textContent, st = stepEl.textContent;
+      const src = [nameEl.textContent.trim(), +(zt.match(/niveau\s*(\d+)/) || [])[1] || 0, +(st.match(/étape\s*(\d+)/) || [])[1] || 0,
+        0, zt.replace(/\s*·\s*niveau.*$/, '').trim(), /vaincu/.test(st)];
+      for (const li of lis) {
+        const it = known.get(li.querySelector('[title]')?.getAttribute('title'));
+        const pct = li.textContent.match(/([\d,.]+)\s*%/);
+        if (it) (boss[it.id] ||= []).push(Object.assign([...src], { 3: pct ? +pct[1].replace(',', '.') : 0 }));
+      }
+    }
+    const out = { at: Date.now(), items, drops, boss };
+    try { localStorage.setItem(BESTIARY_KEY, JSON.stringify(out)); } catch (e) { DM.log(`bestiaire : copie locale impossible (${e.message})`); }
+    DM.log(`bestiaire : ${items.length} objets, ${props.monsters.length} monstres importés`);
+    return out;
+  }
+
   // Multiplicateur réel de l'équipement : au Prestige 3, le jeu affiche « +75 % » mais applique ×1,8825 aux objets ET
   // aux bonus de panoplie, arrondi objet par objet (relevé au point près sur la fiche, 2026-10-07). On le recale sur la
   // fiche : bonus des points de caractéristiques = Σ arrondi(stat × m) des objets portés et des panoplies actives.
@@ -2934,6 +2995,16 @@
     if (opts.hdv) {
       say('Lecture de l’HDV…');
       pool.push(...await fetchHdvGear([...new Set(state.slots.map((s) => s.accepts))], level, hdvFailed));
+    }
+    // bestiaire : objets lootables que tu n'as pas (ni porté, ni inventaire, ni banque, ni en vente à l'HDV fouillé)
+    let bestiary = null;
+    if (opts.bestiary) {
+      const b = await fetchBestiary(say);
+      const have = new Set(pool.map((c) => c.id));
+      const add = b.items.filter((it) => !have.has(it.id) && !(it.lvl > level));
+      pool.push(...add.map((it) => ({ id: it.id, name: it.n, lvl: it.lvl, type: it.s, rarity: it.r, icon: it.icon, fusion: 0,
+        setName: it.setName, two: it.two, eff: fusedStats(it.st, it.s, 0), src: 'drop' })));
+      bestiary = { drops: b.drops, boss: b.boss, count: add.length, at: b.at };
     }
     say('Bonus de panoplie (dofusdb)…');
     const setFx = await fetchSetBonuses([...new Set(pool.map((c) => c.setName).filter(Boolean))]);
@@ -3139,6 +3210,20 @@
       for (const s of group) if (!place[s.slot]) place[s.slot] = rest.shift() || null;
       for (const s of group) final[s.slot] = place[s.slot];
     }
+    // objets à looter retenus : où les obtenir, et sont-ils en vente à l'HDV ? (HDV non fouillé : emplacements concernés seulement)
+    if (bestiary) {
+      const drops = Object.values(final).filter((c) => c?.src === 'drop');
+      for (const c of drops) { c.sources = bestiary.drops[c.id] || []; c.bossSources = bestiary.boss[c.id] || []; }
+      const types = [...new Set(drops.map((c) => c.type))];
+      if (types.length && !opts.hdv) {
+        say('Objets à looter : recherche à l’HDV…');
+        const offers = await fetchHdvGear(types, level, hdvFailed);
+        for (const c of drops) {
+          const o = offers.filter((x) => x.id === c.id).sort((a, b) => a.price - b.price)[0];
+          if (o) c.offer = { price: o.price, listingId: o.listingId, seller: o.seller, fusion: o.fusion };
+        }
+      }
+    }
     // actuel : équipement et points tels quels ; proposé : nouvel équipement (+ points redistribués si l'option est active)
     const cur = evalBuild(current, false), nxt = evalBuild(final);
     const curTurn = cur.turn, nxtTurn = nxt.turn;
@@ -3154,7 +3239,7 @@
     // cartes non offensives déjà dans le deck 3 (buffs, soins…) : conservées, c'est toi qui les choisis
     const dmgIds = new Set(sp.spells.map((x) => x.id));
     const keepCards = sp.deckIds(DECK_TARGET).filter((id) => !dmgIds.has(id) && !deck.some((x) => x.id === id)).slice(0, DECK_CARDS - deck.length);
-    return { sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, K, setFx, hdv: opts.hdv, target, goal,
+    return { sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, K, setFx, hdv: opts.hdv, target, goal, bestiary,
       pvMin, pvShort: pvMin && pvOf(nxt.S) < pvMin, paMin, paShort: paMin && paOf(nxt.S) < paMin, bank, budget, hdvFailed, realloc: opts.realloc !== false, cost: costOf(final), deck: deck.map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })),
       deckChunks: sp.chunks, keepCards };
   }
@@ -3188,6 +3273,7 @@
           <label style="cursor:pointer" data-tip="Considère tous tes points de caractéristiques comme redistribuables (comme après une réinitialisation) : l’optimiseur choisit en même temps l’équipement et la répartition. Décoché : tes points restent comme ils sont."><input data-o="realloc" type="checkbox"> Redistribuer mes points</label>
           <label style="cursor:pointer" data-tip="Ajoute les objets de ton autre compte (onglet ouvert en navigation privée ou normale), sauf ceux encore liés (reçus ou achetés il y a moins de 24 h). Un bouton les met dans la file d’échange de ce compte."><input data-o="bank" type="checkbox"> Inclure la banque (autre compte)</label>
           <label style="cursor:pointer" data-tip="Ajoute les objets en vente à l’HDV (jusqu’à 400 annonces par emplacement) : le build peut alors contenir des objets à acheter, avec leur prix."><input data-o="hdv" type="checkbox"> Fouiller l’HDV</label>
+          <label style="cursor:pointer" data-tip="Ajoute tous les objets lootables du bestiaire (à ton niveau) que tu n’as pas : le build peut alors contenir des objets à aller chercher, avec les monstres qui les lâchent, leurs zones et tes chances. Pour ceux-là, l’HDV est vérifié : s’ils sont en vente, tu peux les acheter directement. Le bestiaire est importé une fois puis gardé en copie locale (rafraîchie chaque jour)."><input data-o="bestiary" type="checkbox"> Chercher dans le bestiaire</label>
           <label data-k="budgetBox" data-tip="Total maximum des achats HDV du build proposé. Vide = pas de limite.">Budget <input data-o="budget" type="number" min="0" placeholder="illimité" style="${inp};width:110px"> K</label>
           <button data-a="go" style="${btn};background:#8a5a1a;margin-left:auto">Lancer</button>
         </div>
@@ -3258,12 +3344,14 @@
       }
       const buy = e.target.closest('[data-buy]');
       if (buy && result && !buy.disabled) {
-        const c = Object.values(result.final).find((x) => x?.src === 'hdv' && String(x.listingId) === buy.dataset.buy);
+        const c = Object.values(result.final).find((x) => (x?.src === 'hdv' && String(x.listingId) === buy.dataset.buy)
+          || (x?.src === 'drop' && String(x.offer?.listingId) === buy.dataset.buy));
         if (!c) return;
+        const price = c.src === 'drop' ? c.offer.price : c.price, listingId = c.src === 'drop' ? c.offer.listingId : c.listingId;
         if (armed !== buy) {   // 1er clic : confirmation
           disarm();
           armed = buy;
-          buy.textContent = `⚠️ Confirmer ${fmt(c.price)} K`;
+          buy.textContent = `⚠️ Confirmer ${fmt(price)} K`;
           armTimer = setTimeout(() => { if (armed === buy) { buy.textContent = '🛒 Acheter'; disarm(); } }, 6000);
           return;
         }
@@ -3271,9 +3359,9 @@
         buy.disabled = true;
         buy.textContent = 'Achat…';
         try {
-          await hdvCall('buyListing', [c.listingId]);
+          await hdvCall('buyListing', [listingId]);
           Object.assign(c, { src: 'inv', bought: true });   // possédé : « Équiper ce build » le prendra
-          DM.log(`optimiseur : achat HDV ${c.name} (${c.price} K, annonce ${c.listingId})`);
+          DM.log(`optimiseur : achat HDV ${c.name} (${price} K, annonce ${listingId})`);
           render();
         } catch (err) {
           buy.disabled = false;
@@ -3351,7 +3439,7 @@
       const eq = e.target.closest('[data-a="equip"]');
       if (eq && result && !eq.disabled) {
         const changes = result.slots.map((s) => ({ s, to: result.final[s.slot], from: result.current[s.slot] }))
-          .filter(({ to, from }) => to && to.src !== 'hdv' && to.src !== 'bank' && to !== from)
+          .filter(({ to, from }) => to && !['hdv', 'bank', 'drop'].includes(to.src) && to !== from)
           .map(({ s, to, from }) => ({ slot: s.slot, label: s.label, from, to }))
           .sort((a, b) => (a.slot === 'arme' ? -1 : b.slot === 'arme' ? 1 : 0));
         // déjà équipés lors d'un essai précédent (interrompu par une erreur) : on ne les refait pas
@@ -3394,7 +3482,7 @@
       const diffKeys = [...new Set([...keys(c.eff), ...keys(other?.eff)])].sort((a, b) => statIdxOf(a) - statIdxOf(b))
         .filter((k) => (c.eff[k] || 0) !== (other?.eff?.[k] || 0));
       hover.innerHTML = `<div style="font-weight:800">${esc(itemLabel(c))}</div>
-        <div style="color:#8a7d66;font-size:11px">Niveau ${c.lvl ?? '?'}${c.setName ? ` · ${esc(c.setName)}` : ''}${c.src === 'hdv' ? ` · HDV ${fmt(c.price)} K (${esc(c.seller)})` : c.src === 'worn' ? ' · porté' : c.src === 'bank' ? ` · banque (${esc(c.bankName)})` : ' · inventaire'}${c.two ? ' · deux mains' : ''}</div>
+        <div style="color:#8a7d66;font-size:11px">Niveau ${c.lvl ?? '?'}${c.setName ? ` · ${esc(c.setName)}` : ''}${c.src === 'hdv' ? ` · HDV ${fmt(c.price)} K (${esc(c.seller)})` : c.src === 'worn' ? ' · porté' : c.src === 'bank' ? ` · banque (${esc(c.bankName)})` : c.src === 'drop' ? ' · à looter (bestiaire)' : ' · inventaire'}${c.two ? ' · deux mains' : ''}</div>
         <div style="margin-top:4px">${keys(c.eff).map((k) => statLine(k, c.eff[k])).join('') || '<i>aucune stat</i>'}</div>
         ${other !== c ? `<div style="margin-top:6px;border-top:1px solid #3a3024;padding-top:4px;color:#b9a98c">${side === 'new' ? `Par rapport à ${other ? esc(itemLabel(other)) : 'l’emplacement vide'}` : `En passant à ${other ? esc(itemLabel(other)) : 'vide'}`} :</div>
           ${diffKeys.map((k) => statLine(k, side === 'new' ? (c.eff[k] || 0) - (other?.eff?.[k] || 0) : (other?.eff?.[k] || 0) - (c.eff[k] || 0), true)).join('') || '<i>aucun écart</i>'}
@@ -3409,13 +3497,25 @@
       const r = result;
       const gain = r.nxtTurn.dmg - r.curTurn.dmg;
       const gs = r.goal.stat, gA = gs ? r.goal.value(r.cur.S) : 0, gB = gs ? r.goal.value(r.nxt.S) : 0;
-      const item = (c, slot, side) => (c ? `<span data-hover="${esc(slot)}|${side}" style="cursor:help">${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain;vertical-align:middle">` : ''} ${esc(itemLabel(c))}${c.src === 'hdv' ? ` <span style="color:#f0c04a">🛒 ${fmt(c.price)} K</span>` : ''}${c.src === 'bank' ? ` <span style="color:#8fb8ee">🏦 ${esc(c.bankName)}</span>` : ''}${c.bought ? ' <span style="color:#6fcf7a">✔ acheté</span>' : ''}</span>` : '<i style="color:#8a7d66">vide</i>');
+      const item = (c, slot, side) => (c ? `<span data-hover="${esc(slot)}|${side}" style="cursor:help">${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain;vertical-align:middle">` : ''} ${esc(itemLabel(c))}${c.src === 'hdv' ? ` <span style="color:#f0c04a">🛒 ${fmt(c.price)} K</span>` : ''}${c.src === 'bank' ? ` <span style="color:#8fb8ee">🏦 ${esc(c.bankName)}</span>` : ''}${c.src === 'drop' ? ` <span style="color:#c99bff">🐉 à looter</span>${c.offer ? ` <span style="color:#f0c04a">· en vente ${fmt(c.offer.price)} K${c.offer.fusion ? ` (fusion ${c.offer.fusion})` : ''}</span>` : ''}` : ''}${c.bought ? ' <span style="color:#6fcf7a">✔ acheté</span>' : ''}</span>` : '<i style="color:#8a7d66">vide</i>');
       const sbtn = 'border:1px solid #5a4a33;border-radius:6px;padding:2px 7px;color:#fff;cursor:pointer;font:600 11px system-ui,sans-serif;background:#2a231a;margin-left:4px';
-      const tools = (c) => (!c ? '' : `${c.src === 'bank' ? (c.queued ? '<span style="color:#6fcf7a;margin-left:4px">✔ en file d’échange</span>' : `<button data-bankq="${esc(c.uid)}" style="${sbtn};background:#2e6fbf" title="Ajoute cet objet à la file d’échange de ${esc(c.bankName)} : lance « Tout échanger » depuis son onglet, puis équipe-le">📦 File d’échange</button>`) : ''}${c.src === 'hdv' ? `<button data-buy="${esc(c.listingId)}" style="${sbtn};background:#8a5a1a" title="Acheter cette annonce (vendeur : ${esc(c.seller)}) — 2e clic pour confirmer">🛒 Acheter</button>` : ''}<button data-ban="${+c.id}" data-name="${esc(c.name)}" style="${sbtn}" title="Mettre en liste noire : ne plus jamais proposer cet objet">🚫</button>`);
+      const tools = (c) => (!c ? '' : `${c.src === 'bank' ? (c.queued ? '<span style="color:#6fcf7a;margin-left:4px">✔ en file d’échange</span>' : `<button data-bankq="${esc(c.uid)}" style="${sbtn};background:#2e6fbf" title="Ajoute cet objet à la file d’échange de ${esc(c.bankName)} : lance « Tout échanger » depuis son onglet, puis équipe-le">📦 File d’échange</button>`) : ''}${c.src === 'drop' && c.offer ? `<button data-buy="${esc(c.offer.listingId)}" style="${sbtn};background:#8a5a1a" title="Acheter cette annonce (vendeur : ${esc(c.offer.seller)}) — 2e clic pour confirmer">🛒 Acheter</button>` : ''}${c.src === 'hdv' ? `<button data-buy="${esc(c.listingId)}" style="${sbtn};background:#8a5a1a" title="Acheter cette annonce (vendeur : ${esc(c.seller)}) — 2e clic pour confirmer">🛒 Acheter</button>` : ''}<button data-ban="${+c.id}" data-name="${esc(c.name)}" style="${sbtn}" title="Mettre en liste noire : ne plus jamais proposer cet objet">🚫</button>`);
+      // monstres qui lâchent un objet à looter : les 3 meilleures chances (prospection comprise), niveaux et zones
+      const pctTxt = (x) => `${(x >= 1 ? x.toFixed(1) : x.toFixed(2)).replace('.', ',')} %`;
+      // (taux 0 dans le bestiaire = « objet bonus de victoire » ; Boss du Chemin d'abord, ~90 %)
+      const srcLine = (c) => {
+        const lines = [
+          ...(c.bossSources || []).slice(0, 2).map(([n, lvl, step, p, z, done]) => `👑 ${esc(n)} (Boss du Chemin, étape ${step}${done ? ', vaincu' : ''}, niv. ${lvl}) : ${p ? pctTxt(p) : '?'} — ${esc(z)}`),
+          ...(c.sources || []).slice(0, 3).map(([n, lo, hi, p, z]) => `${esc(n)} (niv. ${lo === hi ? lo : `${lo}–${hi}`}) : ${p ? pctTxt(p) : 'objet bonus de victoire'} — ${esc(z.join(', ') || 'zone inconnue')}`),
+        ];
+        const more = Math.max(0, (c.bossSources || []).length - 2) + Math.max(0, (c.sources || []).length - 3);
+        return `<div style="font-weight:400;font-size:11px;color:#b9a98c">${lines.join('<br>') || 'Ni monstre ni boss du bestiaire ne le lâche (coffres, objet bonus…).'}${more ? `<br>+ ${more} autre(s) source(s)` : ''}</div>`;
+      };
+      const drops = Object.values(r.final).filter((c) => c?.src === 'drop');
       const rows = r.slots.map((s) => {
         const a = r.current[s.slot], b = r.final[s.slot];
         const same = a === b || (a && b && a.id === b.id && a.fusion === b.fusion);
-        return `<tr style="border-top:1px solid #3a3024;${same ? 'color:#8a7d66' : ''}"><td style="padding:3px 6px">${esc(s.label)}</td><td>${item(a, s.slot, 'cur')}</td><td>${same ? '=' : '→'}</td><td style="${same ? '' : 'font-weight:700'}">${item(b, s.slot, 'new')}${same ? '' : tools(b)}</td></tr>`;
+        return `<tr style="border-top:1px solid #3a3024;${same ? 'color:#8a7d66' : ''}"><td style="padding:3px 6px">${esc(s.label)}</td><td>${item(a, s.slot, 'cur')}</td><td>${same ? '=' : '→'}</td><td style="${same ? '' : 'font-weight:700'}">${item(b, s.slot, 'new')}${same ? '' : tools(b)}${!same && b?.src === 'drop' ? srcLine(b) : ''}</td></tr>`;
       }).join('');
       const turn = (t) => t.used.map((u) => `${esc(u.sp.name)} (${u.sp.ap} PA, ${fmt(u.v)})`).join(' + ') || '—';
       const keys = [...new Set(['pa', 'pv', ...(gs ? [gs, ...(r.goal.also || [])] : []), ...OFFENSE_KEYS.filter((k) => k !== 'pa'), 'vitalite'])];
@@ -3430,7 +3530,7 @@
       const hdvCost = Object.values(r.final).filter((c) => c?.src === 'hdv').reduce((n, c) => n + c.price, 0);
       const deckHtml = r.deck.map((d, i) => `<span style="white-space:nowrap">${i + 1}. ${esc(d.sp.name)} <span style="color:#8a7d66">(${d.sp.ap} PA, ~${fmt(d.v)})</span></span>`).join(' · ');
       const badChecks = r.checks.filter(([, a, b]) => Math.abs(a - b) > Math.max(2, Math.abs(b) * 0.02));
-      const owned = r.slots.some((s) => r.final[s.slot] && !['hdv', 'bank'].includes(r.final[s.slot].src) && r.final[s.slot] !== r.current[s.slot]);
+      const owned = r.slots.some((s) => r.final[s.slot] && !['hdv', 'bank', 'drop'].includes(r.final[s.slot].src) && r.final[s.slot] !== r.current[s.slot]);
       $('[data-k="out"]').innerHTML = `
         <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:baseline">
           ${gs ? `<div>${esc(STAT_LABELS[gs] || gs)}${r.goal.also ? ' (Chance comprise)' : ''} : <b>${fmt(gA)}</b> → <b style="font-size:17px;color:#6fcf7a">${fmt(gB)}</b> ${gB - gA > 0 ? `<span style="color:#6fcf7a">(+${fmt(gB - gA)})</span>` : '<span style="color:#b9a98c">(ton build est déjà le meilleur trouvé)</span>'}</div>
@@ -3438,6 +3538,7 @@
     : `<div>Dégâts par tour${r.target ? ` sur ${esc(r.target.name)} (résistances comprises)` : ''} : <b>${fmt(r.curTurn.dmg)}</b> → <b style="font-size:17px;color:#6fcf7a">${fmt(r.nxtTurn.dmg)}</b> ${gain > 0.5 ? `<span style="color:#6fcf7a">(+${fmt(gain)}, +${(gain / Math.max(1, r.curTurn.dmg) * 100).toFixed(1)} %)</span>` : '<span style="color:#b9a98c">(ton build est déjà le meilleur trouvé)</span>'}</div>`}
           ${hdvCost ? `<div style="color:#f0c04a">🛒 Achats HDV restants : ${fmt(hdvCost)} K${r.budget ? ` / budget ${fmt(r.budget)} K` : ''}</div>` : r.budget ? `<div style="color:#b9a98c">Budget ${fmt(r.budget)} K : aucun achat nécessaire</div>` : ''}
         </div>
+        ${r.bestiary ? `<div style="font-size:12px;color:#c99bff">🐉 Bestiaire : ${r.bestiary.count} objet(s) lootable(s) à ton niveau que tu n’as pas, pris en compte (copie du ${new Date(r.bestiary.at).toLocaleString('fr-FR')})${drops.length ? ` — ${drops.length} à looter dans le build proposé${drops.some((c) => c.offer) ? `, dont ${drops.filter((c) => c.offer).length} en vente à l’HDV` : ''}` : ''}.</div>` : ''}
         ${r.bank ? `<div style="font-size:12px;color:#8fb8ee">🏦 Banque ${esc(r.bank.name)} : ${r.bank.count} objet(s) disponible(s)${r.bank.bound ? `, ${r.bank.bound} lié(s) ignoré(s)` : ''}.</div>` : ''}
         ${r.paShort ? `<div style="color:#ff7b6b;font-weight:700">⚠️ PA minimum (${r.paMin}) impossible à atteindre avec tes objets : le build ci-dessous est celui qui a le plus de PA (${r.paOf(r.nxt.S)}).</div>` : ''}
         ${r.hdvFailed.length ? `<div style="color:#f0a040">⚠️ HDV illisible pour : ${r.hdvFailed.map((t) => esc(SLOT_NAMES[t] || t)).join(', ')} (site saturé) — ces emplacements n’ont pas d’objet HDV proposé.</div>` : ''}
@@ -3463,7 +3564,7 @@
         <div style="font-size:12px;line-height:1.6">${statRows}</div>
         <div style="display:flex;gap:8px;align-items:center">
           <button data-a="equip" style="${btn};background:#2e7d32" ${owned ? '' : 'disabled'}>✅ Équiper ce build${Object.values(r.final).some((c) => c?.src === 'hdv') ? ' (objets possédés seulement)' : ''}</button>
-          <span style="font-size:11px;color:#8a7d66">Les objets HDV (🛒) sont à acheter, ceux de la banque (🏦) à échanger d’abord ; relance ensuite la recherche pour les équiper.</span>
+          <span style="font-size:11px;color:#8a7d66">Les objets HDV (🛒) sont à acheter, ceux de la banque (🏦) à échanger d’abord, ceux du bestiaire (🐉) à looter (ou à acheter s’ils sont en vente) ; relance ensuite la recherche pour les équiper.</span>
         </div>
         <details style="font-size:11px;color:#b9a98c"><summary style="cursor:pointer">Contrôle du modèle (${badChecks.length ? `<span style="color:#f0a040">${badChecks.length} écart(s)</span>` : '<span style="color:#6fcf7a">OK</span>'})</summary>
           Stats calculées pour ton équipement actuel / affichées sur ta fiche : ${r.checks.map(([l, a, b]) => `<span style="color:${Math.abs(a - b) > Math.max(2, Math.abs(b) * 0.02) ? '#f0a040' : 'inherit'}">${esc(l)} ${fmt(a)} / ${fmt(b)}</span>`).join(' · ')}.
