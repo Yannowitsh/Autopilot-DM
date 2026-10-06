@@ -3033,7 +3033,8 @@
     let bestiary = null;
     if (opts.bestiary) {
       const b = await fetchBestiary(say);
-      const have = new Set(pool.map((c) => c.id));
+      // seulement ce que tu possèdes : un objet aussi en vente à l'HDV reste lootable (sinon, au-dessus du budget, il disparaissait)
+      const have = new Set(pool.filter((c) => c.src !== 'hdv').map((c) => c.id));
       const add = b.items.filter((it) => !have.has(it.id) && !(it.lvl > level));
       pool.push(...add.map((it) => ({ id: it.id, name: it.n, lvl: it.lvl, type: it.s, rarity: it.r, icon: it.icon, fusion: 0,
         setName: it.setName, two: it.two, eff: fusedStats(it.st, it.s, 0), src: 'drop' })));
@@ -3247,9 +3248,9 @@
       const drops = Object.values(final).filter((c) => c?.src === 'drop');
       for (const c of drops) { c.sources = bestiary.drops[c.id] || []; c.bossSources = bestiary.boss[c.id] || []; }
       const types = [...new Set(drops.map((c) => c.type))];
-      if (types.length && !opts.hdv) {
-        say('Objets à looter : recherche à l’HDV…');
-        const offers = await fetchHdvGear(types, level, hdvFailed);
+      if (types.length) {
+        if (!opts.hdv) say('Objets à looter : recherche à l’HDV…');
+        const offers = opts.hdv ? pool.filter((c) => c.src === 'hdv') : await fetchHdvGear(types, level, hdvFailed);
         for (const c of drops) {
           const o = offers.filter((x) => x.id === c.id).sort((a, b) => a.price - b.price)[0];
           if (o) c.offer = { price: o.price, listingId: o.listingId, seller: o.seller, fusion: o.fusion };
