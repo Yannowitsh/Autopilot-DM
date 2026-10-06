@@ -2389,6 +2389,7 @@
   const EL_DMG = ['dommagesNeutre', 'dommagesTerre', 'dommagesFeu', 'dommagesEau', 'dommagesAir'];
   const CRIT_MULT = 1.25;
   const SPECTRAL_PER_PO = 0.4;
+  const PA_VALUE_PCT = 3;   // optimiseur : 1 PA = +3 % de l'objectif (voir score)
   const CHAR_STATS_KEY = 'dmCharStats';
   const LAST_FIGHT_KEY = 'dmLastFight';   // dernier état de combat reçu, par personnage (localStorage de la page)
   const fightAcct = () => myName() || (chrome.extension?.inIncognitoContext ? 'privé' : 'normal');
@@ -3155,8 +3156,11 @@
       // seuils non atteints : on remonte d'abord ce qui manque (1 PA manquant compte comme 1000 PV)
       const short = (pvMin ? Math.max(0, pvMin - pv) : 0) + (paMin ? 1000 * Math.max(0, paMin - pa) : 0);
       if (short) return -1e9 - short;
-      if (goalStat) return goal.value(ev.S) + ev.turn.dmg * 1e-6 + pv * 1e-9;   // à stat égale : les dégâts, puis les PV
-      return ev.turn.dmg + pv * 1e-4;   // à dégâts égaux, le plus de PV
+      // chaque PA vaut PA_VALUE_PCT % de l'objectif, même au-delà de ce que les N sorts du tour consomment (buffs, soins,
+      // cartes de classe…) : un PA n'est plus échangé contre une broutille (ex. trophée PO = +0,4 % de dégâts par PO)
+      const paMult = (1 + PA_VALUE_PCT / 100) ** pa;
+      if (goalStat) return goal.value(ev.S) * paMult + ev.turn.dmg * 1e-6 + pv * 1e-9;   // à stat égale : les dégâts, puis les PV
+      return ev.turn.dmg * paMult + pv * 1e-4;   // à dégâts égaux, le plus de PV
     };
     // contraintes : un même objet (id) une seule fois ; arme à deux mains → pas de bouclier ; un exemplaire possédé par objet
     const costOf = (build) => Object.values(build).reduce((n, c) => n + (c?.src === 'hdv' ? c.price : 0), 0);
@@ -3171,11 +3175,25 @@
     const canEmpty = (slot) => !current[slot] || slot === 'bouclier' || banned.has(current[slot].id);
     const startBuild = Object.fromEntries(Object.entries(current).map(([k, c]) => [k, c && banned.has(c.id) ? null : c]));
 
+    // tirages pseudo-aléatoires à graine fixe : mêmes données (fiche, inventaire, HDV, bestiaire) → même build proposé
+    let seed = 0x5eed1234;
+    const rng = () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const shuffled = (arr) => {
+      const a = [...arr];
+      for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+      return a;
+    };
+
     async function climb(start) {
       let build = { ...start }, best = score(build);
       for (let pass = 0; pass < 12; pass++) {
         let improved = false;
-        for (const s of [...slots].sort(() => Math.random() - 0.5)) {
+        for (const s of shuffled(slots)) {
           let pick = build[s.slot], pickScore = best;
           for (const c of [...cands[s.accepts], ...(canEmpty(s.slot) ? [null] : [])]) {
             if (c === build[s.slot]) continue;
@@ -3217,18 +3235,55 @@
 
     say('Recherche du meilleur build…');
     let top = await climb(startBuild);
-    const RESTARTS = 25;
+    const RESTARTS = 40;
     for (let r = 0; r < RESTARTS; r++) {
       say(`Recherche du meilleur build… (essai ${r + 2}/${RESTARTS + 1}, ${evals} builds testés)`);
       const start = { ...top.build };
-      // perturbation : 3 emplacements au hasard
-      for (const s of [...slots].sort(() => Math.random() - 0.5).slice(0, 3)) {
+      // perturbation : 2 à 5 emplacements tirés au sort
+      for (const s of shuffled(slots).slice(0, 2 + (r % 4))) {
         const list = cands[s.accepts];
-        if (list.length) start[s.slot] = list[Math.floor(Math.random() * list.length)];
+        if (list.length) start[s.slot] = list[Math.floor(rng() * list.length)];
       }
       if (!valid(start)) continue;
       const res = await climb(start);
       if (res.best > top.best + 1e-6) top = res;
+    }
+
+    // Finition : les PAIR_TOP meilleurs objets de chaque emplacement, essayés deux emplacements à la fois. Sort des
+    // optimums qu'un changement à la fois ne quitte pas (2 objets d'une panoplie, PA déplacé d'un emplacement à l'autre…).
+    const PAIR_TOP = 6;
+    async function pairPolish(start) {
+      let build = { ...start }, best = score(build), improved = false;
+      const topOf = {};
+      for (const s of slots) {
+        topOf[s.slot] = [...cands[s.accepts], ...(canEmpty(s.slot) ? [null] : [])]
+          .map((c) => { const b = { ...build, [s.slot]: c }; return { c, v: valid(b) ? score(b) : -Infinity }; })
+          .sort((a, b) => b.v - a.v).slice(0, PAIR_TOP).map((x) => x.c);
+        await sleep(0);
+      }
+      for (let i = 0; i < slots.length; i++) {
+        for (let j = i + 1; j < slots.length; j++) {
+          const sa = slots[i].slot, sb = slots[j].slot;
+          for (const ca of topOf[sa]) {
+            for (const cb of topOf[sb]) {
+              if (ca === build[sa] && cb === build[sb]) continue;
+              const b = { ...build, [sa]: ca, [sb]: cb };
+              if (!valid(b)) continue;
+              const v = score(b);
+              if (v > best + 1e-6) { build = b; best = v; improved = true; }
+            }
+          }
+          if (evals % 400 < 40) await sleep(0);
+        }
+      }
+      return { build, best, improved };
+    }
+    for (let round = 0; round < 4; round++) {
+      say(`Finition : objets essayés deux par deux… (${evals} builds testés)`);
+      const p = await pairPolish(top.build);
+      if (!p.improved) break;
+      const res = await climb(p.build);
+      top = res.best > p.best + 1e-6 ? res : { build: p.build, best: p.best };
     }
 
     // anneaux / dofus : un objet déjà porté garde son emplacement (moins d'équipements à changer)
@@ -3301,7 +3356,7 @@
           <label data-tip="Ce que l’optimiseur maximise.&#10;Dégâts par tour : sur une cible sans résistances.&#10;Kralamoure : contre le boss de guilde, ses résistances (20 % Neutre, Terre, Feu et Air, 30 % Eau) appliquées à chaque coup ; le combat dure 10 tours, seul le total de dégâts compte.&#10;Prospection : celle de l’équipement et des panoplies + 1 par 10 de Chance ; avec « Redistribuer mes points », tous tes points vont en Chance.&#10;Sagesse : idem, points en Sagesse.&#10;À égalité, le build qui fait le plus de dégâts.">Objectif <select data-o="goal" style="${inp}">${Object.entries(BUILD_GOALS).map(([k, g]) => `<option value="${k}">${g.label}</option>`).join('')}</select></label>
           <label>Sorts par tour <select data-o="k" style="${inp}">${[2, 3, 4, 5].map((n) => `<option value="${n}">${n}</option>`).join('')}</select></label>
           <label>PV minimum <input data-o="pvMin" type="number" min="0" placeholder="aucun" style="${inp};width:90px"></label>
-          <label data-tip="Le build garde au moins ce nombre de PA (base 6, 7 dès le niveau 100, + PA de l’équipement et des panoplies, 12 au maximum). Vide = sans contrainte.">PA minimum <input data-o="paMin" type="number" min="0" max="12" placeholder="aucun" style="${inp};width:70px"></label>
+          <label data-tip="Le build garde au moins ce nombre de PA (base 6, 7 dès le niveau 100, + PA de l’équipement et des panoplies, 12 au maximum). Vide = sans contrainte. Au-delà du minimum, chaque PA compte quand même pour +3 % de l’objectif : il n’est pas sacrifié pour un petit bonus.">PA minimum <input data-o="paMin" type="number" min="0" max="12" placeholder="aucun" style="${inp};width:70px"></label>
           <label style="cursor:pointer"><input data-o="deckOnly" type="checkbox"> Sorts du deck actif uniquement</label>
           <label style="cursor:pointer" data-tip="Considère tous tes points de caractéristiques comme redistribuables (comme après une réinitialisation) : l’optimiseur choisit en même temps l’équipement et la répartition. Décoché : tes points restent comme ils sont."><input data-o="realloc" type="checkbox"> Redistribuer mes points</label>
           <label style="cursor:pointer" data-tip="Ajoute les objets de ton autre compte (onglet ouvert en navigation privée ou normale), sauf ceux encore liés (reçus ou achetés il y a moins de 24 h). Un bouton les met dans la file d’échange de ce compte."><input data-o="bank" type="checkbox"> Inclure la banque (autre compte)</label>
