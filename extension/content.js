@@ -930,7 +930,7 @@
         return p;
       }
       if (p?.retry === false || Date.now() - t0 > PEER_WAIT_MS) throw tradeErr(p?.error || 'Autre compte injoignable');
-      if (tradeStopped()) throw tradeErr('Arrêté');
+      if (tradeStopped()) throw tradeErr('Arrêté', { stopped: true });
       const gap = PEER_RETRY_GAPS[Math.min(i, PEER_RETRY_GAPS.length - 1)];
       say(`⏳ Autre compte indisponible (${p?.error || 'sans réponse'}) — nouvel essai dans ${gap / 1000} s…`);
       await sleep(gap);
@@ -969,7 +969,7 @@
       if (e.game) throw e;   // refus du jeu (HDV plein…) : inutile de retenter
       // erreur technique : la vente a peut-être été créée quand même → on la retire si elle existe
       const c = await cancelTradeListing(null, entry);
-      if (c.error && !c.gone) throw tradeErr(`${entry.name} : mise en vente incertaine (${e.message}) et retrait impossible (${c.error}) — vérifie tes ventes à l’HDV !`);
+      if (c.error && !c.gone) throw tradeErr(`${entry.name} : mise en vente incertaine (${e.message}) et retrait impossible (${c.error}) — vérifie tes ventes à l’HDV !`, { lost: 'maybe', why: e.message, cancel: c.error });
       throw tradeErr(`${entry.name} : mise en vente impossible (${e.message})`, { retry: true });
     }
     const listingId = findMyListing(text, entry.id, entry.fusion);
@@ -1002,16 +1002,28 @@
     DM.log(`échange: PERTE possible ${entry.name} (achat : ${why} ; retrait : ${c.error})`);
     throw tradeErr(c.gone
       ? `⚠️ ${entry.name} a été acheté par un autre joueur avant le retrait (achat : ${why}).`
-      : `⚠️ ${entry.name} : achat raté (${why}) et retrait impossible (${c.error}) — retire l’annonce à la main !`);
+      : `⚠️ ${entry.name} : achat raté (${why}) et retrait impossible (${c.error}) — retire l’annonce à la main !`,
+    { lost: c.gone ? true : 'maybe', why, cancel: c.error });
   }
 
   // tradeOne avec nouveaux essais après un échec technique (attend que l'autre compte soit revenu).
-  async function tradeWithRetry(ctx, entry, say, last = true) {
+  async function tradeWithRetry(ctx, entry, say, last = true, runId = Date.now()) {
     for (let attempt = 1; ; attempt++) {
       try {
-        return await tradeOne(ctx, entry, say, last);
+        const ms = await tradeOne(ctx, entry, say, last);
+        await recordTrade(runId, ctx, entry, 'ok', attempt > 1 ? `après ${attempt} essais` : '', ms);
+        return ms;
       } catch (e) {
-        if (!e.retry || attempt > TRADE_RETRIES || tradeStopped()) throw e;
+        if (!e.retry || attempt > TRADE_RETRIES || tradeStopped()) {
+          if (!e.stopped) {
+            const status = e.lost === true ? 'lost' : e.lost ? 'unsure' : 'failed';
+            const detail = e.lost === true ? `achat de l’autre compte : ${e.why}`
+              : e.lost ? `achat : ${e.why} ; retrait : ${e.cancel}`
+              : e.message.replace(`${entry.name} : `, '') + (attempt > 1 ? ` — ${attempt} essais` : '');
+            await recordTrade(runId, ctx, entry, status, detail);
+          }
+          throw e;
+        }
         say(`${e.message} — nouvel essai ${attempt + 1}/${TRADE_RETRIES + 1}…`);
         await sleep(1500 * attempt);
       }
@@ -1023,7 +1035,7 @@
     const it = itemFromPanel(panel);
     if (!it) throw new Error('Objet illisible');
     const ctx = await tradePrepare(say);
-    const ms = await tradeWithRetry(ctx, tradeResolve(ctx, it), say);
+    const ms = await tradeWithRetry(ctx, tradeResolve(ctx, it), say, true, Date.now());
     return `✔ ${it.name} → ${ctx.to} (${ms} ms)`;
   }
 
@@ -1110,12 +1122,14 @@
   async function runQueue() {
     if (tradeBusy || !tradeQueue().length) return;
     tradeBusy = true;
-    queueRun = { stop: false, done: 0, total: tradeQueue().reduce((n, it) => n + it.qty, 0) };
+    const runId = Date.now();
+    queueRun = { stop: false, done: 0, total: tradeQueue().reduce((n, it) => n + it.qty, 0), id: runId };
     const say = (t, cls) => queueMsg(t, cls);
     let ok = false;
     const skipped = [];
     try {
       const ctx = await tradePrepare(say);
+      await setLastRun({ id: runId, to: ctx.to });
       let ms = 0;
       while (!queueRun.stop) {
         const it = tradeQueue()[0];
@@ -1126,12 +1140,13 @@
         } catch (e) {
           // Objet introuvable / lié / plus assez d'exemplaires : on le sort de la file et on passe au suivant.
           skipped.push(e.message);
+          await recordTrade(runId, ctx, it, 'skipped', e.message.replace(`${it.name} `, ''), null, it.qty);
           queueRun.total -= it.qty;
           await setTradeQueue(tradeQueue().filter((x) => !sameItem(x, it)));
           continue;
         }
         const last = queueRun.done + 1 >= queueRun.total;
-        ms += await tradeWithRetry(ctx, entry, (t) => say(`${queueRun.done + 1}/${queueRun.total} · ${t}`), last);
+        ms += await tradeWithRetry(ctx, entry, (t) => say(`${queueRun.done + 1}/${queueRun.total} · ${t}`), last, runId);
         queueRun.done++;
         await setTradeQueue(tradeQueue().map((x) => (sameItem(x, it) ? { ...x, qty: x.qty - 1 } : x)));
         renderQueue();
@@ -1140,18 +1155,132 @@
       ok = true;
       const avg = queueRun.done ? Math.round(ms / queueRun.done) : 0;
       say(queueRun.stop && tradeQueue().length
-        ? `⏸ Arrêté : ${queueRun.done} objet(s) envoyé(s) à ${ctx.to}.`
-        : `✔ ${queueRun.done} objet(s) envoyé(s) à ${ctx.to}${queueRun.done ? ` (~${avg} ms chacun)` : ''}.`
-          + (skipped.length ? ` Sautés : ${skipped.join(' · ')}` : ''), skipped.length ? '' : 'ok');
+        ? `⏸ Arrêté : ${queueRun.done} objet(s) envoyé(s) à ${ctx.to} — le reste est toujours dans la file.`
+        : `✔ Terminé${queueRun.done ? ` (~${avg} ms par objet)` : ''}.`, skipped.length ? '' : 'ok');
     } catch (e) {
-      say(`❌ ${queueRun.done ? `${queueRun.done} envoyé(s), puis : ` : ''}${e.message}`, 'err');
+      say(`❌ Envoi interrompu : ${e.message}${tradeQueue().length ? ' — le reste est toujours dans la file.' : ''}`, 'err');
     } finally {
       const done = queueRun.done;
       tradeBusy = false;
       queueRun = null;
       renderQueue();
+      // le récap (stocké) reste affiché après le rechargement de la page
       if (ok && done && !skipped.length && /^\/(hdv|inventaire)/.test(location.pathname)) setTimeout(() => location.reload(), 2000);
     }
+  }
+
+  // ---------- Historique des échanges + récap de la dernière file ----------
+  // cfg.tradeHistory : une ligne par exemplaire tenté (ou objet sauté), regroupées par envoi (run = horodatage du début).
+  // cfg.tradeLastRun[personnage] : dernier envoi de la file, dont le récap reste affiché (même après rechargement) jusqu'à ✕.
+  const HISTORY_MAX = 1000;
+  const TRADE_STATUS = {
+    ok: { icon: '✔', label: 'envoyé(s)', color: '#6cc070' },
+    lost: { icon: '❌', label: 'perdu(s) — acheté(s) par un autre joueur', color: '#e0675c' },
+    unsure: { icon: '⚠️', label: 'à vérifier — annonce peut-être encore en vente', color: '#e2b04a' },
+    failed: { icon: '⛔', label: 'non envoyé(s) — toujours dans ton inventaire', color: '#e0975c' },
+    skipped: { icon: '⏭', label: 'sauté(s)', color: '#9aa0a8' },
+  };
+  const STATUS_ORDER = ['lost', 'unsure', 'failed', 'skipped', 'ok'];
+
+  function recordTrade(runId, ctx, item, status, detail = '', ms = null, qty = 1) {
+    const line = { at: Date.now(), run: runId, seller: myName(), to: ctx?.to || null,
+      name: item.name, lvl: item.lvl, fusion: item.fusion, qty, status, detail, ms };
+    return save({ tradeHistory: [...(cfg.tradeHistory || []), line].slice(-HISTORY_MAX) });
+  }
+  const setLastRun = (run) => save({ tradeLastRun: { ...(cfg.tradeLastRun || {}), [queueKey()]: run } });
+
+  // Lignes d'un envoi regroupées par statut puis par objet : { ok: [{ label, n, detail }], lost: […], … }
+  function runGroups(rows) {
+    const out = {};
+    for (const h of rows) {
+      const g = (out[h.status] ||= new Map());
+      const label = itemLabel(h);
+      const cur = g.get(label) || { label, n: 0, detail: h.detail };
+      cur.n += h.qty || 1;
+      g.set(label, cur);
+    }
+    for (const k in out) out[k] = [...out[k].values()];
+    return out;
+  }
+  const countOf = (groups, st) => (groups[st] || []).reduce((n, x) => n + x.n, 0);
+  const itemsText = (arr, withDetail) => arr.map((x) => `${x.label}${x.n > 1 ? ` ×${x.n}` : ''}${withDetail && x.detail ? ` (${x.detail})` : ''}`);
+
+  // Récap HTML d'un envoi (panneau de la file et fenêtre d'historique).
+  function recapHtml(rows, esc, { full = false } = {}) {
+    const groups = runGroups(rows);
+    return STATUS_ORDER.filter((st) => groups[st]?.length).map((st) => {
+      const s = TRADE_STATUS[st];
+      const n = countOf(groups, st);
+      const detail = st !== 'ok';   // la raison n'est utile que pour ce qui n'est pas parti
+      const items = itemsText(groups[st], detail);
+      const shown = full || st !== 'ok' ? items : items.slice(0, 6).concat(items.length > 6 ? [`+ ${items.length - 6} autre(s)`] : []);
+      return `<div style="color:${s.color}"><b>${s.icon} ${n} ${s.label}</b>${shown.length ? `<div style="color:#ccc;font-size:12px;margin:1px 0 3px 18px">${shown.map(esc).join('<br>')}</div>` : ''}</div>`;
+    }).join('');
+  }
+
+  // Message court de fin d'envoi.
+  function runShort(rows) {
+    const g = runGroups(rows);
+    const parts = STATUS_ORDER.slice().reverse().filter((st) => countOf(g, st)).map((st) => `${TRADE_STATUS[st].icon} ${countOf(g, st)}`);
+    return parts.length ? `Terminé : ${parts.join(' · ')}` : '';
+  }
+
+  // Fenêtre « 🕘 Historique des échanges » : envois du plus récent au plus ancien, filtrables.
+  function openHistory() {
+    document.querySelector('.dm-history')?.remove();
+    const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+    const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:6px 12px;color:#fff;cursor:pointer;font:600 13px system-ui,sans-serif';
+    const ov = document.createElement('div');
+    ov.className = 'dm-history dm-picker';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:#000a;display:grid;place-items:center;padding:16px;font:13px system-ui,sans-serif;color:#eee';
+    ov.innerHTML = `
+      <div style="width:min(680px,100%);max-height:88vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
+        <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🕘 Historique des échanges${DM.tip('Chaque envoi (bouton « Échanger » ou file) avec ce qui est parti, ce qui a été perdu, ce qui n’a pas pu partir et pourquoi. Gardé dans Chrome (1000 dernières lignes), commun à tes deux comptes.')}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <select data-k="filter" style="background:#2a231a;border:1px solid #5a4a33;border-radius:8px;color:#eee;padding:5px 8px">
+            <option value="">Tous les envois</option>
+            <option value="problems">Seulement ceux avec pertes / échecs</option>
+          </select>
+          <span data-k="count" style="flex:1;color:#bbb"></span>
+          <button data-a="clear" style="${btn};background:transparent">🗑 Vider</button>
+        </div>
+        <div data-k="list" style="overflow:auto;flex:1;min-height:120px;display:flex;flex-direction:column;gap:8px"></div>
+      </div>`;
+    document.body.appendChild(ov);
+    const $ = (s) => ov.querySelector(s);
+    const close = () => { ov.remove(); document.removeEventListener('keydown', onKey, true); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+    document.addEventListener('keydown', onKey, true);
+    ov.addEventListener('keydown', (e) => e.stopPropagation());
+    let clearArmed = false;
+
+    function render() {
+      const runs = new Map();
+      for (const h of cfg.tradeHistory || []) (runs.get(h.run) || runs.set(h.run, []).get(h.run)).push(h);
+      let list = [...runs.entries()].sort((a, b) => b[0] - a[0]);
+      if ($('[data-k="filter"]').value === 'problems') list = list.filter(([, rows]) => rows.some((h) => h.status !== 'ok'));
+      $('[data-k="count"]').textContent = `${list.length} envoi(s)`;
+      $('[data-k="list"]').innerHTML = list.map(([run, rows]) => {
+        const first = rows[0];
+        const when = new Date(run).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+        return `<details style="border:1px solid #3a3125;border-radius:10px;padding:8px 10px" ${rows.some((h) => h.status === 'lost' || h.status === 'unsure') ? 'open' : ''}>
+          <summary style="cursor:pointer"><b>${esc(when)}</b> · ${esc(first.seller || '?')} → ${esc(first.to || '?')} · <span style="color:#bbb">${esc(runShort(rows).replace('Terminé : ', ''))}</span></summary>
+          <div style="margin-top:6px;display:flex;flex-direction:column;gap:2px">${recapHtml(rows, esc, { full: true })}</div>
+        </details>`;
+      }).join('') || '<div style="padding:12px;color:#999;text-align:center">Aucun échange enregistré.</div>';
+    }
+    ov.addEventListener('click', async (e) => {
+      if (e.target === ov) return close();
+      const a = e.target.closest('button[data-a]')?.dataset.a;
+      if (a === 'x') close();
+      else if (a === 'clear') {
+        if (!clearArmed) { clearArmed = true; e.target.textContent = '⚠️ Confirmer'; setTimeout(() => { clearArmed = false; if (ov.isConnected) e.target.textContent = '🗑 Vider'; }, 4000); return; }
+        await save({ tradeHistory: [], tradeLastRun: {} });
+        render();
+      }
+    });
+    $('[data-k="filter"]').addEventListener('change', render);
+    render();
   }
 
   // Panneau flottant (en haut à droite) sur /hdv et /inventaire tant que la file n'est pas vide.
@@ -1180,6 +1309,8 @@
         else if (b.dataset.act === 'stop' && queueRun) { queueRun.stop = true; queueMsg('Arrêt après l’objet en cours…'); }
         else if (b.dataset.act === 'clear' && !tradeBusy) { queueMsgText = ''; setTradeQueue([]); }
         else if (b.dataset.act === 'pick' && !tradeBusy) openPicker();
+        else if (b.dataset.act === 'history') openHistory();
+        else if (b.dataset.act === 'recapClose') { const lr = cfg.tradeLastRun?.[queueKey()]; if (lr) setLastRun({ ...lr, dismissed: true }); }
         else if (b.dataset.act === 'fold') {
           queueFolded = !queueFolded;
           try { localStorage.setItem('dmTradeQueueFolded', queueFolded ? '1' : '0'); } catch { /* stockage indisponible */ }
@@ -1193,8 +1324,17 @@
     const esc = (s) => String(s).replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
     const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:4px 10px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif';
     const color = queueMsgCls === 'err' ? '#e0675c' : queueMsgCls === 'ok' ? '#6cc070' : '#bbb';
+    // récap du dernier envoi de la file (jusqu'à ✕), affiché sous la file
+    const lr = cfg.tradeLastRun?.[queueKey()];
+    const lrRows = lr && !lr.dismissed && !queueRun ? (cfg.tradeHistory || []).filter((h) => h.run === lr.id) : [];
+    const recap = lrRows.length ? `<div style="border-top:1px solid #3a3125;padding-top:6px;display:flex;flex-direction:column;gap:2px;overflow:auto">
+        <div style="display:flex;align-items:center;gap:6px"><b style="flex:1">📊 Récap ${esc(new Date(lr.id).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }))} → ${esc(lr.to || '?')}</b>
+          <button data-act="history" style="${btn};padding:2px 7px;background:transparent">Détails</button>
+          <button data-act="recapClose" title="Masquer le récap" style="${btn};padding:2px 7px;background:transparent">✕</button></div>
+        ${recapHtml(lrRows, esc)}</div>` : '';
     const head = `<div style="display:flex;align-items:center;gap:6px"><b style="flex:1">🔁 File d’échange (${total})${DM.tip("Objets à envoyer à ton autre compte (connecté en navigation privée ou normale). « Tout échanger » met chaque exemplaire en vente à 1 kamas et le fait acheter aussitôt par l’autre compte. File propre à chaque personnage.")}</b>
         <button data-act="pick" data-tip="Ouvre la liste de tous tes objets vendables, avec filtres (nom, rareté, emplacement, niveau) et cases à cocher, pour remplir la file d’un coup." style="${btn};background:#5a4a33" ${tradeBusy ? 'disabled' : ''}>📋 Sélection</button>
+        <button data-act="history" data-tip="Historique de tous les échanges : objets envoyés, perdus, non envoyés et pourquoi." style="${btn};padding:4px 7px;background:transparent">🕘</button>
         <button data-act="fold" title="${queueFolded ? 'Déplier' : 'Replier'}" style="${btn};padding:4px 7px;background:transparent">${queueFolded ? '▾' : '▴'}</button></div>`;
     const html = queueFolded && !queueRun ? head : `
       ${head}
@@ -1204,7 +1344,8 @@
       <div style="display:flex;gap:6px">${queueRun
         ? `<button data-act="stop" style="${btn};flex:1;background:#8a2b2b">⏸ Arrêter (${queueRun.done}/${queueRun.total})</button>`
         : q.length ? `<button data-act="run" style="${btn};flex:1;background:#2b5d8a">🔁 Tout échanger</button><button data-act="clear" style="${btn};background:transparent">Vider</button>` : ''}</div>
-      <div style="color:${color};font-size:12px;min-height:1em">${esc(queueMsgText)}</div>`;
+      <div style="color:${color};font-size:12px;min-height:1em">${esc(queueMsgText)}</div>
+      ${recap}`;
     if (queueBox.dmHtml !== html) { queueBox.dmHtml = html; queueBox.innerHTML = html; }
   }
 
@@ -2316,7 +2457,7 @@
     for (const k in ch) cfg[k] = ch[k].newValue;
     if (ch.enabled?.newValue) progress();
     if (ch.lockedItems) scanLockButtons();
-    if (ch.tradeQueues) renderQueue();
+    if (ch.tradeQueues || ch.tradeHistory || ch.tradeLastRun) renderQueue();
     renderUi();
   });
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {

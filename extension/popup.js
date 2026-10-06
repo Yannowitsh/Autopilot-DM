@@ -189,7 +189,7 @@ $('logCopy').onclick = async () => {
   const { debugLog = [] } = await chrome.storage.local.get('debugLog');
   const s = await DM.getAll();
   // contexte utile, sans le webhook Discord ni le journal lui-même
-  const { webhookUrl, debugLog: _, huntZones, wantedScan, lockedItems, tradeQueues, ...state } = s;
+  const { webhookUrl, debugLog: _, huntZones, wantedScan, lockedItems, tradeQueues, tradeHistory, tradeLastRun, ...state } = s;
   await navigator.clipboard.writeText(`version ${chrome.runtime.getManifest().version}\nétat ${JSON.stringify(state)}\n\n${debugLog.join('\n')}`);
   $('logInfo').textContent = `Copié (${debugLog.length} lignes) : colle-le dans la discussion.`;
 };
