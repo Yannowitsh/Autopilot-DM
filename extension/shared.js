@@ -131,6 +131,7 @@ const DM = {
     const mount = root === document ? document.body : root;
     if (!mount || mount.querySelector?.(':scope > .dm-tip')) return;
     const style = document.createElement('style');
+    style.className = 'dm-tip-style';
     style.textContent = `
       .dm-i { display: inline-grid; place-items: center; width: 14px; height: 14px; margin-left: 5px; border-radius: 50%;
         background: #3a3f48; color: #cfd3d8; font: italic 700 10px/1 Georgia, serif; cursor: help; vertical-align: middle;

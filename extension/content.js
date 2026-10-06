@@ -18,9 +18,40 @@
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const humanDelay = () => (cfg.delayMin + Math.random() * Math.max(0, cfg.delayMax - cfg.delayMin)) * 1000;
-  const save = (o) => { Object.assign(cfg, o); return chrome.storage.local.set(o); };
+  // ---------- Extension rechargée pendant que l'onglet reste ouvert ----------
+  // Ce script devient « orphelin » : tout appel chrome.* lève « Extension context invalidated ».
+  // On le détecte et on s'arrête proprement (plus d'erreurs, plus d'interface fantôme) ; la page rechargée repart à neuf.
+  let dead = false;
+  const contextAlive = () => { try { return !!chrome.runtime?.id; } catch { return false; } };
+  const isInvalidated = (e) => /Extension context invalidated/i.test(e?.message || String(e || ''));
+  const send = (msg) => {
+    if (!contextAlive()) { shutdown(); return Promise.reject(new Error('extension rechargée : recharge la page')); }
+    return chrome.runtime.sendMessage(msg);
+  };
+  const save = (o) => {
+    Object.assign(cfg, o);
+    if (!contextAlive()) { shutdown(); return Promise.resolve(); }
+    return chrome.storage.local.set(o);
+  };
+  function shutdown() {
+    if (dead) return;
+    dead = true;
+    const quiet = (f) => { try { f(); } catch { /* pas encore initialisé */ } };
+    quiet(() => clearInterval(ticker));
+    quiet(() => clearInterval(aliveTimer));
+    quiet(() => domObserver.disconnect());
+    quiet(() => ui?.host.remove());
+    quiet(() => queueBox?.remove());
+    quiet(() => toastEl?.remove());
+    quiet(() => cardStack?.host.remove());
+    document.querySelectorAll('.dm-trade, .dm-lock, .dm-picker, .dm-tip, .dm-tip-style').forEach((el) => el.remove());
+    console.info('[Autopilot-DM] Extension rechargée : recharge la page pour la réactiver.');
+  }
+  window.addEventListener('error', (e) => { if (isInvalidated(e.error || e.message)) { e.preventDefault(); shutdown(); } });
+  window.addEventListener('unhandledrejection', (e) => { if (isInvalidated(e.reason)) { e.preventDefault(); shutdown(); } });
+  const aliveTimer = setInterval(() => { if (!contextAlive()) shutdown(); }, 2000);
   // kind : type de notification (DM.NOTIF), filtré selon les réglages par le service worker
-  const notify = (kind, text, embeds) => chrome.runtime.sendMessage({ type: 'discord', kind, text, embeds }).catch(() => {});
+  const notify = (kind, text, embeds) => send({ type: 'discord', kind, text, embeds }).catch(() => {});
   const progress = () => { lastProgress = Date.now(); };
   const setStatus = (status, paused = false) => {
     if (cfg.status !== status || !!cfg.paused !== paused) save({ status, paused });
@@ -145,7 +176,7 @@
     if (bossDoneSent) return;
     bossDoneSent = true;
     setStatus(`Boss : ${result} — retour au farm…`);
-    await chrome.runtime.sendMessage({ type: 'bossDone', result }).catch(() => {});
+    await send({ type: 'bossDone', result }).catch(() => {});
   }
 
   // ---------- Énergie ----------
@@ -207,7 +238,7 @@
     if (cfg.energyBuy && Date.now() - cfg.energyBuy.at < 3 * 60000) return true;
     if (Date.now() < (cfg.buyNextTry || 0)) return false;
     await save({ buyNextTry: Date.now() + BUY_RETRY_MS });
-    const ok = !!(await chrome.runtime.sendMessage({ type: 'buyEnergy' }).catch((e) => DM.log('achat: message buyEnergy échoué', e.message)));
+    const ok = !!(await send({ type: 'buyEnergy' }).catch((e) => DM.log('achat: message buyEnergy échoué', e.message)));
     DM.log(`achat: demande envoyée (énergie ${cfg.energy}, onglet ${myTabId}) → ${ok ? 'onglet d’achat ouvert' : 'refusée'}`);
     return ok;
   }
@@ -240,7 +271,7 @@
     if (!location.pathname.startsWith('/aventure') || !new URLSearchParams(location.search).has('dmBuy')) return;
     const done = (res) => {
       DM.log('achat[onglet]: fin', res);
-      return chrome.runtime.sendMessage({ type: 'buyDone', ...res }).catch(() => {});
+      return send({ type: 'buyDone', ...res }).catch(() => {});
     };
     DM.log(`achat[onglet]: démarrage (onglet ${myTabId}, énergie max ${cfg.energyMax})`);
     const leftText = () => +(document.body.textContent.match(/encore\s+(\d+)\s+aujourd/)?.[1] ?? -1);
@@ -383,7 +414,7 @@
           : { botFight: false, losses: (cfg.losses || 0) + 1 });
       }
       setStatus(`Boss de chasse apparu (${cfg.bossRun.name || 'boss'}) — ouverture d’un onglet…`);
-      await chrome.runtime.sendMessage({ type: 'bossGo' }).catch(() => {});
+      await send({ type: 'bossGo' }).catch(() => {});
       return progress();
     }
 
@@ -855,7 +886,7 @@
   // Vendeur, avant un ou plusieurs échanges : contact de l'autre compte + objets vendables + IDs des actions.
   async function tradePrepare(say) {
     say('Contact de l’autre compte…');
-    const peer = await chrome.runtime.sendMessage({ type: 'tradePeer' });
+    const peer = await send({ type: 'tradePeer' });
     if (!peer?.ok) throw new Error(peer?.error || 'Autre compte injoignable');
     if (peer.name && peer.name === myName()) throw new Error('L’autre onglet est connecté au même personnage');
     const sell = await fetchSellable();
@@ -883,7 +914,7 @@
     const { text } = await hdvCall('listItem', [entry.id, entry.fusion, TRADE_PRICE], '?onglet=vendre');
     const listingId = findMyListing(text, entry.id, entry.fusion);
     say(`${entry.name} : achat par ${ctx.to}…`);
-    const r = await chrome.runtime.sendMessage({ type: 'tradeBuy', listingId, itemId: entry.id, fusion: entry.fusion, seller: myName(), last })
+    const r = await send({ type: 'tradeBuy', listingId, itemId: entry.id, fusion: entry.fusion, seller: myName(), last })
       .catch((e) => ({ ok: false, error: e.message }));
     const ms = Math.round(performance.now() - t0);
     if (r?.ok) {
@@ -1026,6 +1057,7 @@
   }
 
   function renderQueue() {
+    if (dead) return;
     const q = tradeQueue();
     if (!/^\/(hdv|inventaire)/.test(location.pathname)) { queueBox?.remove(); queueBox = null; return; }
     if (!queueBox?.isConnected) {
@@ -1300,8 +1332,8 @@
   }
 
   let lockScanQueued = false;
-  new MutationObserver(() => {
-    if (lockScanQueued) return;
+  const domObserver = new MutationObserver(() => {
+    if (dead || lockScanQueued) return;
     lockScanQueued = true;
     requestAnimationFrame(() => { lockScanQueued = false; scanLockButtons(); scanTradeButtons(); highlightWanted(); });
   }).observe(document.documentElement, { childList: true, subtree: true });
@@ -1371,9 +1403,6 @@
     return done;
   }
 
-  // L'extension a-t-elle été rechargée/désactivée ? Dans ce cas chrome.runtime.id
-  // devient indéfini et tout appel chrome.* lève « Extension context invalidated ».
-  const contextAlive = () => { try { return !!chrome.runtime?.id; } catch { return false; } };
 
   // ---------- Anti-blocage : requête du jeu qui n'aboutit jamais ----------
   // Après un clic qui lance un combat (Attaquer, Combattre, Suivant en auto…), on doit voir un combat en cours.
@@ -1399,7 +1428,7 @@
   }
 
   async function tick() {
-    if (!contextAlive()) { if (ticker) clearInterval(ticker); return; }
+    if (!contextAlive()) { shutdown(); return; }
     if (!isOwner()) return;
     if (stuckCheck() || busy) return;
     busy = true;
@@ -1716,7 +1745,7 @@
     const name = document.querySelector('h1')?.textContent.trim() || '';
     await save({ mode: 'chasse', huntZone: zone, huntZoneName: name, huntGroup: group, pauseReason: null });
     if (cfg.enabled) {
-      await chrome.runtime.sendMessage({ type: 'claim' }).catch(() => {});   // le pilote passe sur cet onglet et attaque
+      await send({ type: 'claim' }).catch(() => {});   // le pilote passe sur cet onglet et attaque
       return;
     }
     const btn = [...targetGroupByNumber(group)?.querySelectorAll('button') || []]
@@ -1890,7 +1919,7 @@
     document.addEventListener('click', (e) => { if (e.isTrusted && !e.composedPath().includes(host)) setOpen(false); }, true);
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setOpen(false); });
 
-    $('toggle').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'toggle', fromPage: true }));
+    $('toggle').addEventListener('click', () => send({ type: 'toggle', fromPage: true }).catch(() => {}));
     for (const b of root.querySelectorAll('[data-mode]')) {
       b.addEventListener('click', async () => {
         await save({ mode: b.dataset.mode });
@@ -2064,7 +2093,7 @@
   }
 
   function renderUi() {
-    if (!document.body) return;
+    if (dead || !document.body) return;
     if (!ui || !ui.host.isConnected) ui = buildUi();   // le site peut remplacer le <body>
     const mine = cfg.ownerTabId === myTabId;
     const on = cfg.enabled && mine;
@@ -2159,6 +2188,7 @@
 
   // ---------- Init ----------
   chrome.storage.onChanged.addListener((ch) => {
+    if (dead) return;
     if (Object.keys(ch).every((k) => k === 'debugLog')) return;   // journal : rien à mettre à jour
     for (const k in ch) cfg[k] = ch[k].newValue;
     if (ch.enabled?.newValue) progress();
@@ -2178,7 +2208,7 @@
 
   (async () => {
     cfg = await DM.getAll();
-    myTabId = await chrome.runtime.sendMessage({ type: 'whoami' }).catch(() => null);
+    myTabId = await send({ type: 'whoami' }).catch(() => null);
     DM.installTips(document);   // bulles d'info des boutons d'échange / de la file / du sélecteur
     renderUi();
     const upd = DM.pendingUpdate(cfg);   // une fois par onglet : nouvelle version sur GitHub
@@ -2186,7 +2216,7 @@
     try { shown = sessionStorage.getItem('dmUpdateShown') === upd; if (upd) sessionStorage.setItem('dmUpdateShown', upd); } catch { /* stockage indisponible */ }
     if (upd && !shown) {
       tradeToast(`🆕 Autopilot-DM ${upd} disponible — clique ici pour l’installer.`, 'ok',
-        () => chrome.runtime.sendMessage({ type: 'openUpdate' }).catch(() => {}));
+        () => send({ type: 'openUpdate' }).catch(() => {}));
     }
     await attackFromLink();
     runBuyTab();
