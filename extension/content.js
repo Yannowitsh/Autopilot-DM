@@ -2670,6 +2670,58 @@
   const ELEM_POINT_TIERS = [[0, 1], [100, 2], [200, 3], [300, 4]];
   const pointCost = (tiers, v) => { let c = tiers[0]?.[1] || 1; for (const [th, k] of tiers) if (v >= th) c = k; return c; };
   const spentPoints = (tiers, base) => { let n = 0; for (let v = 0; v < base; v++) n += pointCost(tiers, v); return n; };
+  // Répartition des points sur la fiche : server actions de /personnage « resetPoints() » (tout remet en libre)
+  // et « allocatePoints(stat, n) » (n points de stat, coût selon les paliers). Elles renvoient la page re-rendue
+  // (pas de ligne « 1: »), on y relit pointsFree et la base de chaque stat pour vérifier.
+  const POINTS_ACTION_FALLBACK = { resetPoints: '004944f9b01c999a6788b5755bcc24bf192bac43ce', allocatePoints: '60dbf9f72590dfc5c79366a0bed9bbbc123e6de0e4' };
+  const pointsActionIds = {};
+  async function pointsCall(name, args) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        if (!pointsActionIds[name]) pointsActionIds[name] = await findAction((await fetchFlight('/personnage')).chunks, name, POINTS_ACTION_FALLBACK[name]);
+        const tree = encodeURIComponent(JSON.stringify(['', { children: ['personnage', { children: ['__PAGE__', {}, null, null, 4096] }, null, null, 4096] }, null, null, 4112]));
+        const r = await DM.fetchT('/personnage', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { Accept: 'text/x-component', 'Content-Type': 'text/plain;charset=UTF-8', 'Next-Action': pointsActionIds[name], 'Next-Router-State-Tree': tree },
+          body: JSON.stringify(args),
+        });
+        if (!r.ok) throw Object.assign(new Error(`HTTP ${r.status}`), { status: r.status });
+        const text = await r.text();
+        const line = text.split(/\r?\n/).find((l) => l.startsWith('1:'));
+        const res = line ? JSON.parse(line.slice(2)) : null;
+        if (res?.error) throw Object.assign(new Error(res.error), { game: true });
+        const free = text.match(/"pointsFree":(\d+)/);
+        const rows = text.match(/"rows":(\[.*?\]),"pointsFree"/);
+        if (!free || !rows) throw new Error('Réponse du serveur illisible');
+        return { free: +free[1], base: Object.fromEntries(JSON.parse(rows[1]).map((x) => [x.key, +x.base || 0])) };
+      } catch (e) {
+        if (!e.game) delete pointsActionIds[name];
+        if (e.game || attempt >= 2) throw e;
+        await sleep(attempt ? 5000 : 2000);
+      }
+    }
+  }
+  // Applique la répartition `target` ({ stat: points }) : réinitialise seulement si une stat doit baisser.
+  async function applyPoints(target, current, say) {
+    let base = { ...current };
+    try { base = (await fetchCharSheet()).base; } catch { /* fiche illisible : on part des points connus */ }   // état réel (reprise après erreur)
+    if (POINT_STATS.some((k) => (base[k] || 0) > (target[k] || 0))) {
+      say('Réinitialisation des points…');
+      ({ base } = await pointsCall('resetPoints', []));
+    }
+    for (const k of POINT_STATS) {
+      const n = (target[k] || 0) - (base[k] || 0);
+      if (n <= 0) continue;
+      say(`${STAT_LABELS[k] || k} : +${n}…`);
+      const r = await pointsCall('allocatePoints', [k, n]);
+      if ((r.base[k] || 0) !== (target[k] || 0)) throw new Error(`${STAT_LABELS[k] || k} : ${r.base[k] || 0} au lieu de ${target[k]} (points libres : ${r.free})`);
+      base = r.base;
+      await sleep(300 + Math.random() * 300);
+    }
+    DM.log(`optimiseur : points répartis ${JSON.stringify(base)}`);
+    return base;
+  }
+
   const setTier = (fx, count) => (!fx?.length || count < 2 ? null : fx[Math.min(count, fx.length - 1)]);
 
   // Fiche perso : niveau, prestige, points de base, PV/PA affichés, panoplies actives (texte du jeu).
@@ -3153,6 +3205,28 @@
         }
         return;
       }
+      const pt = e.target.closest('[data-a="points"]');
+      if (pt && result && !pt.disabled) {
+        if (armed !== pt) {
+          disarm();
+          armed = pt;
+          pt.textContent = '⚠️ Confirmer : réinitialiser et répartir';
+          armTimer = setTimeout(() => { if (armed === pt) { pt.textContent = '📊 Appliquer cette répartition'; disarm(); } }, 6000);
+          return;
+        }
+        disarm();
+        pt.disabled = true;
+        try {
+          const base = await applyPoints(result.nxt.alloc, result.sheet.base, (m) => { pt.textContent = m; });
+          result.sheet.base = base;   // la fiche suit : l'écran « actuel » reflète les nouveaux points
+          pt.textContent = '✔ Points répartis';
+          say('✔ Points de caractéristiques répartis.');
+        } catch (err) {
+          pt.disabled = false;
+          pt.textContent = `🔁 Réessayer — ❌ ${err.message}`;
+        }
+        return;
+      }
       const dk = e.target.closest('[data-a="deck"]');
       if (dk && result && !dk.disabled) {
         if (armed !== dk) {
@@ -3295,7 +3369,10 @@
         ${r.realloc ? `<div style="font-size:12px;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:6px 8px">
           <b>📊 Points de caractéristiques</b> — ${fmt(r.sheet.capital)} points au total (${fmt(r.sheet.pointsFree)} libres actuellement)<br>
           ${POINT_STATS.map((k) => { const a = r.sheet.base[k] || 0, b = r.nxt.alloc[k] || 0; return `<span style="white-space:nowrap;${a === b ? 'color:#8a7d66' : ''}">${esc(STAT_LABELS[k] || k)} ${fmt(a)} → <b>${fmt(b)}</b></span>`; }).join(' · ')}
-          <div style="color:#8a7d66;font-size:11px;margin-top:2px">Pour appliquer : réinitialise tes points sur ta fiche personnage, puis répartis-les ainsi (l’équipement, lui, s’équipe avec le bouton ci-dessous).</div></div>` : ''}
+          <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            ${POINT_STATS.every((k) => (r.sheet.base[k] || 0) === (r.nxt.alloc[k] || 0)) ? '<span style="color:#6fcf7a">✔ Tes points sont déjà répartis ainsi.</span>'
+              : `<button data-a="points" style="${btn};background:#2e6fbf" title="Réinitialise tes points si une stat doit baisser, puis les répartit comme indiqué (2e clic pour confirmer)">📊 Appliquer cette répartition</button>`}
+            <span style="color:#8a7d66;font-size:11px">L’équipement, lui, s’équipe avec le bouton plus bas.</span></div></div>` : ''}
         <div style="font-size:12px;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:6px 8px">
           <b>🃏 Sorts offensifs conseillés (${r.deck.length})</b> :<br>${deckHtml}
           <div style="color:#8a7d66;font-size:11px;margin-top:2px">« Écrire dans le deck 3 » remplace les sorts de dégâts du deck 3 par ceux-ci ; ses autres cartes (buffs, soins…${r.keepCards.length ? `, ${r.keepCards.length} carte(s) actuellement` : ''}) sont conservées.</div>
