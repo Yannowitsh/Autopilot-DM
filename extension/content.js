@@ -2656,6 +2656,14 @@
     try { localStorage.setItem(SET_CACHE_KEY, JSON.stringify(cache)); } catch { /* idem */ }
     return Object.fromEntries(names.map((n) => [n, cache[n]?.fx || null]));
   }
+  // Points de caractéristiques : coût d'un point selon la valeur déjà investie (paliers de la fiche, ex. Force
+  // 1 point jusqu'à 100, puis 2, 3, 4 ; Sagesse 3 ; Vitalité 1). Capital = points dépensés + points libres (= 5 × (niveau − 1)).
+  const POINT_STATS = ['vitalite', 'sagesse', 'force', 'intelligence', 'chance', 'agilite'];
+  const OFF_POINT_STATS = ['force', 'intelligence', 'chance', 'agilite'];
+  const DEFAULT_POINT_TIERS = { vitalite: [[0, 1]], sagesse: [[0, 3]] };
+  const ELEM_POINT_TIERS = [[0, 1], [100, 2], [200, 3], [300, 4]];
+  const pointCost = (tiers, v) => { let c = tiers[0]?.[1] || 1; for (const [th, k] of tiers) if (v >= th) c = k; return c; };
+  const spentPoints = (tiers, base) => { let n = 0; for (let v = 0; v < base; v++) n += pointCost(tiers, v); return n; };
   const setTier = (fx, count) => (!fx?.length || count < 2 ? null : fx[Math.min(count, fx.length - 1)]);
 
   // Fiche perso : niveau, prestige, points de base, PV/PA affichés, panoplies actives (texte du jeu).
@@ -2666,12 +2674,19 @@
     const alloc = rscProps(flight, (x) => Array.isArray(x.rows) && x.rows[0]?.key && 'pointsFree' in x).props;
     const info = rscProps(flight, (x) => 'prestige' in x && 'level' in x && 'equipped' in x).props;
     if (!alloc || !info) throw new Error('Fiche personnage illisible');
-    const base = {}, bonus = {};
-    for (const r of res(alloc.rows).map(res)) { base[r.key] = +r.base || 0; bonus[r.key] = +r.bonus || 0; }
+    const base = {}, bonus = {}, tiers = {};
+    for (const r of res(alloc.rows).map(res)) {
+      base[r.key] = +r.base || 0; bonus[r.key] = +r.bonus || 0;
+      const t = res(r.tiers);
+      tiers[r.key] = Array.isArray(t) && t.length ? t.map(res) : DEFAULT_POINT_TIERS[r.key] || ELEM_POINT_TIERS;
+    }
+    const pointsFree = +alloc.pointsFree || 0;
+    const capital = pointsFree + Object.keys(base).reduce((n, k) => n + spentPoints(tiers[k], base[k]), 0);
     const tile = (label) => +(flight.match(new RegExp(`"children":(-?\\d+)\\}\\],\\["\\$","div",null,\\{"className":"text-\\[11px\\][^"]*","children":"${label}"`))?.[1] ?? NaN);
     const sets = [...flight.matchAll(/"children":\["([^"]+)"," \(",(\d+),"\/",(\d+),"\)"\]\}\],\["\$","div",null,\{"className":"text-muted","children":"([^"]*)"\}/g)]
       .map((m) => ({ name: m[1], count: +m[2], max: +m[3], text: m[4] }));
-    return { level: +info.level || 1, prestige: +info.prestige || 0, base, bonus, pv: tile('PV'), pa: tile('PA'), crit: tile('% Critique'), sets };
+    return { level: +info.level || 1, prestige: +info.prestige || 0, base, bonus, tiers, pointsFree, capital,
+      pv: tile('PV'), pa: tile('PA'), crit: tile('% Critique'), sets };
   }
 
   // Signature de dégâts d'une carte : par élément, base moyenne cumulée (B) et nombre de coups (N, pour les dommages fixes).
@@ -2795,8 +2810,8 @@
     const cands = {};
     for (const s of slots) cands[s.accepts] ||= pool.filter((c) => c.type === s.accepts && useful(c) && !banned.has(c.id) && !(budget && c.price > budget));
 
-    const statsOf = (build) => {
-      const S = { ...sheet.base };
+    const statsOf = (build, base = sheet.base) => {
+      const S = { ...base };
       const sets = {};
       for (const c of Object.values(build)) {
         if (!c) continue;
@@ -2814,13 +2829,67 @@
     };
     const paOf = (S) => Math.min(12, (level >= 100 ? 7 : 6) + (S.pa || 0));
     const pvOf = (S) => 50 + 5 * level + (S.vitalite || 0) + (S.pv || 0);
+    // Gain de dégâts d'un point dans chaque stat d'élément, pour les sorts du tour `used` (formule linéaire par stat).
+    const pointWeights = (used, S) => {
+      const w = { force: 0, intelligence: 0, chance: 0, agilite: 0 };
+      const pct = (1 + (S.dmgPctSorts || 0) / 100) * (1 + (S.po || 0) * SPECTRAL_PER_PO / 100);
+      for (const { sp: x } of used) {
+        const p = x.pf.cc > 0 ? Math.min(1, Math.max(0, (x.pf.cc + (S.critique || 0)) / 100)) : 0;
+        for (let el = 0; el < 5; el++) w[EL_STAT[el]] += x.pf.B[el] * (1 + p * (CRIT_MULT - 1)) * pct / 100;
+      }
+      return w;
+    };
+    // Répartition des points (option « redistribuer ») : Vitalité pour le PV minimum, puis chaque point là où il rapporte
+    // le plus de dégâts par point dépensé (paliers de coût compris) ; recalcul des sorts du tour jusqu'à stabilité.
+    const allocate = (gear) => {
+      const alloc = Object.fromEntries(POINT_STATS.map((k) => [k, 0]));
+      const S0 = { ...gear };
+      let R0 = sheet.capital;
+      const buy = (S, al, k, R) => { const c = pointCost(sheet.tiers[k] || ELEM_POINT_TIERS, al[k]); if (c > R) return R; al[k]++; S[k] = (S[k] || 0) + 1; return R - c; };
+      if (pvMin) while (pvOf(S0) < pvMin) { const r = buy(S0, alloc, 'vitalite', R0); if (r === R0) break; R0 = r; }
+      const pa = paOf(S0);
+      let refS = S0, refTurn = bestTurn(spells, S0, pa, K), best = null;
+      for (let it = 0; it < 3; it++) {
+        const w = pointWeights(refTurn.used, refS);
+        const S = { ...S0 }, al = { ...alloc };
+        let R = R0;
+        if (OFF_POINT_STATS.some((k) => w[k] > 0)) {
+          for (;;) {
+            let pick = null, ratio = 0;
+            for (const k of OFF_POINT_STATS) {
+              const c = pointCost(sheet.tiers[k] || ELEM_POINT_TIERS, al[k]);
+              if (w[k] > 0 && c <= R && w[k] / c > ratio) { ratio = w[k] / c; pick = k; }
+            }
+            if (!pick) break;
+            R = buy(S, al, pick, R);
+          }
+        }
+        while (R > 0) { const r = buy(S, al, 'vitalite', R); if (r === R) break; R = r; }   // reste → Vitalité
+        const turn = bestTurn(spells, S, pa, K);
+        if (!best || turn.dmg > best.turn.dmg) best = { S, alloc: al, turn };
+        const same = turn.used.map((u) => u.sp.id).sort().join() === refTurn.used.map((u) => u.sp.id).sort().join();
+        if (same && it) break;
+        refS = S; refTurn = turn;
+      }
+      return best;
+    };
+    // Évaluation d'un build : stats (avec points actuels ou redistribués) et meilleur tour.
+    const evalBuild = (build, realloc = opts.realloc !== false) => {
+      if (!realloc) {
+        const st = statsOf(build);
+        return { S: st.S, active: st.active, alloc: { ...sheet.base }, turn: bestTurn(spells, st.S, paOf(st.S), K) };
+      }
+      const st = statsOf(build, {});
+      const a = allocate(st.S);
+      return { S: a.S, active: st.active, alloc: a.alloc, turn: a.turn };
+    };
     let evals = 0;
     const score = (build) => {
       evals++;
-      const { S } = statsOf(build);
-      const pv = pvOf(S);
+      const ev = evalBuild(build);
+      const pv = pvOf(ev.S);
       if (pvMin && pv < pvMin) return -1e9 + pv;   // build trop fragile : on remonte d'abord les PV
-      return bestTurn(spells, S, paOf(S), K).dmg + pv * 1e-4;   // à dégâts égaux, le plus de PV
+      return ev.turn.dmg + pv * 1e-4;   // à dégâts égaux, le plus de PV
     };
     // contraintes : un même objet (id) une seule fois ; arme à deux mains → pas de bouclier ; un exemplaire possédé par objet
     const costOf = (build) => Object.values(build).reduce((n, c) => n + (c?.src === 'hdv' ? c.price : 0), 0);
@@ -2907,8 +2976,9 @@
       for (const s of group) if (!place[s.slot]) place[s.slot] = rest.shift() || null;
       for (const s of group) final[s.slot] = place[s.slot];
     }
-    const cur = statsOf(current), nxt = statsOf(final);
-    const curTurn = bestTurn(spells, cur.S, paOf(cur.S), K), nxtTurn = bestTurn(spells, nxt.S, paOf(nxt.S), K);
+    // actuel : équipement et points tels quels ; proposé : nouvel équipement (+ points redistribués si l'option est active)
+    const cur = evalBuild(current, false), nxt = evalBuild(final);
+    const curTurn = cur.turn, nxtTurn = nxt.turn;
     // contrôle du modèle : stats calculées pour l'équipement actuel vs fiche du jeu
     const checks = [
       ['PV', pvOf(cur.S), sheet.pv], ['PA', paOf(cur.S), sheet.pa],
@@ -2922,7 +2992,7 @@
     const dmgIds = new Set(sp.spells.map((x) => x.id));
     const keepCards = sp.deckIds(DECK_TARGET).filter((id) => !dmgIds.has(id) && !deck.some((x) => x.id === id)).slice(0, DECK_CARDS - deck.length);
     return { sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, K, setFx, hdv: opts.hdv,
-      pvMin, pvShort: pvMin && pvOf(nxt.S) < pvMin, budget, hdvFailed, cost: costOf(final), deck: deck.map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })),
+      pvMin, pvShort: pvMin && pvOf(nxt.S) < pvMin, budget, hdvFailed, realloc: opts.realloc !== false, cost: costOf(final), deck: deck.map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })),
       deckChunks: sp.chunks, keepCards };
   }
 
@@ -2937,7 +3007,7 @@
     document.addEventListener('keydown', onKey, true);
     ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
     ov.addEventListener('keydown', (e) => e.stopPropagation());
-    let o = { k: 4, pvMin: '', deckOnly: false, hdv: false };
+    let o = { k: 4, pvMin: '', deckOnly: false, hdv: false, realloc: true };
     try { o = { ...o, ...JSON.parse(localStorage.getItem(BUILD_OPTS_KEY) || '{}') }; } catch { /* stockage indisponible */ }
     const inp = 'background:#2a231a;border:1px solid #5a4a33;border-radius:8px;color:#eee;padding:5px 8px;font:13px system-ui,sans-serif';
     const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:6px 12px;color:#fff;cursor:pointer;font:600 13px system-ui,sans-serif;background:#2a231a';
@@ -2948,6 +3018,7 @@
           <label>Sorts par tour <select data-o="k" style="${inp}">${[2, 3, 4, 5].map((n) => `<option value="${n}">${n}</option>`).join('')}</select></label>
           <label>PV minimum <input data-o="pvMin" type="number" min="0" placeholder="aucun" style="${inp};width:90px"></label>
           <label style="cursor:pointer"><input data-o="deckOnly" type="checkbox"> Sorts du deck actif uniquement</label>
+          <label style="cursor:pointer" data-tip="Considère tous tes points de caractéristiques comme redistribuables (comme après une réinitialisation) : l’optimiseur choisit en même temps l’équipement et la répartition. Décoché : tes points restent comme ils sont."><input data-o="realloc" type="checkbox"> Redistribuer mes points</label>
           <label style="cursor:pointer" data-tip="Ajoute les objets en vente à l’HDV (jusqu’à 400 annonces par emplacement) : le build peut alors contenir des objets à acheter, avec leur prix."><input data-o="hdv" type="checkbox"> Fouiller l’HDV</label>
           <label data-k="budgetBox" data-tip="Total maximum des achats HDV du build proposé. Vide = pas de limite.">Budget <input data-o="budget" type="number" min="0" placeholder="illimité" style="${inp};width:110px"> K</label>
           <button data-a="go" style="${btn};background:#8a5a1a;margin-left:auto">Lancer</button>
@@ -3155,6 +3226,10 @@
         <div style="font-size:12px"><b>Sorts du tour</b> — actuel : ${turn(r.curTurn)}<br><b style="color:#6fcf7a">proposé</b> : ${turn(r.nxtTurn)}</div>
         <table style="border-collapse:collapse;width:100%;font-size:12px"><tr style="color:#b9a98c;text-align:left"><th style="padding:3px 6px">Emplacement</th><th>Actuel</th><th></th><th>Proposé</th></tr>${rows}</table>
         <div style="font-size:12px"><b>Panoplies</b> — actuel : ${sets(r.cur)} · proposé : ${sets(r.nxt)}</div>
+        ${r.realloc ? `<div style="font-size:12px;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:6px 8px">
+          <b>📊 Points de caractéristiques</b> — ${fmt(r.sheet.capital)} points au total (${fmt(r.sheet.pointsFree)} libres actuellement)<br>
+          ${POINT_STATS.map((k) => { const a = r.sheet.base[k] || 0, b = r.nxt.alloc[k] || 0; return `<span style="white-space:nowrap;${a === b ? 'color:#8a7d66' : ''}">${esc(STAT_LABELS[k] || k)} ${fmt(a)} → <b>${fmt(b)}</b></span>`; }).join(' · ')}
+          <div style="color:#8a7d66;font-size:11px;margin-top:2px">Pour appliquer : réinitialise tes points sur ta fiche personnage, puis répartis-les ainsi (l’équipement, lui, s’équipe avec le bouton ci-dessous).</div></div>` : ''}
         <div style="font-size:12px;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:6px 8px">
           <b>🃏 Sorts offensifs conseillés (${r.deck.length})</b> :<br>${deckHtml}
           <div style="color:#8a7d66;font-size:11px;margin-top:2px">« Écrire dans le deck 3 » remplace les sorts de dégâts du deck 3 par ceux-ci ; ses autres cartes (buffs, soins…${r.keepCards.length ? `, ${r.keepCards.length} carte(s) actuellement` : ''}) sont conservées.</div>
