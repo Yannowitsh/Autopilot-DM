@@ -193,14 +193,21 @@
   }
 
   // ---------- Énergie ----------
+  // Compteur interne : cfg.energy est lu une fois, puis décompté à chaque combat lancé (spendEnergy).
   // 1) lue directement sur la page affichée quand elle l'indique (aventure, zone de chasse) : aucune requête ;
-  // 2) sinon valeur récente en cache (décomptée à chaque combat lancé) ;
-  // 3) sinon chargement de /jeu.
-  // Le site est sur un hébergement mutualisé qui renvoie des 508/503 quand il sature : on espace alors les essais.
-  const ENERGY_CACHE_MS = 90 * 1000;
+  // 2) sinon le compteur, tant qu'il reste loin des seuils (pause / achat auto) et date de moins de ENERGY_RESYNC_MS ;
+  // 3) sinon chargement de /jeu. L'énergie se régénère avec le temps : le compteur ne peut que la sous-estimer.
+  // Le site (hébergement mutualisé) renvoie des 508/503 quand il sature : si le compteur est loin des seuils on
+  // continue avec lui, sinon on réessaie vite (5 s, 10 s, 20 s… 1 min max).
+  const ENERGY_RESYNC_MS = 30 * 60000;
+  const ENERGY_MARGIN = 3;                  // relecture quelques combats avant le seuil
   const FAIL_ALERT_AFTER_MS = 10 * 60000;   // alerte Discord seulement si l'échec dure 10 min…
   const FAIL_ALERT_EVERY_MS = 60 * 60000;   // …et au plus une fois par heure
   let energyFails = 0, energyFailSince = 0, nextEnergyTry = 0, lastEnergyError = '';
+  const minEnergy = () => Math.max(cfg.minEnergy, 2);   // 2 = coût max d'une étape (boss d'étape)
+  // En dessous de ce niveau, le compteur ne suffit plus : on relit la vraie valeur (pause ou achat à décider).
+  const energySyncBelow = () => Math.max(minEnergy(), cfg.autoBuyEnergy ? BUY_AT : 0) + ENERGY_MARGIN;
+  const counterUsable = () => cfg.energy != null && cfg.energy > energySyncBelow();
 
   function energyFromPage() {
     const t = document.body?.textContent || '';
@@ -213,10 +220,11 @@
 
   // Renvoie l'énergie, ou { error } si elle n'a pas pu être lue.
   async function readEnergy({ fresh = false } = {}) {
-    lastEnergyCheck = Date.now();
     const onPage = !fresh && energyFromPage();   // en pause, la page peut être figée depuis longtemps : on relit /jeu
-    if (onPage) { await save({ ...onPage, energyAt: Date.now() }); return onPage.energy; }
-    if (!fresh && cfg.energy != null && Date.now() - (cfg.energyAt || 0) < ENERGY_CACHE_MS) return cfg.energy;
+    if (onPage) { lastEnergyCheck = Date.now(); await save({ ...onPage, energyAt: Date.now() }); return onPage.energy; }
+    if (!fresh && counterUsable() && Date.now() - (cfg.energyAt || 0) < ENERGY_RESYNC_MS) return cfg.energy;
+    if (Date.now() < nextEnergyTry) return { error: lastEnergyError, wait: true };   // dernier essai trop récent
+    lastEnergyCheck = Date.now();
     try {
       const r = await DM.fetchT('/jeu', { credentials: 'same-origin', cache: 'no-store' });
       if (r.redirected && /connexion/.test(r.url)) return { error: 'déconnecté', fatal: true };
@@ -330,27 +338,35 @@
     }
   }
 
-  // Un combat vient d'être lancé : on décompte le cache pour ne pas relire /jeu avant chaque combat.
-  const spendEnergy = () => { if (cfg.energy != null) cfg.energy = Math.max(0, cfg.energy - 1); };
+  // Un combat vient d'être lancé : on décompte le compteur interne (2 pour un boss d'étape).
+  const spendEnergy = (cost = 1) => { if (cfg.energy != null) save({ energy: Math.max(0, cfg.energy - cost) }); };
 
   // ---------- Conditions pour lancer un combat ----------
   async function gate() {
     const now = Date.now();
 
-    if (cfg.pauseReason === 'energy' && now - lastEnergyCheck < ENERGY_POLL_MS) return false;
-    if (now < nextEnergyTry) {
-      setStatus(`Énergie illisible (${lastEnergyError}) — nouvel essai à ${DM.hhmm(nextEnergyTry)}`, true);
-      return false;
-    }
+    if (cfg.pauseReason === 'energy' && !energyFails && now - lastEnergyCheck < ENERGY_POLL_MS) return false;
 
-    const e = await readEnergy({ fresh: cfg.pauseReason === 'energy' });
+    let e = await readEnergy({ fresh: cfg.pauseReason === 'energy' });
+    const readOk = typeof e === 'number';
+    if (typeof e !== 'number' && cfg.pauseReason !== 'energy' && counterUsable()) {
+      // lecture impossible mais le compteur est loin des seuils : on continue avec lui (relecture plus tard)
+      if (!e.wait) DM.log(`énergie : lecture impossible (${e.error}), compteur interne utilisé (${cfg.energy})`);
+      if (!e.wait) nextEnergyTry = now + 60000;
+      e = cfg.energy;
+    }
     if (typeof e !== 'number') {
+      const secs = () => Math.max(1, Math.round((nextEnergyTry - Date.now()) / 1000));
+      if (e.wait) {
+        setStatus(`Énergie illisible (${lastEnergyError}) — nouvel essai dans ${secs()} s`, true);
+        return false;
+      }
       energyFails++;
       if (!energyFailSince) energyFailSince = now;
       lastEnergyError = e.error;
-      // 30 s, 1 min, 2 min… jusqu'à 10 min entre deux essais
-      nextEnergyTry = now + Math.min(10 * 60000, 30000 * 2 ** (energyFails - 1));
-      setStatus(`Énergie illisible (${e.error}) — nouvel essai à ${DM.hhmm(nextEnergyTry)}`, true);
+      // 5 s, 10 s, 20 s, 40 s, puis 1 min entre deux essais
+      nextEnergyTry = now + Math.min(60000, 5000 * 2 ** (energyFails - 1));
+      setStatus(`Énergie illisible (${e.error}) — nouvel essai dans ${secs()} s`, true);
       const lasting = now - energyFailSince >= FAIL_ALERT_AFTER_MS;
       if ((e.fatal || lasting) && now - (cfg.readFailAlertAt || 0) >= FAIL_ALERT_EVERY_MS) {
         save({ readFailAlertAt: now });
@@ -360,9 +376,11 @@
       }
       return false;
     }
-    energyFails = 0;
-    energyFailSince = 0;
-    nextEnergyTry = 0;
+    if (readOk) {
+      energyFails = 0;
+      energyFailSince = 0;
+      nextEnergyTry = 0;
+    }
 
     // Achat auto : dès BUY_AT ou moins, on remplit au max sans attendre la pause (le farm attend juste la fin de l'achat).
     if (cfg.autoBuyEnergy && cfg.pauseReason !== 'energy' && e <= BUY_AT && e < (cfg.energyMax || ENERGY_BUY.max)
@@ -371,7 +389,7 @@
       return false;
     }
 
-    const minE = Math.max(cfg.minEnergy, 2);   // 2 = coût max d'une étape (boss d'étape)
+    const minE = minEnergy();
     const resumeE = Math.max(cfg.resumeEnergy, minE);
 
     if (cfg.pauseReason === 'energy') {
@@ -598,7 +616,7 @@
       const btn = isOwner() && findBtn(/^(Combattre|Affronter le boss)$/);
       if (!btn) return;
       await save({ botFight: true });
-      spendEnergy();
+      spendEnergy(/boss/i.test(btn.textContent) ? 2 : 1);
       lastAutoClick = 0;
       markLaunch();
       btn.click();
