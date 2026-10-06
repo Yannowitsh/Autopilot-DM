@@ -13,7 +13,7 @@ async function discord(text, embeds, kind) {
     const r = await DM.fetchT(webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'DofusMasters Pilote Auto', content: text, ...(embeds ? { embeds } : {}) }),
+      body: JSON.stringify({ username: 'Autopilot-DM', content: text, ...(embeds ? { embeds } : {}) }),
     });
     return r.ok ? { ok: true } : { ok: false, error: `HTTP ${r.status}` };
   } catch (e) {
@@ -99,7 +99,7 @@ async function bossFinish(result, { closeTab = true } = {}) {
   if (!run) return;
   // Le dernier combat du farm a déjà été compté avant le départ (bossGo) ; l'avance rapide repart de zéro.
   await chrome.storage.local.set({
-    bossRun: null, botFight: false, ffArmAt: 0, ffTries: 0, ownerTabId: run.farmTabId, status: `Boss : ${result} — reprise du farm…`,
+    bossRun: null, botFight: false, ownerTabId: run.farmTabId, status: `Boss : ${result} — reprise du farm…`,
   });
   if (result) await discord(`🐉 **${run.name || 'Boss de chasse'}** : ${result}.`, undefined, 'boss');
   if (closeTab && run.bossTabId != null) setTimeout(() => chrome.tabs.remove(run.bossTabId).catch(() => {}), 2500);
@@ -209,7 +209,11 @@ async function checkUpdate(force = false) {
   }
 }
 
-chrome.runtime.onInstalled.addListener(() => { ensureAlarm(); checkUpdate(true); });
+chrome.runtime.onInstalled.addListener(() => {
+  ensureAlarm();
+  checkUpdate(true);
+  chrome.storage.local.remove(['fastForward', 'ffArmAt', 'ffTries']);   // ancienne « avance rapide » des combats (retirée en 1.34.0)
+});
 chrome.runtime.onStartup.addListener(() => { ensureAlarm(); checkUpdate(); });
 
 chrome.alarms.onAlarm.addListener(async (a) => {

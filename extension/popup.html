@@ -22,7 +22,7 @@
 </head>
 <body>
 <main>
-  <h1>🤖 DofusMasters Pilote Auto <small id="version" class="muted" style="font-size:11px;font-weight:400"></small></h1>
+  <h1>🤖 Autopilot-DM <small id="version" class="muted" style="font-size:11px;font-weight:400"></small></h1>
   <div id="update" class="panel" hidden style="border-color:#2b5d8a">
     <div>🆕 Version <b id="updateVersion"></b> disponible.</div>
     <div class="muted" style="font-size:12px;margin:4px 0">1. Double-clique <b>mettre-a-jour.bat</b> (dossier de l’extension) · 2. Clique « Recharger ».</div>
@@ -68,7 +68,6 @@
     <label>Reprise si énergie ≥ <input type="number" id="resumeEnergy" min="0"></label>
     <label title="Dès 20 d'énergie ou moins, rachète l'énergie jusqu'au max (enregistré dès que tu coches)">Racheter l’énergie auto (≤ 20 → max) <input type="checkbox" id="autoBuyEnergy"></label>
     <label>Délai entre combats (s) <span><input type="number" id="delayMin" min="0"> – <input type="number" id="delayMax" min="0"></span></label>
-    <label title="Le combat Auto est déjà résolu côté serveur : la page est rechargée dès l’envoi de la requête Auto, pour sauter l’animation">Avance rapide des combats Auto <input type="checkbox" id="fastForward"></label>
     <label title="Quand le boss apparaît, le farm finit son combat, un onglet tente le boss une fois, puis le farm reprend">Tenter le boss de chasse auto <input type="checkbox" id="bossAuto"></label>
     <div class="btns">
       <button id="save">Enregistrer</button>

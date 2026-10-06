@@ -3,7 +3,7 @@ const DM = {
   ORIGIN: 'https://dofusmasters.houk.fr',
 
   // Mises à jour : le manifest du dépôt GitHub public fait foi (vérifié toutes les UPDATE_EVERY_MS).
-  REPO: 'Yannowitsh/dofusmasters-pilote',
+  REPO: 'Yannowitsh/Autopilot-DM',
   UPDATE_EVERY_MS: 3 * 3600000,
   get UPDATE_MANIFEST() { return `https://raw.githubusercontent.com/${DM.REPO}/main/extension/manifest.json`; },
   get REPO_URL() { return `https://github.com/${DM.REPO}`; },
@@ -36,8 +36,7 @@ const DM = {
     notifyErrors: true,
     wantedMinPerGroup: 1, // avis de recherche : nb minimum de monstres recherchés dans le même groupe
     bossPreAlertMin: 0,  // pré-alerte N minutes avant (0 = désactivé)
-    bossAuto: true,
-    fastForward: true,   // combat Auto : recharge la page dès que le serveur a reçu la requête (résultat immédiat)      // pilote actif : tente le boss de chasse dans un nouvel onglet à son apparition, puis reprend le farm
+    bossAuto: true,      // pilote actif : tente le boss de chasse dans un nouvel onglet à son apparition, puis reprend le farm
     sellKeepAbove: true, // Autosell : garde les objets d'un niveau supérieur au personnage
     sellKeepRarities: [4, 5], // Autosell : raretés jamais vendues (indices de DM.RARITIES)
     mode: 'aventure',    // 'aventure' (Chemin), 'chasse' (groupe le plus dur d'une zone en boucle) ou 'ascension' (niv. 200)

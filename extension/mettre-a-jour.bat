@@ -15,12 +15,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ErrorActionPreference = 'Stop';" ^
   "$dest = $env:DEST;" ^
   "$m = Join-Path $dest 'manifest.json';" ^
-  "if (-not (Test-Path $m) -or -not ((Get-Content $m -Raw) -match 'DofusMasters Pilote Auto')) { throw 'Ce dossier ne contient pas l''extension : mise a jour annulee.' }" ^
+  "if (-not (Test-Path $m) -or -not ((Get-Content $m -Raw) -match 'Autopilot-DM|DofusMasters Pilote Auto')) { throw 'Ce dossier ne contient pas l''extension : mise a jour annulee.' }" ^
   "$tmp = Join-Path $env:TEMP ('dm-pilote-' + [guid]::NewGuid());" ^
   "New-Item -ItemType Directory $tmp | Out-Null;" ^
   "try {" ^
   "  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;" ^
-  "  Invoke-WebRequest 'https://github.com/Yannowitsh/dofusmasters-pilote/archive/refs/heads/main.zip' -OutFile (Join-Path $tmp 'main.zip') -UseBasicParsing;" ^
+  "  Invoke-WebRequest 'https://github.com/Yannowitsh/Autopilot-DM/archive/refs/heads/main.zip' -OutFile (Join-Path $tmp 'main.zip') -UseBasicParsing;" ^
   "  Expand-Archive (Join-Path $tmp 'main.zip') $tmp;" ^
   "  $src = Get-ChildItem $tmp -Directory | ForEach-Object { Join-Path $_.FullName 'extension' } | Where-Object { Test-Path (Join-Path $_ 'manifest.json') } | Select-Object -First 1;" ^
   "  if (-not $src) { throw 'Archive inattendue (dossier extension introuvable).' }" ^

@@ -1,6 +1,6 @@
-# DofusMasters Pilote Auto
+# Autopilot-DM
 
-Extension Chrome pour [DofusMasters](https://dofusmasters.houk.fr) : enchaîne l'Aventure ou la chasse, résout la vérification de présence, surveille l'énergie, échange des objets entre deux comptes via l'HDV et envoie des alertes sur Discord.
+Extension Chrome : enchaîne l'Aventure ou la chasse, résout la vérification de présence, surveille l'énergie, échange des objets entre deux comptes via l'HDV et envoie des alertes sur Discord.
 
 ## Installation
 

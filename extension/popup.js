@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 const NUM = ['minEnergy', 'resumeEnergy', 'delayMin', 'delayMax'];
-const BOOL = ['sellKeepAbove', 'bossAuto', 'fastForward'];
+const BOOL = ['sellKeepAbove', 'bossAuto'];
 
 async function render() {
   const s = await DM.getAll();

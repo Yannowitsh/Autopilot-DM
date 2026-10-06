@@ -101,8 +101,6 @@
     btn.click();
     progress();
     lastAutoClick = Date.now();   // laisse l'animation/combat reprendre sans re-clic Auto immédiat
-    // Le jeu renvoie ensuite la requête Auto : l'avance rapide attend celle-là, pas la réponse à la vérification.
-    if (cfg.ffArmAt) save({ ffArmAt: Date.now() + 150 });
     return true;
   }
 
@@ -351,54 +349,6 @@
     return true;
   }
 
-  // ---------- Avance rapide des combats Auto ----------
-  // En Auto, le serveur résout le combat dès qu'il reçoit la requête : l'animation n'est que du rendu client.
-  // Dès que la requête qui active l'Auto a abouti, on recharge la page, qui affiche directement l'écran de fin.
-  const FF_MAX_TRIES = 2;        // rechargements par combat ; au-delà, on laisse l'animation se jouer
-  const FF_FALLBACK_MS = 8000;   // aucune requête vue après le clic : on recharge quand même
-  // marge après la réponse : la requête Auto peut être refusée par une vérification de présence, qui s'affiche alors
-  const FF_SETTLE_MS = 500;
-  const FF_WATCH_MS = 100;       // surveillance dédiée, indépendante de la boucle (souvent occupée par des sleep)
-  const FF_END_GRACE_MS = 3000;  // écran de fin encore affiché après le clic « … en auto » : la navigation arrive
-  let ffReloading = false;
-  let uiHover = false;   // souris sur le menu du pilote
-  let ffReqStartAt = 0, ffReqDoneAt = 0;   // début / fin (epoch ms) de la dernière requête fetch/XHR du jeu
-  try {
-    new PerformanceObserver((list) => {
-      for (const e of list.getEntries()) {
-        if (e.initiatorType !== 'fetch' && e.initiatorType !== 'xmlhttprequest') continue;
-        if (!e.name.startsWith(location.origin) || !e.responseEnd) continue;
-        const start = performance.timeOrigin + e.startTime, end = performance.timeOrigin + e.responseEnd;
-        if (end > ffReqDoneAt) { ffReqDoneAt = end; ffReqStartAt = start; }
-      }
-    }).observe({ type: 'resource' });
-  } catch {}
-  // À appeler juste avant le clic qui active l'Auto (bouton Auto, « Suivant en auto », « Réessayer en auto »).
-  const armFastForward = () => save({ ffArmAt: Date.now() });
-
-  // true si la page va être rechargée.
-  function fastForward() {
-    const at = cfg.ffArmAt;
-    if (ffReloading || uiHover || !at || cfg.fastForward === false || !isOwner() || !cfg.botFight || presenceDialog()) return false;
-    const now = Date.now();
-    if (endTitle() && now - at > FF_END_GRACE_MS) {   // combat terminé sans nous, ou clic sans effet
-      save({ ffArmAt: 0 });
-      return false;
-    }
-    if ((cfg.ffTries || 0) >= FF_MAX_TRIES) {   // le rechargement n'a pas suffi : animation normale
-      save({ ffArmAt: 0 });
-      return false;
-    }
-    const answered = (ffReqStartAt >= at - 50 && now - ffReqDoneAt >= FF_SETTLE_MS)
-      || loadedAt > at + FF_SETTLE_MS;   // nouvelle page chargée après le clic : la requête est passée
-    if (!answered && now - at < FF_FALLBACK_MS) return false;
-    ffReloading = true;
-    progress();
-    save({ ffArmAt: 0, ffTries: (cfg.ffTries || 0) + 1, status: 'Combat Auto résolu côté serveur — rechargement…' })
-      .finally(() => location.reload());
-    return true;
-  }
-
   // ---------- Boucle ----------
   async function step() {
     const path = location.pathname;
@@ -442,7 +392,6 @@
 
       if (!end) endRetries = 0;
       if (end) {
-        if (cfg.ffTries) await save({ ffTries: 0 });
         const hunt = huntEnd();
         const asc = !hunt && visibleButtons().some((b) => ASC_END.test(b.textContent.trim()));
         const pathFight = !hunt && !asc && visibleButtons().some((b) => NEXT_STAGE.test(b.textContent.trim()));
@@ -478,7 +427,6 @@
           await save({ botFight: true });
           spendEnergy();
           lastAutoClick = autoRetry ? Date.now() : 0;
-          if (autoRetry) await armFastForward();
           markLaunch();
           retry.click();
           progress();
@@ -501,7 +449,6 @@
         await save({ botFight: true });
         spendEnergy();
         lastAutoClick = autoNext ? Date.now() : 0;
-        if (autoNext) await armFastForward();
         markLaunch();
         next.click();
         progress();
@@ -513,14 +460,12 @@
         setStatus('Combat manuel en cours — le pilote attend', true);
         return progress();
       }
-      if (fastForward() || ffReloading) return;
       // combat déjà lancé en Auto (« Suivant en auto »…), animation en cours
-      if (Date.now() - lastAutoClick < 30000 || cfg.ffArmAt) return;
+      if (Date.now() - lastAutoClick < 30000) return;
       await sleep(300 + Math.random() * 400);
       const auto = isOwner() && !endTitle() && findBtn(SEMI_AUTO);
       if (auto) {
         lastAutoClick = Date.now();
-        await armFastForward();
         auto.click();
         progress();
         setStatus('Combat en mode Auto (semi-auto)…');
@@ -1926,7 +1871,7 @@
           <ul class="wanted" data-k="wanted"></ul>
         </div>
       </div>
-      <div class="bubble" title="DofusMasters Pilote Auto">🤖</div>`;
+      <div class="bubble" title="Autopilot-DM">🤖</div>`;
     const $ = (k) => root.querySelector(`[data-k="${k}"]`);
     const panel = root.querySelector('.panel');
     const bubble = root.querySelector('.bubble');
@@ -1942,9 +1887,6 @@
     // Fermeture : clic de l'utilisateur ailleurs sur la page (pas les clics du pilote) ou Échap.
     document.addEventListener('click', (e) => { if (e.isTrusted && !e.composedPath().includes(host)) setOpen(false); }, true);
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setOpen(false); });
-    // Souris sur la bulle / le panneau : l'avance rapide attend, pour ne pas recharger sous ton clic.
-    host.addEventListener('mouseenter', () => { uiHover = true; });
-    host.addEventListener('mouseleave', () => { uiHover = false; });
 
     $('toggle').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'toggle', fromPage: true }));
     for (const b of root.querySelectorAll('[data-mode]')) {
@@ -2240,12 +2182,11 @@
     let shown = false;
     try { shown = sessionStorage.getItem('dmUpdateShown') === upd; if (upd) sessionStorage.setItem('dmUpdateShown', upd); } catch { /* stockage indisponible */ }
     if (upd && !shown) {
-      tradeToast(`🆕 Pilote Auto ${upd} disponible : lance mettre-a-jour.bat puis « Recharger » dans la popup.`, 'ok');
+      tradeToast(`🆕 Autopilot-DM ${upd} disponible : lance mettre-a-jour.bat puis « Recharger » dans la popup.`, 'ok');
     }
     await attackFromLink();
     runBuyTab();
     ticker = setInterval(tick, TICK_MS);
-    setInterval(() => { if (contextAlive()) fastForward(); }, FF_WATCH_MS);
     tick();
   })();
 })();
