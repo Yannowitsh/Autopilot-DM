@@ -38,3 +38,7 @@ Connecte un compte dans une fenêtre normale et l'autre dans une fenêtre de nav
 - **➕ File** ou **📋 Sélection** (panneau en haut à droite) : prépare plusieurs objets, puis **Tout échanger**. Un récap s'affiche à la fin (envoyés, perdus, non envoyés, sautés) et **🕘** ouvre l'historique de tous les échanges.
 
 L'échange ne fonctionne qu'entre les onglets de ton propre navigateur. Si l'achat échoue, l'annonce est retirée automatiquement.
+
+## Tierlist des sorts
+
+Menu 🤖 → **📚 Tierlist des sorts** : lit ta collection (/deck) et classe tous les sorts à dégâts. Un sort à plusieurs lignes de dégâts compte leur total, même sur des éléments différents (le moteur du jeu les applique toutes). Filtres cible unique / zone, élément (ou multi-éléments), favoris ; tris par dégâts totaux, dégâts par PA, coût en PA ou nom (re-clic = sens inverse). Le cadenas 🔓/🔒 met le sort en favori sur le site. Dégâts de base des cartes, sans les caractéristiques du personnage ; les sorts dont les dégâts dépendent de la vie ne sont pas classés.

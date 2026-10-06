@@ -2318,6 +2318,208 @@
     }
   }
 
+  // ---------- Tierlist des sorts : dégâts des cartes de la collection (/deck) ----------
+  // /deck contient toute la collection (DeckBuilder : collection[{ key, card:{ id, n, ap, icon, r, eff[] } }],
+  // initialFavorites[ids]). Effets de dégâts = liste du site : dmg, steal, bomb, trap, detonate, poison (fixes,
+  // additionnés même sur plusieurs éléments) ; dmgCasterHp / dmgLostHp dépendent de la vie (« variables », non classés).
+  // Favori natif : server action « setFavoriteCard(idCarte, bool) » sur /deck.
+  const FAV_ACTION_FALLBACK = '60105c931c92cff568c1e6ff395e809d4eb30addf9';
+  const ELEMENTS = [
+    { name: 'Neutre', color: '#a8a29e' }, { name: 'Terre', color: '#a16207' }, { name: 'Feu', color: '#ef4444' },
+    { name: 'Eau', color: '#3b82f6' }, { name: 'Air', color: '#22c55e' },
+  ];
+  const DMG_FIXED = new Set(['dmg', 'steal', 'bomb', 'trap', 'detonate', 'poison']);
+  const DMG_VARIABLE = new Set(['dmgCasterHp', 'dmgLostHp']);
+  const SPELL_FILTERS_KEY = 'dmSpellFilters';
+  let favActionId = null;
+
+  // Dégâts d'une carte : total min / max / moyen, détail par élément, zone ou cible unique.
+  function spellDamage(card) {
+    let min = 0, max = 0, zone = false, variable = false, delayed = false, fixed = false;
+    const byEl = {};
+    for (const e of card.eff || []) {
+      if (DMG_VARIABLE.has(e.k)) { variable = true; continue; }
+      if (!DMG_FIXED.has(e.k)) continue;
+      fixed = true;
+      const n = e.k === 'poison' ? Math.max(1, +(e.turns || e.dur) || 1) : 1;   // poison : dégâts à chaque tour
+      const lo = (+e.min || 0) * n, hi = (+(e.max ?? e.min) || 0) * n;
+      min += lo; max += hi;
+      const el = Number.isInteger(e.el) ? e.el : 0;
+      byEl[el] = (byEl[el] || 0) + (lo + hi) / 2;
+      if (e.zone || e.k === 'bomb' || e.k === 'detonate') zone = true;   // bombes : explosion en zone
+      if (e.k === 'bomb' || e.k === 'trap' || e.k === 'poison') delayed = true;
+    }
+    return fixed ? { min, max, avg: (min + max) / 2, byEl, zone, variable, delayed } : null;
+  }
+
+  async function fetchSpells() {
+    const { flight, chunks } = await fetchFlight('/deck');
+    const { rows, props } = rscProps(flight, (x) => Array.isArray(x.collection) && 'initialDecks' in x);
+    if (!props) throw new Error('Collection de sorts introuvable sur /deck');
+    const res = (v) => rscResolve(rows, v);
+    const spells = [], variableOnly = [];
+    for (const raw of props.collection) {
+      const ent = res(raw) || {};
+      const card = res(ent.card);
+      if (!card?.id) continue;
+      const eff = (res(card.eff) || []).map(res);
+      const dmg = spellDamage({ ...card, eff });
+      if (!dmg) {
+        if (eff.some((e) => DMG_VARIABLE.has(e?.k))) variableOnly.push(card.n);
+        continue;
+      }
+      const ap = +card.ap || 0;
+      spells.push({ id: card.id, key: ent.key, name: card.n, desc: card.d || '', icon: card.icon, ap, rarity: card.r,
+        fusion: +card.f || 0, ...dmg, perAp: ap ? dmg.avg / ap : Infinity });
+    }
+    const favs = new Set((res(props.initialFavorites) || []).map(Number));
+    return { spells, favs, variableOnly, chunks };
+  }
+
+  async function setFavorite(id, on, chunks) {
+    if (!favActionId) favActionId = await findAction(chunks || (await fetchFlight('/deck')).chunks, 'setFavoriteCard', FAV_ACTION_FALLBACK);
+    try {
+      await callAction('deck', favActionId, [id, on]);
+    } catch (e) {
+      if (!e.game) favActionId = null;   // ID peut-être périmé : relu au prochain essai
+      throw e;
+    }
+  }
+
+  async function openSpellList() {
+    document.querySelector('.dm-picker')?.remove();
+    const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+    const ov = document.createElement('div');
+    ov.className = 'dm-picker';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:#000a;display:grid;place-items:center;padding:16px;font:13px system-ui,sans-serif;color:#eee';
+    ov.innerHTML = '<div style="background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:16px">Lecture de tes sorts…</div>';
+    document.body.appendChild(ov);
+    let favChanged = false;
+    const close = () => {
+      ov.remove();
+      document.removeEventListener('keydown', onKey, true);
+      if (favChanged && location.pathname.startsWith('/deck')) location.reload();   // la page /deck affiche les nouveaux favoris
+    };
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+    document.addEventListener('keydown', onKey, true);
+    ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
+    ov.addEventListener('keydown', (e) => e.stopPropagation());
+
+    let data;
+    try {
+      data = await fetchSpells();
+    } catch (e) {
+      ov.firstElementChild.textContent = `❌ ${e.message}`;
+      return;
+    }
+    const { spells, favs, variableOnly, chunks } = data;
+    const NO_FILTERS = { q: '', target: '', el: '', sort: 'avg', dir: -1, favOnly: false };
+    let f = { ...NO_FILTERS };
+    try { f = { ...f, ...JSON.parse(localStorage.getItem(SPELL_FILTERS_KEY) || '{}'), q: '' }; } catch { /* stockage indisponible */ }
+    const saveFilters = () => { try { localStorage.setItem(SPELL_FILTERS_KEY, JSON.stringify(f)); } catch { /* idem */ } };
+    let msg = '';
+
+    const inp = 'background:#2a231a;border:1px solid #5a4a33;border-radius:8px;color:#eee;padding:5px 8px;font:13px system-ui,sans-serif';
+    const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:5px 10px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
+    const SORTS = [['avg', 'Dégâts totaux'], ['perAp', 'Dégâts / PA'], ['ap', 'Coût en PA'], ['name', 'Nom']];
+    ov.innerHTML = `
+      <div style="width:min(860px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
+        <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📚 Tierlist de mes sorts${DM.tip("Tous les sorts à dégâts de ta collection, avec les dégâts de base de la carte (sans tes caractéristiques). Un sort à plusieurs lignes de dégâts affiche leur total, même sur des éléments différents. Bombes, pièges et poisons comptent leurs dégâts (le poison, sur toute sa durée). Le cadenas met le sort en favori sur le site (toujours en haut de la liste de /deck).")}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+          <input data-f="q" placeholder="Rechercher un sort…" style="${inp};flex:1;min-width:140px">
+          <select data-f="target" style="${inp}"><option value="">Toutes cibles</option><option value="single">Cible unique</option><option value="zone">Zone</option></select>
+          <select data-f="el" style="${inp}"><option value="">Tous éléments</option>${ELEMENTS.map((e, i) => `<option value="${i}">${e.name}</option>`).join('')}<option value="multi">Multi-éléments</option></select>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" data-f="favOnly"> Favoris</label>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><span style="color:#b9a98c">Trier :</span>
+          ${SORTS.map(([k, l]) => `<button data-sort="${k}" style="${btn}">${l}</button>`).join('')}
+          <span data-k="count" style="margin-left:auto;color:#b9a98c"></span>
+        </div>
+        <div data-k="msg" style="font-size:12px;min-height:1em"></div>
+        <div data-k="list" style="overflow-y:auto;display:flex;flex-direction:column;gap:4px;padding-right:4px"></div>
+        <div style="color:#8a7d66;font-size:11px">${variableOnly.length ? `Non classés (dégâts selon la vie) : ${esc(variableOnly.join(', '))}. ` : ''}Dégâts de base des cartes, hors caractéristiques du personnage.</div>
+      </div>`;
+    const $ = (sel) => ov.querySelector(sel);
+    for (const el of ov.querySelectorAll('[data-f]')) {
+      if (el.type === 'checkbox') el.checked = !!f[el.dataset.f]; else el.value = f[el.dataset.f] ?? '';
+      el.addEventListener(el.tagName === 'INPUT' && el.type !== 'checkbox' ? 'input' : 'change', () => {
+        f[el.dataset.f] = el.type === 'checkbox' ? el.checked : el.value;
+        saveFilters();
+        render();
+      });
+    }
+    ov.addEventListener('click', async (e) => {
+      if (e.target.closest('[data-a="x"]')) return close();
+      const sb = e.target.closest('[data-sort]');
+      if (sb) {
+        const k = sb.dataset.sort;
+        // nouveau tri : sens naturel (dégâts décroissants, PA et nom croissants) ; même tri : on inverse
+        f.dir = f.sort === k ? -f.dir : (k === 'ap' || k === 'name' ? 1 : -1);
+        f.sort = k;
+        saveFilters();
+        return render();
+      }
+      const fb = e.target.closest('[data-fav]');
+      if (!fb || fb.disabled) return;
+      const id = +fb.dataset.fav, on = !favs.has(id);
+      fb.disabled = true;
+      try {
+        await setFavorite(id, on, chunks);
+        if (on) favs.add(id); else favs.delete(id);
+        favChanged = true;
+        msg = '';
+      } catch (err) {
+        msg = `❌ Favori : ${err.message}`;
+      }
+      render();
+    });
+
+    const fmt = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
+    function render() {
+      const q = normName(f.q || '');
+      const list = spells.filter((sp) => {
+        if (q && !normName(sp.name).includes(q)) return false;
+        if (f.target === 'single' && sp.zone) return false;
+        if (f.target === 'zone' && !sp.zone) return false;
+        const els = Object.keys(sp.byEl);
+        if (f.el === 'multi' && els.length < 2) return false;
+        if (f.el !== '' && f.el !== 'multi' && !els.includes(String(f.el))) return false;
+        if (f.favOnly && !favs.has(sp.id)) return false;
+        return true;
+      });
+      const key = f.sort;
+      list.sort((a, b) => (key === 'name' ? a.name.localeCompare(b.name) * f.dir
+        : ((a[key] === b[key] ? 0 : a[key] > b[key] ? 1 : -1) * f.dir) || b.avg - a.avg || a.name.localeCompare(b.name)));
+      for (const b of ov.querySelectorAll('[data-sort]')) {
+        const on = b.dataset.sort === key;
+        b.style.background = on ? '#8a5a1a' : '#2a231a';
+        b.textContent = SORTS.find(([k]) => k === b.dataset.sort)[1] + (on ? (f.dir > 0 ? ' ▲' : ' ▼') : '');
+      }
+      $('[data-k="count"]').textContent = `${list.length} / ${spells.length} sorts · ${favs.size} favori(s)`;
+      $('[data-k="msg"]').textContent = msg;
+      $('[data-k="msg"]').style.color = '#ff7b6b';
+      $('[data-k="list"]').innerHTML = list.map((sp, i) => {
+        const fav = favs.has(sp.id);
+        const chips = Object.entries(sp.byEl).sort((a, b) => b[1] - a[1]).map(([el, v]) => {
+          const E = ELEMENTS[el] || { name: '?', color: '#888' };
+          return `<span title="${esc(E.name)} : ${fmt(v)} en moyenne" style="display:inline-block;padding:1px 6px;border-radius:6px;font-size:11px;font-weight:700;color:${E.color};border:1px solid ${E.color}66;background:${E.color}1f">${esc(E.name)}</span>`;
+        }).join(' ');
+        const tags = [sp.zone ? '🌀 Zone' : '🎯 Cible unique', sp.delayed ? '⏳ différé' : '', sp.variable ? '+ variable' : ''].filter(Boolean).join(' · ');
+        return `<div style="display:grid;grid-template-columns:28px 40px 1fr auto auto auto 30px;gap:8px;align-items:center;background:${fav ? '#3a2e14' : '#241e16'};border:1px solid ${fav ? '#e0b040' : '#3a3024'};border-radius:8px;padding:5px 8px">
+          <b style="color:#b9a98c;text-align:right">${i + 1}</b>
+          <img src="/img/spells/sort_${+sp.icon}.png" alt="" style="width:36px;height:36px;object-fit:contain">
+          <div style="min-width:0"><div style="font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(sp.desc)}">${esc(sp.name)}</div>
+            <div style="font-size:11px;color:#b9a98c">${chips} ${tags}</div></div>
+          <div style="text-align:center" title="Coût en PA"><b style="font-size:15px;color:#5aa9e6">${sp.ap}</b><div style="font-size:10px;color:#8a7d66">PA</div></div>
+          <div style="text-align:right;min-width:86px" title="Dégâts totaux (min – max)"><b style="font-size:15px">${fmt(sp.avg)}</b><div style="font-size:10px;color:#8a7d66">${sp.min} – ${sp.max}</div></div>
+          <div style="text-align:right;min-width:56px" title="Dégâts moyens par PA"><b style="font-size:14px;color:#f0c04a">${sp.ap ? fmt(sp.perAp) : '—'}</b><div style="font-size:10px;color:#8a7d66">/ PA</div></div>
+          <button data-fav="${sp.id}" title="${fav ? 'Favori sur le site : cliquer pour le retirer' : 'Mettre en favori sur le site (toujours en haut de /deck)'}" style="width:28px;height:28px;border-radius:50%;cursor:pointer;border:1px solid ${fav ? '#e0b040' : '#5a4a33'};background:${fav ? '#e0b040' : 'transparent'};color:${fav ? '#1d1812' : '#b9a98c'};font-size:13px">${fav ? '🔒' : '🔓'}</button>
+        </div>`;
+      }).join('') || '<div style="color:#b9a98c;padding:12px">Aucun sort ne correspond aux filtres.</div>';
+    }
+    render();
+  }
+
   // ---------- Bulle en bas à gauche + menu (pilote, chasse, autosell) ----------
   // Shadow DOM : le CSS du site (Tailwind) ne déteint pas sur le menu, et inversement.
   const MENU_CSS = `
@@ -2462,6 +2664,10 @@
           <ul class="eqplan" data-k="eqPlan"></ul>
         </div>
         <div class="sec">
+          <div class="head"><span>📚 Tierlist des sorts${DM.tip("Classe tous tes sorts à dégâts : dégâts totaux (toutes lignes et éléments additionnés), dégâts par PA ou coût en PA, avec filtres cible unique / zone et par élément. Le cadenas met un sort en favori sur le site.")}</span></div>
+          <button data-k="spells">Ouvrir la tierlist</button>
+        </div>
+        <div class="sec">
           <div class="head"><span>🎯 Avis de recherche${DM.tip("Parcourt toutes les zones de chasse et repère les groupes contenant des monstres recherchés. Chaque trouvaille s’affiche ici et peut être envoyée sur Discord.")}</span><span class="muted" data-k="scanAge"></span></div>
           <div class="row">
             <button data-k="scan" style="flex:1" data-tip="Scanne toutes les zones dans la plage de niveaux choisie (les groupes changent toutes les ~3 min).">Scanner les zones</button>
@@ -2525,6 +2731,7 @@
       save({ sellKeepRarities: DM.RARITIES.map((__, j) => j).filter((j) => $(`rar${j}`).checked) });
     }));
     $('fuseScan').addEventListener('click', () => scanFusions());
+    $('spells').addEventListener('click', () => { setOpen(false); openSpellList(); });
     $('fuseAll').addEventListener('click', () => runFusions(fuseList || []));
     $('fuseList').addEventListener('click', (e) => {
       const id = +e.target.closest('button[data-fuse]')?.dataset.fuse;
