@@ -2671,6 +2671,28 @@
   let saveDeckId = null;
   // Liste noire de l'optimiseur : objets (par id, toutes fusions) à ne jamais proposer. cfg.buildBlacklist = { id: nom }
   const buildBlacklist = () => cfg.buildBlacklist || {};
+  const buildPaOf = (level) => (S) => Math.min(12, (level >= 100 ? 7 : 6) + (S.pa || 0));
+  const buildPvOf = (level) => (S) => 50 + 5 * level + (S.vitalite || 0) + (S.pv || 0);
+
+  // Builds enregistrés (💾 dans l'optimiseur, aussi listés dans la bulle ❤️) : cfg.buildSaves = [{ id, name, who, at, data }].
+  // data = résultat de l'optimiseur sans fonctions ni bestiaire complet ; c'est une photo : stocks HDV et inventaire ont pu changer.
+  const BUILD_SAVES_MAX = 20;
+  const buildSaves = () => cfg.buildSaves || [];
+  function packBuild(r) {
+    const zones = {};
+    for (const c of Object.values(r.final)) for (const [, , , , zs] of c?.sources || []) for (const z of zs) if (r.bestiary?.zones[z]) zones[z] = r.bestiary.zones[z];
+    const goalKey = Object.keys(BUILD_GOALS).find((k) => BUILD_GOALS[k] === r.goal) || 'dps';
+    const { pvOf, paOf, goal, setFx, equipped, ...rest } = r;
+    return JSON.parse(JSON.stringify({ ...rest, goalKey, bestiary: r.bestiary ? { count: r.bestiary.count, at: r.bestiary.at, zones } : null }));
+  }
+  function unpackBuild(d) {
+    const r = { ...d, goal: BUILD_GOALS[d.goalKey] || BUILD_GOALS.dps, pvOf: buildPvOf(d.sheet.level), paOf: buildPaOf(d.sheet.level) };
+    r.target = r.goal.target || null;
+    // même objet des deux côtés (rien à changer sur l'emplacement) : identité rétablie après le passage en JSON
+    for (const s of r.slots) if (r.final[s.slot] && r.final[s.slot].uid === r.current[s.slot]?.uid) r.final[s.slot] = r.current[s.slot];
+    return r;
+  }
+
   // Objets favoris (cœur dans l'optimiseur, bulle ❤️) : cfg.buildFavs = { id: { name, icon, lvl, type, setName } }
   const buildFavs = () => cfg.buildFavs || {};
   const toggleFav = (c) => {
@@ -3063,8 +3085,7 @@
       }
       return { S, active };
     };
-    const paOf = (S) => Math.min(12, (level >= 100 ? 7 : 6) + (S.pa || 0));
-    const pvOf = (S) => 50 + 5 * level + (S.vitalite || 0) + (S.pv || 0);
+    const paOf = buildPaOf(level), pvOf = buildPvOf(level);
     // Gain de dégâts d'un point dans chaque stat d'élément, pour les sorts du tour `used` (formule linéaire par stat).
     const pointWeights = (used, S) => {
       const w = { force: 0, intelligence: 0, chance: 0, agilite: 0 };
@@ -3255,7 +3276,7 @@
       deckChunks: sp.chunks, keepCards };
   }
 
-  async function openBuildOptimizer() {
+  async function openBuildOptimizer({ load = null } = {}) {
     document.querySelector('.dm-picker')?.remove();
     const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
     const ov = document.createElement('div');
@@ -3288,6 +3309,7 @@
           <label data-k="budgetBox" data-tip="Total maximum des achats HDV du build proposé. Vide = pas de limite.">Budget <input data-o="budget" type="number" min="0" placeholder="illimité" style="${inp};width:110px"> K</label>
           <button data-a="go" style="${btn};background:#8a5a1a;margin-left:auto">Lancer</button>
         </div>
+        <div data-k="saves" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:12px"></div>
         <div data-k="msg" style="font-size:12px;color:#b9a98c;min-height:1em"></div>
         <details data-k="bl" style="font-size:12px"><summary style="cursor:pointer;color:#b9a98c"></summary><div data-k="blList" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px"></div></details>
         <div data-k="out" style="overflow-y:auto;display:flex;flex-direction:column;gap:10px"></div>
@@ -3316,9 +3338,59 @@
     let armed = null, armTimer = null;   // bouton d'achat en attente de confirmation
     const disarm = () => { armed = null; clearTimeout(armTimer); };
     const say = (t, err) => { $('[data-k="msg"]').textContent = t; $('[data-k="msg"]').style.color = err ? '#ff7b6b' : '#b9a98c'; };
-    let result = null, running = false;
+    let result = null, running = false, loaded = null;   // loaded : build enregistré affiché ({ name, at, who })
+    const renderSaves = () => {
+      const list = buildSaves();
+      const box = $('[data-k="saves"]');
+      box.style.display = list.length ? '' : 'none';
+      box.innerHTML = `<span style="color:#b9a98c">💾 Builds enregistrés</span>
+        <select data-k="saveSel" style="${inp};max-width:360px">${list.map((x) => `<option value="${esc(x.id)}">${esc(x.name)} — ${esc(x.who || '?')}, ${new Date(x.at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}</option>`).join('')}</select>
+        <button data-a="loadSave" style="${btn}">📂 Ouvrir</button><button data-a="delSave" style="${btn}" title="Supprimer ce build enregistré (2e clic pour confirmer)">🗑</button>`;
+    };
+    const openSave = (id) => {
+      const x = buildSaves().find((b) => b.id === id);
+      if (!x) return;
+      disarm();
+      result = unpackBuild(x.data);
+      loaded = { name: x.name, at: x.at, who: x.who };
+      render();
+      say(`📂 Build « ${x.name} » enregistré le ${new Date(x.at).toLocaleString('fr-FR')} : photo de ce moment-là (HDV, inventaire et points ont pu changer depuis).`);
+    };
+    renderSaves();
     ov.addEventListener('click', async (e) => {
       if (e.target.closest('[data-a="x"]')) return close();
+      if (e.target.closest('[data-a="saveBuild"]') && result) {
+        const name = ($('[data-k="saveName"]')?.value || '').trim() || 'Build sans nom';
+        let entry;
+        try {
+          entry = { id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, name, who: myName() || '', at: Date.now(), data: packBuild(result) };
+          await save({ buildSaves: [entry, ...buildSaves()].slice(0, BUILD_SAVES_MAX) });
+        } catch (err) {
+          say(`❌ Enregistrement impossible : ${err.message}`, true);
+          return;
+        }
+        loaded = { name, at: entry.at, who: entry.who };
+        renderSaves();
+        render();
+        say(`💾 Build « ${name} » enregistré : rouvre-le ici ou depuis la bulle ❤️, sans relancer la recherche.`);
+        return;
+      }
+      if (e.target.closest('[data-a="loadSave"]')) return openSave($('[data-k="saveSel"]').value);
+      const del = e.target.closest('[data-a="delSave"]');
+      if (del) {
+        if (armed !== del) {
+          disarm();
+          armed = del;
+          del.textContent = '⚠️ Supprimer ?';
+          armTimer = setTimeout(() => { if (armed === del) { del.textContent = '🗑'; disarm(); } }, 5000);
+          return;
+        }
+        disarm();
+        await save({ buildSaves: buildSaves().filter((b) => b.id !== $('[data-k="saveSel"]').value) });
+        renderSaves();
+        say('Build enregistré supprimé.');
+        return;
+      }
       const fav = e.target.closest('[data-fav]');
       if (fav && result) {
         const [slot, side] = fav.dataset.fav.split('|');
@@ -3444,6 +3516,7 @@
           const t0 = Date.now();
           fetchFlight.onRetry = (m) => say(`⏳ ${m}`);
           result = await optimizeBuild(o, say);
+          loaded = null;
           say(`Terminé : ${result.evals} builds testés en ${((Date.now() - t0) / 1000).toFixed(1)} s.`);
           render();
         } catch (err) {
@@ -3581,6 +3654,11 @@
           </div>
         </div>
         <div style="font-size:12px;line-height:1.6">${statRows}</div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:12px">
+          ${loaded ? `<span style="color:#8fb8ee">📂 « ${esc(loaded.name)} » (${esc(loaded.who || '?')}, ${new Date(loaded.at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })})</span>`
+            : `<input data-k="saveName" maxlength="60" value="${esc(`${r.goal.label.replace(/^\S+\s/, '')} — ${fmt(r.goal.stat ? r.goal.value(r.nxt.S) : r.nxtTurn.dmg)}`)}" style="${inp};width:240px" title="Nom du build">
+          <button data-a="saveBuild" style="${btn};background:#2e6fbf" title="Garde ce résultat : tu pourras le rouvrir sans relancer la recherche (ici ou depuis la bulle ❤️)">💾 Enregistrer ce build</button>`}
+        </div>
         <div style="display:flex;gap:8px;align-items:center">
           <button data-a="equip" style="${btn};background:#2e7d32" ${owned ? '' : 'disabled'}>✅ Équiper ce build${Object.values(r.final).some((c) => c?.src === 'hdv') ? ' (objets possédés seulement)' : ''}</button>
           <span style="font-size:11px;color:#8a7d66">Les objets HDV (🛒) sont à acheter, ceux de la banque (🏦) à échanger d’abord, ceux du bestiaire (🐉) à looter (ou à acheter s’ils sont en vente) ; relance ensuite la recherche pour les équiper.</span>
@@ -3590,6 +3668,7 @@
           Panoplies de la fiche : ${r.sheet.sets.map((x) => `${esc(x.name)} (${x.count}/${x.max}) ${esc(x.text)}`).join(' ; ') || 'aucune'}.
           Prestige ${r.sheet.prestige}, niveau ${r.sheet.level}.</details>`;
     }
+    if (load) openSave(load);
   }
 
   // Favoris : chaque objet se déplie sur ses sources (bestiaire) ; une zone ouvre ses groupes de chasse.
@@ -3605,9 +3684,11 @@
     ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
     const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:4px 9px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
     ov.innerHTML = `<div style="width:min(720px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
-      <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">❤️ Objets favoris${DM.tip('Ajoute des objets avec le cœur ♡ de l’optimiseur de build. Clique sur un objet pour voir les boss et monstres qui le lâchent, avec tes chances ; clique sur une zone pour ouvrir ses groupes de chasse.')}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
+      <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">❤️ Favoris${DM.tip('Builds enregistrés avec 💾 dans l’optimiseur : « Ouvrir » les réaffiche sans relancer la recherche. Objets ajoutés avec le cœur ♡ de l’optimiseur de build. Clique sur un objet pour voir les boss et monstres qui le lâchent, avec tes chances ; clique sur une zone pour ouvrir ses groupes de chasse.')}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
       <div data-k="msg" style="font-size:12px;color:#b9a98c"></div>
-      <div data-k="list" style="overflow-y:auto;display:flex;flex-direction:column;gap:6px"></div></div>`;
+      <div style="overflow-y:auto;display:flex;flex-direction:column;gap:10px">
+        <div data-k="saves" style="display:flex;flex-direction:column;gap:4px"></div>
+        <div data-k="list" style="display:flex;flex-direction:column;gap:6px"></div></div></div>`;
     document.body.appendChild(ov);
     const $ = (q) => ov.querySelector(q);
     const say = (t) => { $('[data-k="msg"]').textContent = t; };
@@ -3632,6 +3713,10 @@
       return html.join('') || '<div style="color:#8a7d66">Ni monstre ni boss du bestiaire ne le lâche (coffres, objet bonus, boutique…).</div>';
     };
     const render = () => {
+      const saves = buildSaves();
+      $('[data-k="saves"]').innerHTML = saves.length ? `<b style="font-size:13px">💾 Builds enregistrés</b>${saves.map((x) => `<div style="display:flex;gap:8px;align-items:center;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:4px 8px">
+        <span style="flex:1">${esc(x.name)} <span style="color:#8a7d66;font-size:12px">— ${esc(x.who || '?')}, ${new Date(x.at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}</span></span>
+        <button data-open-save="${esc(x.id)}" style="${btn};background:#2e6fbf">📂 Ouvrir</button></div>`).join('')}<b style="font-size:13px;margin-top:6px">❤️ Objets</b>` : '';
       const favs = Object.entries(buildFavs()).sort((x, y) => (y[1].lvl || 0) - (x[1].lvl || 0));
       $('[data-k="list"]').innerHTML = favs.length ? favs.map(([id, f]) => `<details style="background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:6px 8px">
         <summary style="cursor:pointer;display:flex;align-items:center;gap:6px">${f.icon ? `<img src="/img/items/${+f.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain">` : ''}
@@ -3639,11 +3724,13 @@
           ${f.type ? `<a href="/hdv?emplacement=${encodeURIComponent(f.type)}" target="_blank" style="${btn};text-decoration:none" title="Ouvrir l’HDV sur cet emplacement (nouvel onglet)">🛒 HDV</a>` : ''}
           <button data-unfav="${esc(id)}" style="${btn}" title="Retirer des favoris">✕</button></summary>
         <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;font-size:12px">${sources(+id)}</div></details>`).join('')
-        : '<div style="color:#b9a98c">Aucun favori : dans l’optimiseur de build, clique sur le cœur ♡ à côté d’un objet.</div>';
+        : '<div style="color:#b9a98c">Aucun objet favori : dans l’optimiseur de build, clique sur le cœur ♡ à côté d’un objet.</div>';
     };
     render();
     ov.addEventListener('click', async (e) => {
       if (e.target.closest('[data-a="x"]')) return close();
+      const os = e.target.closest('[data-open-save]');
+      if (os) { close(); openBuildOptimizer({ load: os.dataset.openSave }); return; }
       const un = e.target.closest('[data-unfav]');
       if (un) { e.preventDefault(); await toggleFav({ id: un.dataset.unfav }); render(); return; }
       const z = e.target.closest('[data-zone]');
@@ -3993,7 +4080,7 @@
         </div>
       </div>
       <div class="bubble" title="Autopilot-DM">🤖</div>
-      <div class="bubble fav" title="Objets favoris : où les looter">❤️</div>`;
+      <div class="bubble fav" title="Favoris : builds enregistrés et objets à looter">❤️</div>`;
     DM.installTips(root);
     const $ = (k) => root.querySelector(`[data-k="${k}"]`);
     const panel = root.querySelector('.panel');
