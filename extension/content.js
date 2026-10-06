@@ -1893,11 +1893,17 @@
     if (!equipActionId) equipActionId = await findAction(chunks || (await fetchFlight('/inventaire')).chunks, 'equipItem', EQUIP_ACTION_FALLBACK);
     let done = 0;
     for (const c of plan.changes) {
-      try {
-        await callAction('inventaire', equipActionId, [c.to.id, c.to.fusion, c.slot]);
-      } catch (e) {
-        if (!e.game) equipActionId = null;   // ID peut-être périmé : relu au prochain essai
-        throw new Error(`${c.label} (${c.to.name}) : ${e.message}`);
+      // erreur technique (5xx, réseau, ID d'action périmé) : 2 nouveaux essais ; refus du jeu : arrêt immédiat
+      for (let attempt = 0; ; attempt++) {
+        try {
+          if (!equipActionId) equipActionId = await findAction(chunks || (await fetchFlight('/inventaire')).chunks, 'equipItem', EQUIP_ACTION_FALLBACK);
+          await callAction('inventaire', equipActionId, [c.to.id, c.to.fusion, c.slot]);
+          break;
+        } catch (e) {
+          if (!e.game) equipActionId = null;   // ID peut-être périmé : relu au prochain essai
+          if (e.game || attempt >= 2) throw Object.assign(new Error(`${c.label} (${c.to.name}) : ${e.message}`), { done });
+          await sleep(attempt ? 5000 : 2000);
+        }
       }
       done++;
       onProgress?.(done, plan.changes.length, c);
@@ -3198,16 +3204,24 @@
           .filter(({ to, from }) => to && to.src !== 'hdv' && to.src !== 'bank' && to !== from)
           .map(({ s, to, from }) => ({ slot: s.slot, label: s.label, from, to }))
           .sort((a, b) => (a.slot === 'arme' ? -1 : b.slot === 'arme' ? 1 : 0));
-        if (!changes.length) return;
+        // déjà équipés lors d'un essai précédent (interrompu par une erreur) : on ne les refait pas
+        result.equipped ||= {};
+        const todo = changes.filter((c) => result.equipped[c.slot] !== c.to);
+        if (!todo.length) return;
         eq.disabled = true;
         try {
-          await runEquip({ changes, stats: [] }, null, (i, n, c) => { eq.textContent = `Équipement ${i}/${n} : ${c.to.name}…`; });
+          await runEquip({ changes: todo, stats: [] }, null, (i, n, c) => {
+            result.equipped[c.slot] = c.to;
+            eq.textContent = `Équipement ${i}/${n} : ${c.to.name}…`;
+          });
           // build optimisé en place : l'auto-équipement (fait pour l'XP) ne doit pas le défaire
           const wasAuto = (cfg.equipAuto || 'off') !== 'off';
           if (wasAuto) await save({ equipAuto: 'off' });
           eq.textContent = `✔ Build équipé${wasAuto ? ' — auto-équipement passé sur Off' : ''}`;
         } catch (err) {
-          eq.textContent = `❌ ${err.message}`;
+          const left = changes.filter((c) => result.equipped[c.slot] !== c.to).length;
+          eq.disabled = false;   // on peut recliquer : seuls les objets restants seront équipés
+          eq.textContent = `🔁 Réessayer (${left} restant${left > 1 ? 's' : ''}) — ❌ ${err.message}`;
         }
       }
     });
