@@ -2431,8 +2431,9 @@
     }
     const favs = new Set((res(props.initialFavorites) || []).map(Number));
     const decks = res(props.initialDecks) || [];
-    const activeDeck = new Set((res(decks[+res(props.initialActive) || 0]) || []).map((k) => +String(k).split(':')[0]));
-    return { spells, favs, variableOnly, chunks, activeDeck };
+    const deckIds = (i) => (res(decks[i]) || []).map((k) => +String(k).split(':')[0]);
+    const activeDeck = new Set(deckIds(+res(props.initialActive) || 0));
+    return { spells, favs, variableOnly, chunks, activeDeck, deckIds };
   }
 
   // Caractéristiques du personnage : l'état de combat (/combat, combattant « p ») contient ses stats totales
@@ -2883,13 +2884,16 @@
       ['PV', pvOf(cur.S), sheet.pv], ['PA', paOf(cur.S), sheet.pa],
       ...Object.keys(sheet.bonus).map((k) => [STAT_LABELS[k] || k, cur.S[k] || 0, (sheet.base[k] || 0) + sheet.bonus[k]]),
     ].filter(([, a, b]) => Number.isFinite(b));
-    // deck conseillé : les sorts du tour, puis les sorts offensifs jouables les plus forts avec le build proposé
+    // deck conseillé : K sorts offensifs (ceux du tour, complétés par les plus forts si les PA en limitent le nombre)
     const ranked = spells.filter((x) => x.usable).map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })).sort((a, b) => b.v - a.v);
-    const deck = [...nxtTurn.used.map((u) => u.sp)];
-    for (const { sp: x } of ranked) { if (deck.length >= DECK_CARDS) break; if (!deck.includes(x)) deck.push(x); }
+    const deck = nxtTurn.used.map((u) => u.sp).slice(0, K);
+    for (const { sp: x } of ranked) { if (deck.length >= K) break; if (!deck.includes(x)) deck.push(x); }
+    // cartes non offensives déjà dans le deck 3 (buffs, soins…) : conservées, c'est toi qui les choisis
+    const dmgIds = new Set(sp.spells.map((x) => x.id));
+    const keepCards = sp.deckIds(DECK_TARGET).filter((id) => !dmgIds.has(id) && !deck.some((x) => x.id === id)).slice(0, DECK_CARDS - deck.length);
     return { sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, K, setFx, hdv: opts.hdv,
       pvMin, pvShort: pvMin && pvOf(nxt.S) < pvMin, budget, cost: costOf(final), deck: deck.map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })),
-      deckChunks: sp.chunks };
+      deckChunks: sp.chunks, keepCards };
   }
 
   async function openBuildOptimizer() {
@@ -3005,7 +3009,7 @@
         dk.disabled = true;
         try {
           if (!saveDeckId) saveDeckId = await findAction(result.deckChunks || [], 'saveDeck', SAVE_DECK_FALLBACK);
-          await callAction('deck', saveDeckId, [result.deck.map((d) => ({ id: d.sp.id, f: 0 })), DECK_TARGET]);
+          await callAction('deck', saveDeckId, [[...result.deck.map((d) => ({ id: d.sp.id, f: 0 })), ...result.keepCards.map((id) => ({ id, f: 0 }))], DECK_TARGET]);
           dk.textContent = '✔ Deck 3 enregistré (choisis-le sur /deck pour l’emmener en combat)';
         } catch (err) {
           if (!err.game) saveDeckId = null;
@@ -3045,7 +3049,10 @@
         eq.disabled = true;
         try {
           await runEquip({ changes, stats: [] }, null, (i, n, c) => { eq.textContent = `Équipement ${i}/${n} : ${c.to.name}…`; });
-          eq.textContent = '✔ Build équipé';
+          // build optimisé en place : l'auto-équipement (fait pour l'XP) ne doit pas le défaire
+          const wasAuto = (cfg.equipAuto || 'off') !== 'off';
+          if (wasAuto) await save({ equipAuto: 'off' });
+          eq.textContent = `✔ Build équipé${wasAuto ? ' — auto-équipement passé sur Off' : ''}`;
         } catch (err) {
           eq.textContent = `❌ ${err.message}`;
         }
@@ -3088,9 +3095,10 @@
         <table style="border-collapse:collapse;width:100%;font-size:12px"><tr style="color:#b9a98c;text-align:left"><th style="padding:3px 6px">Emplacement</th><th>Actuel</th><th></th><th>Proposé</th></tr>${rows}</table>
         <div style="font-size:12px"><b>Panoplies</b> — actuel : ${sets(r.cur)} · proposé : ${sets(r.nxt)}</div>
         <div style="font-size:12px;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:6px 8px">
-          <b>🃏 Deck conseillé (${r.deck.length} cartes)</b> — sorts du tour en premier, puis les plus forts avec ce build :<br>${deckHtml}
+          <b>🃏 Sorts offensifs conseillés (${r.deck.length})</b> :<br>${deckHtml}
+          <div style="color:#8a7d66;font-size:11px;margin-top:2px">« Écrire dans le deck 3 » remplace les sorts de dégâts du deck 3 par ceux-ci ; ses autres cartes (buffs, soins…${r.keepCards.length ? `, ${r.keepCards.length} carte(s) actuellement` : ''}) sont conservées.</div>
           <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
-            <button data-a="deck" style="${btn};background:#2e6fbf" title="Remplace le contenu de ton deck 3 par ces cartes (2e clic pour confirmer)">🃏 Écrire dans le deck 3</button>
+            <button data-a="deck" style="${btn};background:#2e6fbf" title="Remplace les sorts de dégâts de ton deck 3 par ceux-ci, en gardant ses autres cartes (2e clic pour confirmer)">🃏 Écrire dans le deck 3</button>
             <button data-a="copyDeck" style="${btn}">📋 Copier la liste</button>
           </div>
         </div>
