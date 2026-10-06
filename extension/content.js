@@ -1716,7 +1716,7 @@
   const domObserver = new MutationObserver(() => {
     if (dead || lockScanQueued) return;
     lockScanQueued = true;
-    requestAnimationFrame(() => { lockScanQueued = false; scanLockButtons(); scanTradeButtons(); highlightWanted(); });
+    requestAnimationFrame(() => { lockScanQueued = false; scanLockButtons(); scanTradeButtons(); highlightWanted(); scanFuseButtons(); });
   }).observe(document.documentElement, { childList: true, subtree: true });
 
   async function runAutosell(dryRun) {
@@ -1782,6 +1782,73 @@
     }
     DM.log(`fusion: ${done} fusion(s) sur ${items.length} objet(s)`);
     return done;
+  }
+
+  // Bouton « ⚡ Tout fusionner » sous le bouton du jeu « Fusionner 3 → T2 (130/3) » (fiche d'objet de /inventaire) :
+  // enchaîne toutes les fusions possibles à ce tier (130/3 → 43), sans cascade vers les tiers suivants. 2e clic = confirmation.
+  // Le jeu désactive son bouton (objet verrouillé, pas assez d'exemplaires) : le nôtre suit.
+  function scanFuseButtons() {
+    if (!location.pathname.startsWith('/inventaire')) return;
+    for (const b of document.querySelectorAll('aside button.btn-gold')) {
+      const m = b.textContent.match(/Fusionner\s*\d+\s*→\s*(.+?)\s*\((\d+)\s*\/\s*(\d+)\)/);
+      let extra = b.nextElementSibling?.classList.contains('dm-fuse-all') ? b.nextElementSibling : null;
+      const n = m ? Math.floor(+m[2] / +m[3]) : 0;
+      const target = !m ? 0 : /Rayonnant/.test(m[1]) ? FUSION_MAX : +(m[1].match(/T(\d)/)?.[1] || 0) - 1;
+      if (n < 2 || target < 1) { if (!extra?.dataset.busy) extra?.remove(); continue; }
+      if (!extra) {
+        extra = document.createElement('button');
+        extra.type = 'button';
+        extra.className = 'btn btn-ghost w-full dm-fuse-all';
+        extra.title = 'Autopilot-DM : enchaîne toutes les fusions possibles à ce tier (2e clic pour confirmer). La page se recharge à la fin.';
+        extra.addEventListener('click', onFuseAll);
+        b.after(extra);
+      }
+      const key = `${target}|${m[2]}`;
+      if (extra.dataset.key !== key && !extra.dataset.busy && !extra.dataset.armed) {
+        Object.assign(extra.dataset, { key, n, from: target - 1 });
+        extra.textContent = `⚡ Tout fusionner : ${n} fusions → ${n} × ${tierLabel(target)}`;
+      }
+      extra.disabled = b.disabled || !!extra.dataset.busy;
+    }
+  }
+
+  async function onFuseAll(e) {
+    const btn = e.currentTarget;
+    if (btn.dataset.busy) return;
+    const n = +btn.dataset.n, from = +btn.dataset.from;
+    if (!btn.dataset.armed) {
+      btn.dataset.armed = '1';
+      btn.textContent = `⚠️ Confirmer : ${n} fusions (${n * FUSE_COPIES} exemplaires)`;
+      setTimeout(() => {
+        if (!btn.dataset.armed || btn.dataset.busy) return;
+        delete btn.dataset.armed;
+        btn.dataset.key = '';
+        scanFuseButtons();
+      }, 6000);
+      return;
+    }
+    delete btn.dataset.armed;
+    btn.dataset.busy = '1';
+    btn.disabled = true;
+    try {
+      btn.textContent = 'Lecture de l’inventaire…';
+      const { entries, chunks } = await fetchInventory();
+      fuseChunks = chunks;
+      // l'objet affiché : nom présent dans la fiche, au bon tier (le plus long si plusieurs noms correspondent)
+      const text = btn.closest('aside')?.textContent || '';
+      const it = entries.filter((x) => x.fusion === from && x.qty >= FUSE_COPIES && text.includes(x.name))
+        .sort((a, b) => b.name.length - a.name.length)[0];
+      if (!it) throw new Error('objet introuvable dans l’inventaire');
+      const steps = new Array(Math.min(n, Math.floor(it.qty / FUSE_COPIES))).fill(from);
+      await fuseItems([{ id: it.id, name: it.name, steps }], (k, total) => { btn.textContent = `Fusion ${k}/${total} : ${it.name}…`; });
+      btn.textContent = `✔ ${steps.length} fusions faites — rechargement…`;
+      setTimeout(() => location.reload(), 1200);
+    } catch (err) {
+      fuseActionId = null;   // l'ID a peut-être changé (nouveau déploiement)
+      delete btn.dataset.busy;
+      btn.disabled = false;
+      btn.textContent = `❌ ${err.message || err} — recliquer pour réessayer`;
+    }
   }
 
 
