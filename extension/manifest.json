@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "DofusMasters Pilote Auto",
+  "version": "1.33.0",
+  "description": "Enchaîne automatiquement les étapes de l’Aventure ou la chasse (groupe le plus dur d’une zone), résout la vérification de présence, surveille l’énergie, échange des objets entre deux comptes via l’HDV et alerte sur Discord (défaite, énergie basse, boss de chasse).",
+  "permissions": ["storage", "alarms"],
+  "incognito": "spanning",
+  "host_permissions": [
+    "https://dofusmasters.houk.fr/*",
+    "https://discord.com/*",
+    "https://discordapp.com/*",
+    "https://raw.githubusercontent.com/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "DofusMasters Pilote Auto" },
+  "content_scripts": [
+    {
+      "matches": ["https://dofusmasters.houk.fr/*"],
+      "js": ["shared.js", "wanted.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
