@@ -2320,8 +2320,11 @@
 
   // ---------- Tierlist des sorts : dégâts des cartes de la collection (/deck) ----------
   // /deck contient toute la collection (DeckBuilder : collection[{ key, card:{ id, n, ap, icon, r, eff[] } }],
-  // initialFavorites[ids]). Effets de dégâts = liste du site : dmg, steal, bomb, trap, detonate, poison (fixes,
-  // additionnés même sur plusieurs éléments) ; dmgCasterHp / dmgLostHp dépendent de la vie (« variables », non classés).
+  // initialFavorites[ids]). Effets de dégâts = liste du site : dmg, steal, bomb, trap, detonate, poison ;
+  // dmgCasterHp / dmgLostHp dépendent de la vie (« variables », non classés).
+  // Toutes les lignes d'un sort sont appliquées (vérifié dans les journaux de combat : Drain Élémentaire, Tromperie…
+  // frappent une fois par élément) → on les additionne. Exception : les lignes avec « chance » (x % de chance,
+  // ex. Topkaj) sont des tirages au sort exclusifs : moyenne pondérée par la chance, min 0, max = la plus forte.
   // Favori natif : server action « setFavoriteCard(idCarte, bool) » sur /deck.
   const FAV_ACTION_FALLBACK = '60105c931c92cff568c1e6ff395e809d4eb30addf9';
   const ELEMENTS = [
@@ -2335,7 +2338,8 @@
 
   // Dégâts d'une carte : total min / max / moyen, détail par élément, zone ou cible unique.
   function spellDamage(card) {
-    let min = 0, max = 0, zone = false, variable = false, delayed = false, fixed = false;
+    let min = 0, max = 0, zone = false, variable = false, delayed = false, fixed = false, random = false;
+    let rndAvg = 0, rndMax = 0;
     const byEl = {};
     for (const e of card.eff || []) {
       if (DMG_VARIABLE.has(e.k)) { variable = true; continue; }
@@ -2343,13 +2347,23 @@
       fixed = true;
       const n = e.k === 'poison' ? Math.max(1, +(e.turns || e.dur) || 1) : 1;   // poison : dégâts à chaque tour
       const lo = (+e.min || 0) * n, hi = (+(e.max ?? e.min) || 0) * n;
-      min += lo; max += hi;
       const el = Number.isInteger(e.el) ? e.el : 0;
-      byEl[el] = (byEl[el] || 0) + (lo + hi) / 2;
+      const p = e.chance != null && +e.chance < 100 ? Math.max(0, +e.chance) / 100 : 1;
+      if (p < 1) {   // ligne à x % de chance
+        random = true;
+        rndAvg += p * (lo + hi) / 2;
+        rndMax = Math.max(rndMax, hi);
+        byEl[el] = (byEl[el] || 0) + p * (lo + hi) / 2;
+      } else {
+        min += lo; max += hi;
+        byEl[el] = (byEl[el] || 0) + (lo + hi) / 2;
+      }
       if (e.zone || e.k === 'bomb' || e.k === 'detonate') zone = true;   // bombes : explosion en zone
       if (e.k === 'bomb' || e.k === 'trap' || e.k === 'poison') delayed = true;
     }
-    return fixed ? { min, max, avg: (min + max) / 2, byEl, zone, variable, delayed } : null;
+    if (!fixed) return null;
+    const avg = (min + max) / 2 + rndAvg;
+    return { min, max: max + rndMax, avg: Math.round(avg * 10) / 10, byEl, zone, variable, delayed, random };
   }
 
   async function fetchSpells() {
@@ -2424,7 +2438,7 @@
     const SORTS = [['avg', 'Dégâts totaux'], ['perAp', 'Dégâts / PA'], ['ap', 'Coût en PA'], ['name', 'Nom']];
     ov.innerHTML = `
       <div style="width:min(860px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
-        <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📚 Tierlist de mes sorts${DM.tip("Tous les sorts à dégâts de ta collection, avec les dégâts de base de la carte (sans tes caractéristiques). Un sort à plusieurs lignes de dégâts affiche leur total, même sur des éléments différents. Bombes, pièges et poisons comptent leurs dégâts (le poison, sur toute sa durée). Le cadenas met le sort en favori sur le site (toujours en haut de la liste de /deck).")}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
+        <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📚 Tierlist de mes sorts${DM.tip("Tous les sorts à dégâts de ta collection, avec les dégâts de base de la carte (sans tes caractéristiques). Un sort à plusieurs lignes de dégâts affiche leur total, même sur des éléments différents : toutes les lignes sont appliquées, sauf celles à x % de chance (comptées en moyenne, 🎲). Bombes, pièges et poisons comptent leurs dégâts (le poison, sur toute sa durée). Le cadenas met le sort en favori sur le site (toujours en haut de la liste de /deck).")}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
         <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
           <input data-f="q" placeholder="Rechercher un sort…" style="${inp};flex:1;min-width:140px">
           <select data-f="target" style="${inp}"><option value="">Toutes cibles</option><option value="single">Cible unique</option><option value="zone">Zone</option></select>
@@ -2504,7 +2518,7 @@
           const E = ELEMENTS[el] || { name: '?', color: '#888' };
           return `<span title="${esc(E.name)} : ${fmt(v)} en moyenne" style="display:inline-block;padding:1px 6px;border-radius:6px;font-size:11px;font-weight:700;color:${E.color};border:1px solid ${E.color}66;background:${E.color}1f">${esc(E.name)}</span>`;
         }).join(' ');
-        const tags = [sp.zone ? '🌀 Zone' : '🎯 Cible unique', sp.delayed ? '⏳ différé' : '', sp.variable ? '+ variable' : ''].filter(Boolean).join(' · ');
+        const tags = [sp.zone ? '🌀 Zone' : '🎯 Cible unique', sp.delayed ? '⏳ différé' : '', sp.random ? '🎲 % de chance' : '', sp.variable ? '+ variable' : ''].filter(Boolean).join(' · ');
         return `<div style="display:grid;grid-template-columns:28px 40px 1fr auto auto auto 30px;gap:8px;align-items:center;background:${fav ? '#3a2e14' : '#241e16'};border:1px solid ${fav ? '#e0b040' : '#3a3024'};border-radius:8px;padding:5px 8px">
           <b style="color:#b9a98c;text-align:right">${i + 1}</b>
           <img src="/img/spells/sort_${+sp.icon}.png" alt="" style="width:36px;height:36px;object-fit:contain">
