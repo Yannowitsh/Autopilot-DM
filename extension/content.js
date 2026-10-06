@@ -933,15 +933,38 @@
   };
 
   // Objets vendables (onglet « vendre » de l'HDV : sans les objets équipés, avec la date de fin de liaison).
-  async function fetchSellable() {
-    const { flight, chunks } = await fetchFlight('/hdv?onglet=vendre');
+  // `tradable` : retire aussi les exemplaires « éternels » (gardés au Prestige, liés au compte à vie) et les objets
+  // verrouillés (cadenas du jeu). L'HDV les liste sans les marquer : le nombre d'éternels n'est lu que sur /inventaire.
+  async function fetchSellable({ tradable = false } = {}) {
+    const [{ flight, chunks }, eternal] = await Promise.all([fetchFlight('/hdv?onglet=vendre'), tradable ? fetchEternal() : null]);
     const { rows, props } = rscProps(flight, (x) => Array.isArray(x.inventory) && Array.isArray(x.mine));
     if (!props) throw new Error('Inventaire de l’HDV introuvable');
-    const entries = props.inventory.map((e) => {
+    let entries = props.inventory.map((e) => {
       const item = rscResolve(rows, e.item) || {};
-      return { id: item.id, name: item.n, lvl: item.lvl, slot: item.s, rarity: item.r, icon: item.icon, fusion: e.fusion, qty: e.qty, boundUntil: e.boundUntil };
+      return { id: item.id, name: item.n, lvl: item.lvl, slot: item.s, rarity: item.r, icon: item.icon, fusion: e.fusion, qty: e.qty, boundUntil: e.boundUntil, locked: !!e.locked };
     }).filter((e) => Number.isInteger(e.id));
+    if (tradable) {
+      entries = entries.map((e) => {
+        const k = `${e.id}|${e.fusion || 0}`, n = Math.min(eternal.get(k) || 0, e.qty);
+        eternal.set(k, (eternal.get(k) || 0) - n);   // plusieurs lignes pour le même objet : on ne retire qu'une fois
+        return { ...e, qty: e.qty - n };
+      }).filter((e) => e.qty > 0 && !e.locked);
+    }
     return { entries, chunks, mine: props.mine, maxListings: props.maxListings };
+  }
+
+  // Exemplaires « éternels » (objets gardés au Prestige, invendables) par « id|fusion », lus dans /inventaire.
+  async function fetchEternal() {
+    const { flight } = await fetchFlight('/inventaire');
+    const { rows, props } = rscProps(flight, (x) => Array.isArray(x.entries) && Array.isArray(x.slots));
+    if (!props) throw new Error('Inventaire introuvable dans la page');
+    const out = new Map();
+    for (const e of props.entries) {
+      if (!(+e.eternal > 0)) continue;
+      const k = `${rscResolve(rows, e.item)?.id}|${e.fusion || 0}`;
+      out.set(k, (out.get(k) || 0) + +e.eternal);
+    }
+    return out;
   }
 
   // ID de l'annonce à 1 kamas qu'on vient de créer, lu dans la page renvoyée avec le résultat de listItem.
@@ -966,7 +989,7 @@
   // Vendeur, avant un ou plusieurs échanges : contact de l'autre compte + objets vendables + IDs des actions.
   async function tradePrepare(say) {
     const peer = await peerReady(say);
-    const sell = await fetchSellable();
+    const sell = await fetchSellable({ tradable: true });
     if (sell.maxListings && sell.mine.length >= sell.maxListings) throw new Error(`HDV plein (${sell.mine.length}/${sell.maxListings} ventes en cours)`);
     await Promise.all([hdvAction('listItem', sell.chunks), hdvAction('cancelListing', sell.chunks)]);
     return { to: peer.name || 'l’autre compte', entries: sell.entries };
@@ -975,7 +998,7 @@
   // Objet vendable correspondant à { name, lvl, fusion } (non lié, quantité restante > 0).
   function tradeResolve(ctx, it) {
     const matches = ctx.entries.filter((e) => e.name === it.name && (!it.lvl || e.lvl === it.lvl) && e.fusion === it.fusion);
-    if (!matches.length) throw new Error(`${it.name} introuvable parmi les objets vendables (équipé ?)`);
+    if (!matches.length) throw new Error(`${it.name} introuvable parmi les objets échangeables (équipé, éternel ou verrouillé ?)`);
     if (new Set(matches.map((e) => e.id)).size > 1) throw new Error(`Plusieurs objets s’appellent ${it.name} : échange annulé`);
     const free = matches.filter((e) => !e.boundUntil || new Date(e.boundUntil) <= Date.now());
     if (!free.length) throw new Error(`${it.name} est lié jusqu’au ${new Date(matches[0].boundUntil).toLocaleString('fr-FR')}`);
@@ -1448,7 +1471,7 @@
 
     let entries;
     try {
-      entries = (await fetchSellable()).entries;
+      entries = (await fetchSellable({ tradable: true })).entries;
     } catch (e) {
       ov.firstElementChild.textContent = `❌ ${e.message}`;
       return;
@@ -1482,7 +1505,7 @@
     const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:6px 12px;color:#fff;cursor:pointer;font:600 13px system-ui,sans-serif';
     ov.innerHTML = `
       <div style="width:min(760px,100%);max-height:88vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
-        <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📋 Sélection d’objets à échanger${DM.tip("Tous tes objets vendables (les objets équipés n’apparaissent pas). Coche ceux à envoyer ; Maj + clic coche une plage ; pour un objet en plusieurs exemplaires, choisis la quantité à droite.")}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
+        <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📋 Sélection d’objets à échanger${DM.tip("Tous tes objets échangeables : les objets équipés, éternels (gardés au Prestige, liés au compte) et verrouillés n’apparaissent pas, les objets liés (achetés il y a moins de 24 h) ne peuvent pas être cochés. Coche ceux à envoyer ; Maj + clic coche une plage ; pour un objet en plusieurs exemplaires, choisis la quantité à droite.")}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
         <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
           <input data-f="q" placeholder="Rechercher un nom…" style="${inp};flex:1;min-width:150px">
           <select data-f="rarity" style="${inp}"><option value="">Toutes raretés</option>${DM.RARITIES.map((r, i) => `<option value="${i}">${r}</option>`).join('')}</select>
@@ -2829,7 +2852,7 @@
   // celui du personnage qui les portera s'applique), en excluant les exemplaires liés (achetés / reçus il y a < 24 h).
   async function peerGear() {
     try {
-      const [state, sell] = await Promise.all([fetchEquipState(), fetchSellable()]);
+      const [state, sell] = await Promise.all([fetchEquipState(), fetchSellable({ tradable: true })]);
       const now = Date.now();
       const free = new Map();   // id|fusion → exemplaires échangeables
       for (const e of sell.entries) {
