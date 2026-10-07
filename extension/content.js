@@ -622,10 +622,7 @@
       if (dropOn()) {
         const g = dropPickGroup();
         if (g === null) return;   // page pas encore chargée
-        if (g === false) {
-          await save({ dropRun: { ...cfg.dropRun, tried: [...new Set([...(cfg.dropRun.tried || []), cfg.huntZone])] } });
-          return dropGoZone(`aucun groupe utile dans ${dropZoneName(cfg.huntZone)}`);
-        }
+        if (g === false) return dropGoZone(`plus de groupe utile dans ${dropZoneName(cfg.huntZone)}`);
         if (cfg.huntGroup !== g) await save({ huntGroup: g });
       }
       const group = targetGroup();
@@ -4548,37 +4545,71 @@
     return [...zones].sort((a, b) => b[1].ids.size - a[1].ids.size || b[1].score - a[1].score);
   }
   // Monstres à attaquer dans une zone (noms normalisés) : ceux qui lâchent un objet restant.
-  const dropTargets = (zone, run = cfg.dropRun) => new Set(dropLeft(run)
-    .flatMap((it) => it.srcs.filter((s) => (s.z || []).includes(zone)).map((s) => normName(s.m))));
+  // Monstres utiles dans une zone : nom normalisé → meilleure chance (0 = objet bonus de victoire, chance non publiée).
+  function dropTargetMap(zone, run = cfg.dropRun) {
+    const m = new Map();
+    for (const it of dropLeft(run)) {
+      for (const s of it.srcs) if ((s.z || []).includes(zone)) { const k = normName(s.m); m.set(k, Math.max(m.get(k) ?? 0, s.p || 0)); }
+    }
+    return m;
+  }
+  const dropTargets = (zone, run = cfg.dropRun) => new Set(dropTargetMap(zone, run).keys());
+  // Intérêt d'un groupe : nombre de monstres qui lâchent un objet voulu (chaque monstre compte), puis leurs chances.
+  function dropGroupScore(names, targets) {
+    let n = 0, p = 0;
+    for (const nm of names) { const k = normName(nm); if (targets.has(k)) { n++; p += targets.get(k); } }
+    return n ? n + Math.min(p, 99) / 100 : 0;
+  }
 
-  // Groupe à attaquer sur la page de la zone : n° du groupe avec le plus de monstres voulus ; false si aucun ; null si la
-  // page n'est pas encore chargée.
+  // Groupe à attaquer sur la page de la zone : le plus intéressant ; false si aucun ; null si la page n'est pas chargée.
   function dropPickGroup() {
     const cards = groupCards();
     if (!cards.length) return null;
-    const targets = dropTargets(cfg.huntZone);
+    const targets = dropTargetMap(cfg.huntZone);
     let best = null;
     for (const p of cards) {
-      const n = groupMonsters(p).filter((m) => targets.has(normName(m))).length;
-      if (n && (!best || n > best.n)) best = { g: groupNumber(p), n };
+      const s = dropGroupScore(groupMonsters(p), targets);
+      if (s && (!best || s > best.s)) best = { g: groupNumber(p), s };
     }
     return best ? best.g : false;
   }
 
-  // Zone suivante (la plus rentable, hors zones déjà essayées sans groupe utile et zones abandonnées).
+  // Zone suivante : toutes les zones utiles sont scannées (groupes du moment) et on va au groupe le plus intéressant,
+  // toutes zones confondues. Refait à chaque changement de zone (les groupes se renouvellent toutes les ~3 min).
   async function dropGoZone(why) {
     const run = cfg.dropRun;
     if (!run?.active) return;
     if (!dropLeft(run).length) return dropFinish();
-    const next = dropZones(run).find(([z]) => !(run.tried || []).includes(z));
-    if (!next) {
-      const lost = dropLeft(run).map((it) => it.name);
-      return dropStop(`aucune zone restante n’a de groupe avec les monstres voulus${run.skipped?.length ? ` (${run.skipped.length} zone(s) abandonnée(s) après ${DROP_MAX_DEFEATS} défaites)` : ''}. Objets manquants : ${lost.join(', ')}`);
+    const zones = dropZones(run).map(([z]) => z);
+    if (!zones.length) return dropStop(`plus aucune zone possible (${run.skipped?.length || 0} abandonnée(s) après ${DROP_MAX_DEFEATS} défaites). Objets manquants : ${dropLeft(run).map((it) => it.name).join(', ')}`);
+    setStatus(`Farm de drop : ${why} — recherche des meilleurs groupes (${zones.length} zone(s))…`);
+    progress();
+    let best = null, done = 0;
+    const queue = [...zones];
+    const worker = async () => {
+      for (let z = queue.shift(); z != null; z = queue.shift()) {
+        try {
+          const { groups } = await scanZone(z);
+          const targets = dropTargetMap(z, run);
+          for (const g of groups) {
+            const s = dropGroupScore(g.monsters.map((m) => m.name), targets);
+            if (s && (!best || s > best.s)) best = { z, g: g.n, s, names: g.monsters.map((m) => m.name) };
+          }
+        } catch { /* zone sans groupe ou illisible */ }
+        done++;
+        if (done % 4 === 0) { setStatus(`Farm de drop : recherche des meilleurs groupes (${done}/${zones.length})…`); progress(); }
+        await sleep(150);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, zones.length) }, worker));
+    if (!cfg.dropRun?.active) return;
+    if (!best) {
+      return dropStop(`aucun groupe avec les monstres voulus dans les ${zones.length} zone(s) possible(s) en ce moment. Objets manquants : ${dropLeft(run).map((it) => it.name).join(', ')}`);
     }
-    const [z, info] = next;
-    DM.log(`farm de drop : ${why} → ${dropZoneName(z)} (${info.ids.size} objet(s) possible(s))`);
-    await save({ dropRun: { ...run, zone: z }, huntZone: z, huntZoneName: dropZoneName(z), huntGroup: null, huntTarget: null, lossStreak: 0 });
-    setStatus(`Farm de drop : ${why} → ${dropZoneName(z)}…`);
+    const z = best.z;
+    DM.log(`farm de drop : ${why} → ${dropZoneName(z)}, groupe ${best.g} (${Math.floor(best.s)} monstre(s) utile(s) : ${best.names.join(', ')})`);
+    await save({ dropRun: { ...cfg.dropRun, zone: z, tried: [] }, huntZone: z, huntZoneName: dropZoneName(z), huntGroup: best.g, huntTarget: null, lossStreak: 0 });
+    setStatus(`Farm de drop : ${dropZoneName(z)}, groupe ${best.g} (${Math.floor(best.s)} monstre(s) utile(s))…`);
     progress();
     if (isOwner()) location.assign(`/chasse?zone=${z}`);
   }
@@ -4655,6 +4686,7 @@
       // tous les objets du build proposé (à looter ou déjà possédés : farmer un objet qu'on a fait monter son tier)
       ...Object.values(r?.final || {}).filter(Boolean).map((c) => ({ id: c.id, name: c.name, icon: c.icon, from: 'build' })),
       ...Object.entries(buildFavs()).map(([id, f]) => ({ id: +id, name: f.name, icon: f.icon, from: 'fav' })),
+      ...(cfg.dropCart || []).map((c) => ({ ...c, from: 'cart' })),   // liste de courses gardée d'une fois sur l'autre
     ].filter((c, i, a) => a.findIndex((x) => x.id === c.id) === i);
     const items = cands.map((c) => {
       // p = 0 : « objet bonus de victoire » de la zone (le jeu ne publie pas la chance)
@@ -4666,7 +4698,10 @@
     const haveTxt = (n) => (n ? `possédé : ${n} ex.${n >= 3 ? ` (≈ T${Math.floor(Math.log(n) / Math.log(3) + 1e-9) + 1})` : ''}` : '');
     let tiers = {};
     try { tiers = JSON.parse(localStorage.getItem(DROP_TIERS_KEY) || '{}'); } catch { /* stockage indisponible */ }
-    const cart = new Set();   // indices des objets dans la liste de courses
+    // liste de courses : celle gardée (cfg.dropCart), modifiée au fil des coches
+    const inCart = new Set((cfg.dropCart || []).map((c) => c.id));
+    const cart = new Set(items.map((x, i) => (inCart.has(x.c.id) && x.srcs.length ? i : -1)).filter((i) => i >= 0));
+    const saveCart = () => save({ dropCart: [...cart].map((i) => ({ id: items[i].c.id, name: items[i].c.name, icon: items[i].c.icon })) });
     const ov = document.createElement('div');
     ov.className = 'dm-drop-farm';
     ov.style.cssText = 'position:fixed;inset:0;z-index:2147483601;background:#000c;display:grid;justify-items:center;align-items:start;padding:4vh 16px 16px;font:13px system-ui,sans-serif;color:#eee';
@@ -4681,12 +4716,12 @@
       <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#b9a98c"><span style="flex:1">Objets du build et objets favoris ❤️ — coche ceux à farmer (les exemplaires que tu as déjà sont déduits) :</span>
         <button data-a="all" style="${btn};padding:2px 8px">☑ Tout sélectionner</button><button data-a="none" style="${btn};padding:2px 8px">☐ Tout désélectionner</button></div>
       <div style="overflow-y:auto;max-height:38vh;display:flex;flex-direction:column;gap:4px">${items.map(({ c, srcs, best, have }, i) => `<label style="${row};cursor:${srcs.length ? 'pointer' : 'default'};${srcs.length ? '' : 'opacity:.55'}">
-        <input type="checkbox" data-i="${i}" ${srcs.length ? '' : 'disabled'}>
+        <input type="checkbox" data-i="${i}" ${srcs.length ? '' : 'disabled'}${cart.has(i) ? ' checked' : ''}>
         ${icon(c)}
-        <span style="flex:1;min-width:0"><b>${esc(c.name)}</b> <span style="font-size:11px;color:${c.from === 'fav' ? '#ff5c7a' : '#c99bff'}">${c.from === 'fav' ? '❤️ favori' : '🧬 build'}</span>${have ? ` <span style="font-size:11px;color:#6fcf7a">🎒 ${haveTxt(have)}</span>` : ''}<br><span style="color:#8a7d66;font-size:12px">${!srcs.length ? 'pas obtenable en chasse (boss du Chemin ou de chasse…)'
+        <span style="flex:1;min-width:0"><b>${esc(c.name)}</b> <span style="font-size:11px;color:${c.from === 'fav' ? '#ff5c7a' : c.from === 'cart' ? '#f0c04a' : '#c99bff'}">${c.from === 'fav' ? '❤️ favori' : c.from === 'cart' ? '🛒 liste' : '🧬 build'}</span>${have ? ` <span style="font-size:11px;color:#6fcf7a">🎒 ${haveTxt(have)}</span>` : ''}<br><span style="color:#8a7d66;font-size:12px">${!srcs.length ? 'pas obtenable en chasse (boss du Chemin ou de chasse…)'
           : best > 0 ? `meilleure chance ${pct(best)} · ${new Set(srcs.flatMap((s) => s.z)).size} zone(s) · ${esc(srcs.slice().sort((a, b) => b.p - a.p).slice(0, 2).map((s) => `${s.m} (${pct(s.p)})`).join(', '))}`
           : `objet bonus de victoire (chance non publiée) · ${esc([...new Set(srcs.flatMap((s) => s.z))].map((z) => zones[z]?.[0] || `zone ${z}`).slice(0, 3).join(', '))}`}</span></span>
-      </label>`).join('') || '<div style="color:#b9a98c">Aucun objet : ce build n’a pas d’objet à looter (🐉), et tu n’as pas de favori ❤️. Ajoute des objets en favori avec le cœur ♡ de l’optimiseur.</div>'}</div>
+      </label>`).join('') || '<div style="color:#b9a98c">Aucun objet : lance l’optimiseur (ses objets apparaissent ici) ou ajoute des favoris ❤️ avec le cœur ♡.</div>'}</div>
       <div style="border-top:1px solid #3a3024;padding-top:8px;display:flex;flex-direction:column;gap:4px">
         <div style="display:flex;align-items:center;gap:6px"><b style="font-size:13px;flex:1">🛒 Liste de courses</b>
           <label style="font-size:12px;color:#b9a98c">Tier pour toute la liste <select data-a="tierAll" style="${inp}"><option value="">—</option>${[1, 2, 3, 4, 5].map((n) => `<option value="${n}">T${n}${n === 5 ? ' (Rayonnant)' : ''}</option>`).join('')}</select></label></div>
@@ -4717,7 +4752,7 @@
     const close = () => ov.remove();
     ov.addEventListener('change', (e) => {
       const t = e.target;
-      if (t.dataset.i != null) { if (t.checked) cart.add(+t.dataset.i); else cart.delete(+t.dataset.i); renderCart(); }
+      if (t.dataset.i != null) { if (t.checked) cart.add(+t.dataset.i); else cart.delete(+t.dataset.i); saveCart(); renderCart(); }
       if (t.dataset.a === 'tierAll' && t.value) {   // tier de toute la liste ; chaque ligne reste modifiable ensuite
         for (const i of cart) tiers[items[i].c.id] = +t.value;
         try { localStorage.setItem(DROP_TIERS_KEY, JSON.stringify(tiers)); } catch { /* idem */ }
@@ -4740,11 +4775,12 @@
           cb.checked = sel === 'all';
           if (cb.checked) cart.add(i); else cart.delete(i);
         });
+        saveCart();
         renderCart();
         return;
       }
       const rm = e.target.closest('[data-rm]');
-      if (rm) { cart.delete(+rm.dataset.rm); const cb = $(`[data-i="${rm.dataset.rm}"]`); if (cb) cb.checked = false; renderCart(); return; }
+      if (rm) { cart.delete(+rm.dataset.rm); const cb = $(`[data-i="${rm.dataset.rm}"]`); if (cb) cb.checked = false; saveCart(); renderCart(); return; }
       if (!e.target.closest('[data-a="go"]') || !cart.size) return;
       const pick = [...cart].filter((i) => needOf(i) > 0).map((i) => ({ ...items[i], i }));
       if (!pick.length) { $('[data-k="msg"]').textContent = 'Tous les tiers voulus sont déjà atteints avec tes objets.'; return; }
@@ -5232,7 +5268,10 @@
           <button data-k="toggle"></button>
           <div data-k="dropBox" class="muted" style="display:none;flex-direction:column;gap:3px;border:1px solid #6a3fa0;border-radius:6px;padding:6px">
             <div data-k="dropInfo"></div>
-            <button data-k="dropStop" style="padding:2px 7px;font-size:12px" data-tip="Arrête le farm de drop (le pilote s’arrête aussi).">■ Arrêter le farm</button>
+            <div class="row" style="gap:4px">
+              <button data-k="dropOpen" style="padding:2px 7px;font-size:12px;flex:1" data-tip="Ouvre la liste de courses (gardée) : objets, tiers, puis lancer ou relancer le farm.">🛒 Liste de courses</button>
+              <button data-k="dropStop" style="padding:2px 7px;font-size:12px" data-tip="Arrête le farm de drop (le pilote s’arrête aussi). La liste de courses est gardée.">■ Arrêter</button>
+            </div>
           </div>
           <details data-k="timesBox">
             <summary class="muted">⏱ Chronomètre des combats${DM.tip("Durée moyenne d’un combat du pilote (du lancement à l’écran de fin) et de la boucle complète (d’un lancement au suivant, pauses de plus de 5 min exclues), par activité et par mode de combat. Pour comparer l’Auto du jeu et l’Auto par poids sur la durée.")}</summary>
@@ -5386,6 +5425,12 @@
     $('spells').addEventListener('click', () => { setOpen(false); openSpellList(); });
     $('timesReset').addEventListener('click', () => save({ fightTimes: {} }));
     $('dropStop').addEventListener('click', () => dropStop('arrêté à la main'));
+    $('dropOpen').addEventListener('click', () => {
+      setOpen(false);
+      let r = null;
+      try { const last = lastBuild(); if (last) r = unpackBuild(last.data); } catch { /* pas de dernière recherche */ }
+      openDropFarm(r);
+    });
     $('weights').addEventListener('click', () => { setOpen(false); openCardWeights(); });
     for (const b of root.querySelectorAll('[data-engine]')) {
       b.addEventListener('click', async () => { await save({ fightEngine: b.dataset.engine }); renderUi(); });
@@ -5849,12 +5894,15 @@
     { const h = timeLines() || 'Pas encore de mesure : lance le pilote.'; if ($('times').innerHTML !== h) $('times').innerHTML = h; }
     {
       const run = cfg.dropRun;
-      $('dropBox').style.display = run?.active ? 'flex' : 'none';
-      if (run?.active) {
-        const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
-        const h = `<b>🐉 Farm de drop</b> · ${esc(dropZoneName(run.zone))}${run.items.map((it) => `<div>${it.got >= it.need ? '✔' : '•'} ${esc(it.name)} : ${it.got}/${it.need}</div>`).join('')}`;
-        if ($('dropInfo').innerHTML !== h) $('dropInfo').innerHTML = h;
-      }
+      const cartN = (cfg.dropCart || []).length;
+      $('dropBox').style.display = run?.active || cartN ? 'flex' : 'none';
+      $('dropStop').style.display = run?.active ? '' : 'none';
+      $('dropOpen').textContent = `🛒 Liste de courses${cartN ? ` (${cartN})` : ''}`;
+      const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+      const h = run?.active
+        ? `<b>🐉 Farm de drop</b> · ${esc(dropZoneName(run.zone))}${run.items.map((it) => `<div>${it.got >= it.need ? '✔' : '•'} ${esc(it.name)} : ${it.got}/${it.need}</div>`).join('')}`
+        : `<b>🐉 Farm de drop</b> · arrêté — liste de courses gardée`;
+      if ($('dropInfo').innerHTML !== h) $('dropInfo').innerHTML = h;
     }
     $('status').textContent = on ? (cfg.status || '—') : cfg.enabled ? 'Actif dans un autre onglet' : 'Arrêté';
     const tg = $('toggle');
