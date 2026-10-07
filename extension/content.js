@@ -237,7 +237,8 @@
 
   // Renvoie l'énergie, ou { error } si elle n'a pas pu être lue.
   async function readEnergy({ fresh = false } = {}) {
-    const onPage = !fresh && energyFromPage();   // en pause, la page peut être figée depuis longtemps : on relit /jeu
+    // juste après un achat, la page affiche encore l'ancienne énergie : on se fie au compteur (mis à jour par l'achat)
+    const onPage = !fresh && Date.now() > pageEnergyStaleUntil && energyFromPage();   // en pause, la page peut être figée depuis longtemps : on relit /jeu
     if (onPage) { lastEnergyCheck = Date.now(); await save({ ...onPage, energyAt: Date.now() }); return onPage.energy; }
     if (!fresh && counterUsable() && Date.now() - (cfg.energyAt || 0) < ENERGY_RESYNC_MS) return cfg.energy;
     if (Date.now() < nextEnergyTry) return { error: lastEnergyError, wait: true };   // dernier essai trop récent
@@ -274,14 +275,37 @@
       * Math.min(1, (k - ENERGY_BUY.rampFrom) / Math.max(1, ENERGY_BUY.daily - ENERGY_BUY.rampFrom)));
 
   // Onglet du pilote : demande un achat (si activé et pas déjà en cours). true si un achat est en cours.
+  // Achat direct, depuis l'onglet du pilote : server action « buyEnergy(n) » (une requête pour n points ; réponse
+  // { energy } ou { error }). État d'achat (énergie, kamas, achats restants du jour) lu sur /jeu (widget BuyEnergy).
+  // true = énergie rachetée. Au plus un essai toutes les BUY_RETRY_MS (échec, kamas, plafond…).
+  const BUY_ACTION_FALLBACK = '40f4d83f85e7e109ae429bf31be8ff07cd2328e3d5';
+  let buyActionId = null, pageEnergyStaleUntil = 0;
   async function requestBuy() {
     if (!cfg.autoBuyEnergy) return false;
-    if (cfg.energyBuy && Date.now() - cfg.energyBuy.at < 3 * 60000) return true;
     if (Date.now() < (cfg.buyNextTry || 0)) return false;
     await save({ buyNextTry: Date.now() + BUY_RETRY_MS });
-    const ok = !!(await send({ type: 'buyEnergy' }).catch((e) => DM.log('achat: message buyEnergy échoué', e.message)));
-    DM.log(`achat: demande envoyée (énergie ${cfg.energy}, onglet ${myTabId}) → ${ok ? 'onglet d’achat ouvert' : 'refusée'}`);
-    return ok;
+    try {
+      const { flight, chunks } = await fetchFlight('/jeu');
+      const m = flight.match(/"energy":(\d+),"kamas":(\d+),"left":(\d+)/);
+      if (!m) throw new Error('état d’achat introuvable sur /jeu');
+      const props = { energy: +m[1], kamas: +m[2], left: +m[3] };
+      const plan = planBuy(props);
+      if (!plan.n) { DM.log(`achat: rien à acheter (${plan.why})`, props); return false; }
+      if (!buyActionId) buyActionId = await findAction(chunks, 'buyEnergy', BUY_ACTION_FALLBACK);
+      DM.log(`achat: ${plan.n} point(s) pour ~${plan.cost} kamas`, props);
+      const res = await callAction('jeu', buyActionId, [plan.n]);
+      const energy = +res.energy || props.energy + plan.n;
+      await save({ energy, energyMax: plan.max, energyAt: Date.now(), buyNextTry: 0, pauseReason: null });
+      lastEnergyCheck = Date.now();
+      pageEnergyStaleUntil = Date.now() + 60000;
+      notify('energy', `⚡ Énergie rachetée : +${plan.n} pour ${plan.cost.toLocaleString('fr-FR')} kamas → **${energy}**.`);
+      return true;
+    } catch (e) {
+      buyActionId = null;   // ID peut-être périmé : relu au prochain essai
+      DM.log(`achat: échec (${e.message})`);
+      notify('errors', `⚠️ Achat d’énergie automatique impossible : ${e.message}. Nouvel essai dans ${BUY_RETRY_MS / 60000} min.`);
+      return false;
+    }
   }
 
   // Combien acheter : jusqu'au max, quel que soit le prix (limité au plafond du jour et aux kamas disponibles).
@@ -405,7 +429,7 @@
     // Achat auto : dès BUY_AT ou moins, on remplit au max sans attendre la pause (le farm attend juste la fin de l'achat).
     if (cfg.autoBuyEnergy && cfg.pauseReason !== 'energy' && e <= BUY_AT && e < (cfg.energyMax || ENERGY_BUY.max)
       && await requestBuy()) {
-      setStatus(`Énergie ${e} — rachat au max en cours (autre onglet)…`, true);
+      setStatus(`Énergie rachetée ✔ (${cfg.energy}) — le farm continue…`);
       return false;
     }
 
@@ -414,8 +438,8 @@
 
     if (cfg.pauseReason === 'energy') {
       if (e < resumeE) {
-        const buying = await requestBuy();   // achat auto (si activé) : l'onglet sera relancé une fois l'achat validé
-        setStatus(buying ? `Pause énergie : ${e} — achat d’énergie en cours (autre onglet)…` : `Pause énergie : ${e} (reprise à ${resumeE})`, true);
+        const bought = await requestBuy();   // achat auto (si activé) : la pause est levée s'il réussit
+        setStatus(bought ? `Énergie rachetée ✔ (${cfg.energy}) — reprise…` : `Pause énergie : ${e} (reprise à ${resumeE})`, !bought);
         return false;
       }
       await save({ pauseReason: null });
@@ -423,9 +447,9 @@
     } else if (e < minE) {
       DM.log(`énergie basse : ${e} < ${minE} (achat auto ${cfg.autoBuyEnergy ? 'activé' : 'désactivé'})`);
       await save({ pauseReason: 'energy' });
-      const buying = await requestBuy();
-      setStatus(buying ? `Énergie basse (${e}) — achat d’énergie en cours (autre onglet)…` : `Pause énergie : ${e} (reprise à ${resumeE})`, true);
-      if (!buying) notify('energy', `🔋 Énergie basse (**${e}**). Pilote auto en pause, reprise automatique à ${resumeE}.`);
+      const bought = await requestBuy();
+      setStatus(bought ? `Énergie rachetée ✔ (${cfg.energy}) — reprise…` : `Pause énergie : ${e} (reprise à ${resumeE})`, !bought);
+      if (!bought) notify('energy', `🔋 Énergie basse (**${e}**). Pilote auto en pause, reprise automatique à ${resumeE}.`);
       return false;
     }
     return true;
