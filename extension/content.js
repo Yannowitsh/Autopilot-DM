@@ -3377,9 +3377,9 @@
       const b = await fetchBestiary(say);
       // seulement ce que tu possèdes : un objet aussi en vente à l'HDV reste lootable (sinon, au-dessus du budget, il disparaissait)
       const have = new Set(pool.filter((c) => c.src !== 'hdv').map((c) => c.id));
-      // option « drops de monstres uniquement » : seulement les objets qu'un monstre de chasse lâche avec une vraie chance
-      // (pas les objets bonus de victoire, ni ceux des seuls boss)
-      const realDrop = (id) => (b.drops[id] || []).some(([, , , p, zs]) => p > 0 && zs?.length);
+      // option « drops de monstres uniquement » : seulement les objets qu'on obtient en chasse, sur les monstres d'une zone
+      // (drop avec chance, ou « objet bonus de victoire » propre à la zone, chance non publiée) — pas ceux des seuls boss
+      const realDrop = (id) => (b.drops[id] || []).some(([, , , , zs]) => zs?.length);
       const add = b.items.filter((it) => !have.has(it.id) && !(it.lvl > planLevel) && (opts.dropsOnly === false || realDrop(it.id)));
       pool.push(...add.map((it) => ({ id: it.id, name: it.n, lvl: it.lvl, type: it.s, rarity: it.r, icon: it.icon, fusion: 0,
         setName: it.setName, two: it.two, eff: fusedStats(it.st, it.s, 0), src: 'drop' })));
@@ -3757,7 +3757,7 @@
           <label style="cursor:pointer" data-tip="Ajoute les objets de ton autre compte (onglet ouvert en navigation privée ou normale), sauf ceux encore liés (reçus ou achetés il y a moins de 24 h). Un bouton les met dans la file d’échange de ce compte."><input data-o="bank" type="checkbox"> Inclure la banque (autre compte)</label>
           <label style="cursor:pointer" data-tip="Ajoute les objets en vente à l’HDV (jusqu’à 400 annonces par emplacement) : le build peut alors contenir des objets à acheter, avec leur prix."><input data-o="hdv" type="checkbox"> Fouiller l’HDV</label>
           <label style="cursor:pointer" data-tip="Ajoute tous les objets lootables du bestiaire (à ton niveau) que tu n’as pas : le build peut alors contenir des objets à aller chercher, avec les monstres qui les lâchent, leurs zones et tes chances. Pour ceux-là, l’HDV est vérifié : s’ils sont en vente, tu peux les acheter directement. Le bestiaire est importé une fois puis gardé en copie locale (rafraîchie chaque jour)."><input data-o="bestiary" type="checkbox"> Chercher dans le bestiaire</label>
-          <label data-k="dropsOnlyBox" style="cursor:pointer" data-tip="Avec le bestiaire : seulement les objets qu’un monstre de chasse lâche avec une vraie chance (pas les objets « bonus de victoire », ni ceux des boss du Chemin ou de chasse). Tu es sûr de pouvoir aller les chercher (🐉 Aller dropper)."><input data-o="dropsOnly" type="checkbox"> Drops de monstres uniquement</label>
+          <label data-k="dropsOnlyBox" style="cursor:pointer" data-tip="Avec le bestiaire : seulement les objets qu’on obtient en chasse sur les monstres d’une zone — drop avec une chance connue, ou « objet bonus de victoire » propre à la zone (chance non publiée par le jeu). Pas ceux des seuls boss du Chemin ou de chasse. Tu peux aller les chercher (🐉 Aller dropper)."><input data-o="dropsOnly" type="checkbox"> Drops de monstres uniquement</label>
           <label data-k="budgetBox" data-tip="Total maximum des achats HDV du build proposé. Vide = pas de limite.">Budget <input data-o="budget" type="number" min="0" placeholder="illimité" style="${inp};width:110px"> K</label>
           <button data-a="go" style="${btn};background:#8a5a1a;margin-left:auto">Lancer</button>
         </div>
@@ -4511,7 +4511,8 @@
       ...Object.entries(buildFavs()).map(([id, f]) => ({ id: +id, name: f.name, icon: f.icon, from: 'fav' })),
     ].filter((c, i, a) => a.findIndex((x) => x.id === c.id) === i);
     const items = cands.map((c) => {
-      const srcs = (b.drops[c.id] || []).filter(([, , , p, zs]) => p > 0 && zs?.length).map(([m, , , p, z]) => ({ m, p, z }));
+      // p = 0 : « objet bonus de victoire » de la zone (le jeu ne publie pas la chance)
+      const srcs = (b.drops[c.id] || []).filter(([, , , , zs]) => zs?.length).map(([m, , , p, z]) => ({ m, p: +p || 0, z }));
       return { c, srcs, best: Math.max(0, ...srcs.map((s) => s.p)) };
     });
     let tiers = {};
@@ -4532,7 +4533,9 @@
       <div style="overflow-y:auto;max-height:38vh;display:flex;flex-direction:column;gap:4px">${items.map(({ c, srcs, best }, i) => `<label style="${row};cursor:${srcs.length ? 'pointer' : 'default'};${srcs.length ? '' : 'opacity:.55'}">
         <input type="checkbox" data-i="${i}" ${srcs.length ? '' : 'disabled'}>
         ${icon(c)}
-        <span style="flex:1;min-width:0"><b>${esc(c.name)}</b> <span style="font-size:11px;color:${c.from === 'fav' ? '#ff5c7a' : '#c99bff'}">${c.from === 'fav' ? '❤️ favori' : '🧬 build'}</span><br><span style="color:#8a7d66;font-size:12px">${srcs.length ? `meilleure chance ${pct(best)} · ${new Set(srcs.flatMap((s) => s.z)).size} zone(s) · ${esc(srcs.slice().sort((a, b) => b.p - a.p).slice(0, 2).map((s) => `${s.m} (${pct(s.p)})`).join(', '))}` : 'pas de drop de monstre connu (bonus de victoire, boss…)'}</span></span>
+        <span style="flex:1;min-width:0"><b>${esc(c.name)}</b> <span style="font-size:11px;color:${c.from === 'fav' ? '#ff5c7a' : '#c99bff'}">${c.from === 'fav' ? '❤️ favori' : '🧬 build'}</span><br><span style="color:#8a7d66;font-size:12px">${!srcs.length ? 'pas obtenable en chasse (boss du Chemin ou de chasse…)'
+          : best > 0 ? `meilleure chance ${pct(best)} · ${new Set(srcs.flatMap((s) => s.z)).size} zone(s) · ${esc(srcs.slice().sort((a, b) => b.p - a.p).slice(0, 2).map((s) => `${s.m} (${pct(s.p)})`).join(', '))}`
+          : `objet bonus de victoire (chance non publiée) · ${esc([...new Set(srcs.flatMap((s) => s.z))].map((z) => zones[z]?.[0] || `zone ${z}`).slice(0, 3).join(', '))}`}</span></span>
       </label>`).join('') || '<div style="color:#b9a98c">Aucun objet : ce build n’a pas d’objet à looter (🐉), et tu n’as pas de favori ❤️. Ajoute des objets en favori avec le cœur ♡ de l’optimiseur.</div>'}</div>
       <div style="border-top:1px solid #3a3024;padding-top:8px;display:flex;flex-direction:column;gap:4px">
         <b style="font-size:13px">🛒 Liste de courses</b>
@@ -4548,13 +4551,14 @@
         const { c, best } = items[i], t = tierOf(i), need = 3 ** (t - 1);
         return `<div style="${row}">${icon(c)}<b style="flex:1;min-width:0">${esc(c.name)}</b>
           <select data-t="${i}" style="${inp}">${[1, 2, 3, 4, 5].map((n) => `<option value="${n}"${n === t ? ' selected' : ''}>T${n}${n === 5 ? ' (Rayonnant)' : ''}</option>`).join('')}</select>
-          <span style="color:#b9a98c;font-size:12px;width:120px;text-align:right">${need} ex. · ~${Math.ceil(need / (best / 100)).toLocaleString('fr-FR')} combats</span>
+          <span style="color:#b9a98c;font-size:12px;width:120px;text-align:right">${need} ex. · ${best > 0 ? `~${Math.ceil(need / (best / 100)).toLocaleString('fr-FR')} combats` : 'chance inconnue'}</span>
           <button data-rm="${i}" style="${btn};padding:2px 7px" title="Retirer de la liste">✕</button></div>`;
       }).join('') || '<div style="color:#8a7d66;font-size:12px">Vide : coche des objets au-dessus.</div>';
-      const total = list.reduce((n, i) => n + Math.ceil(3 ** (tierOf(i) - 1) / (items[i].best / 100)), 0);
+      const total = list.reduce((n, i) => n + (items[i].best > 0 ? Math.ceil(3 ** (tierOf(i) - 1) / (items[i].best / 100)) : 0), 0);
+      const unknown = list.some((i) => !(items[i].best > 0));
       $('[data-a="go"]').disabled = !list.length;
       $('[data-a="go"]').style.opacity = list.length ? '' : '.5';
-      $('[data-a="go"]').textContent = list.length ? `🐉 Lancer le farm (${list.length} objet(s), ~${total.toLocaleString('fr-FR')} combats)` : '🐉 Lancer le farm';
+      $('[data-a="go"]').textContent = list.length ? `🐉 Lancer le farm (${list.length} objet(s)${total ? `, ~${total.toLocaleString('fr-FR')} combats${unknown ? ' + chances inconnues' : ''}` : ''})` : '🐉 Lancer le farm';
     };
     renderCart();
     const close = () => ov.remove();
