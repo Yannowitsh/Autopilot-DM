@@ -1221,6 +1221,13 @@
   const TRADE_PARALLEL = 2;                      // « Tout échanger » : objets envoyés en même temps
   const tradeErr = (message, extra) => Object.assign(new Error(message), extra);
   const tradeStopped = () => !!queueRun?.stop;
+  // « Tout échanger » : problème qui concerne tout l'envoi (autre compte déconnecté / injoignable, plus de kamas, HDV plein,
+  // annonce peut-être perdue à retirer à la main…) → arrêt ; tout autre refus du jeu sur UN objet (lié, non échangeable,
+  // déjà acheté, vente disparue…) → objet sauté (annonce retirée si elle existe) et on passe aux suivants.
+  const TRADE_FATAL_RE = /kamas|plein|limite|maximum|d[ée]connect|injoignable|session|m[êe]me personnage|serveur/i;
+  const TRADE_MAX_LOST = 2;   // objets achetés par un autre joueur avant le retrait : au-delà, on arrête (prix surveillés ?)
+  const tradeItemProblem = (e) => !e.stopped && e.lost !== 'maybe' && !TRADE_FATAL_RE.test(`${e.message} ${e.why || ''}`)
+    && (e.game || e.lost === true || e.retry === false);
 
   // Attend que l'autre compte réponde (onglet joignable, session valide, serveur du jeu disponible).
   // Un achat réussi il y a moins de PEER_FRESH_MS suffit : pas de nouvelle vérification avant chaque objet.
@@ -1486,6 +1493,7 @@
     const say = (t, cls) => queueMsg(t, cls);
     let ok = false;
     const skipped = [];
+    let lostCount = 0;
     try {
       const ctx = await tradePrepare(say);
       await setLastRun({ id: runId, to: ctx.to });
@@ -1530,7 +1538,18 @@
             await setTradeQueue(tradeQueue().map((x) => (sameItem(x, it) ? { ...x, qty: x.qty - 1 } : x)));
             renderQueue();
           } catch (e) {
-            fatal ||= e;   // l'autre envoi termine son objet, puis on s'arrête
+            if (tradeItemProblem(e) && (e.lost !== true || ++lostCount < TRADE_MAX_LOST)) {
+              // problème propre à cet objet : on le sort de la file (tous ses exemplaires) et on passe aux suivants
+              skipped.push(`${it.name} : ${e.message.replace(`${it.name} : `, '')}`);
+              const rest = tradeQueue().find((x) => sameItem(x, it))?.qty || 0;
+              queueRun.total -= rest;
+              await setTradeQueue(tradeQueue().filter((x) => !sameItem(x, it)));
+              DM.log(`échange: ${it.name} sauté (${e.message}), ${rest} exemplaire(s) retiré(s) de la file`);
+              say(`⏭️ ${it.name} sauté : ${e.message.replace(`${it.name} : `, '')}`, 'err');
+              renderQueue();
+            } else {
+              fatal ||= e;   // l'autre envoi termine son objet, puis on s'arrête
+            }
           } finally {
             entry.reserved--;
             const left = inFlight.get(k) - 1;
@@ -1544,11 +1563,13 @@
       if (fatal) throw fatal;
       ok = true;
       const avg = queueRun.done ? Math.round((Date.now() - runId) / queueRun.done) : 0;   // débit réel (envois en parallèle)
-      say(queueRun.stop && tradeQueue().length
+      say((queueRun.stop && tradeQueue().length
         ? `⏸ Arrêté : ${queueRun.done} objet(s) envoyé(s) à ${ctx.to} — le reste est toujours dans la file.`
-        : `✔ Terminé${queueRun.done ? ` (~${avg} ms par objet)` : ''}.`, skipped.length ? '' : 'ok');
+        : `✔ Terminé${queueRun.done ? ` (~${avg} ms par objet)` : ''}.`)
+        + (skipped.length ? ` ${skipped.length} objet(s) sauté(s) : ${skipped.join(' · ')}` : ''), skipped.length ? '' : 'ok');
     } catch (e) {
-      say(`❌ Envoi interrompu : ${e.message}${tradeQueue().length ? ' — le reste est toujours dans la file.' : ''}`, 'err');
+      say(`❌ Envoi interrompu : ${e.message}${tradeQueue().length ? ' — le reste est toujours dans la file.' : ''}`
+        + (skipped.length ? ` (${skipped.length} objet(s) sauté(s) avant : ${skipped.join(' · ')})` : ''), 'err');
     } finally {
       const done = queueRun.done;
       tradeBusy = false;
@@ -1974,6 +1995,8 @@
           e.stopPropagation();
           const it = itemFromPanel(panelOf(wrap));
           if (!it) return say('❌ Objet illisible', 'err');
+          // objet lié (acheté il y a moins de 24 h, éternel…) : le jeu refusera de le mettre en vente
+          if (/li[ée]e?\s+(jusqu|à vie|au compte|pendant)|moins de 24\s*h/i.test(panelOf(wrap)?.textContent || '')) return say('❌ Objet lié : il ne peut pas être échangé pour l’instant', 'err');
           const n = queueAdd(it);
           say(`➕ ${itemLabel(it)} dans la file${n > 1 ? ` (×${n})` : ''}`, 'ok');
         });
