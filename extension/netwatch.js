@@ -1,16 +1,16 @@
 // Exécuté dans le contexte de la page (world MAIN, document_start) : surveille les requêtes du jeu.
 // Les server actions (en-tête Next-Action : combat, relance…) et les navigations RSC passent par window.fetch.
 // Une requête sans réponse est publiée dans <html data-dm-pending="nombre:début le plus ancien"> ;
-// content.js (monde isolé) la lit et recharge la page si elle traîne (voir stuckCheck).
+// content/fight.js (monde isolé) la lit et recharge la page si elle traîne (voir stuckCheck).
 // <html data-dm-actions="n"> : nombre de server actions lancées par la page depuis son chargement.
 // <html data-dm-fight-end="won|lost:heure"> : une réponse de combat contient l'état final (le serveur joue tout le
 // combat Auto d'un coup ; la page ne fait ensuite que rejouer l'animation) → utilisé par le « combat rapide ».
-// Chaque état de combat reçu est aussi transmis à content.js (postMessage « dm-fight ») : stats du personnage
+// Chaque état de combat reçu est aussi transmis au content script (postMessage « dm-fight ») : stats du personnage
 // et journal des coups, pour la tierlist des sorts et son test de calcul.
 (() => {
   if (window.__dmNetwatch) return;
   window.__dmNetwatch = true;
-  if (document.documentElement) document.documentElement.dataset.dmNetwatch = '1';   // content.js sait que la surveillance tourne
+  if (document.documentElement) document.documentElement.dataset.dmNetwatch = '1';   // le content script sait que la surveillance tourne
   const pending = new Map();
   let seq = 0, actions = 0;
   const publish = () => {
