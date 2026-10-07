@@ -1747,7 +1747,11 @@
   const domObserver = new MutationObserver(() => {
     if (dead || lockScanQueued) return;
     lockScanQueued = true;
-    requestAnimationFrame(() => { lockScanQueued = false; scanModules(); });
+    requestAnimationFrame(() => {
+      lockScanQueued = false;
+      scanModules();
+      if (isOwner() && !busy && location.pathname.startsWith('/combat') && endTitle()) tick();   // écran de fin affiché : relance sans attendre
+    });
   }).observe(document.documentElement, { childList: true, subtree: true });
 
   async function runAutosell(dryRun) {
@@ -4287,7 +4291,13 @@
   window.addEventListener('message', (e) => {
     if (e.source !== window || e.data?.type !== 'dm-fight-init' || typeof e.data.json !== 'string') return;
     try { fightInit = { st: rscDeep({}, JSON.parse(e.data.json)), at: Date.now() }; } catch { return; }
-    if (weightsOn() && isOwner()) setTimeout(tick, 50);   // pas besoin d'attendre le prochain tour de boucle
+    if (!weightsOn() || !isOwner()) return;
+    // La boucle du pilote attend 3 s après chaque clic de lancement : on démarre le combat sans elle, dès que la page est
+    // sur /combat (lancement depuis /aventure ou /chasse : le temps que le jeu y navigue).
+    (async () => {
+      for (let i = 0; i < 40 && !location.pathname.startsWith('/combat'); i++) await sleep(50);
+      if (location.pathname.startsWith('/combat') && cfg.botFight && !weightedBusy && !useGameAuto && weightsOn() && isOwner()) weightedFight();
+    })();
   });
   // ID de la server action du combat : gardé pour l'onglet ; relu dans les chunks seulement s'il est refusé.
   const FIGHT_ID_KEY = 'dmFightActionId';
