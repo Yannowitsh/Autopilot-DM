@@ -633,12 +633,13 @@
       // Groupe d'avis de recherche choisi à la main, renouvelé depuis (combat perdu au rechargement…) :
       // attaquer le nouveau groupe n'a pas de sens → arrêt.
       const t = cfg.huntTarget;
-      if (!dropOn() && cfg.huntGroup && t?.zone === cfg.huntZone && t.group === cfg.huntGroup && t.monsters?.some(wantedMatch)) {
+      const isTarget = (m) => targetMatch(m, ALL_KINDS);
+      if (!dropOn() && cfg.huntGroup && t?.zone === cfg.huntZone && t.group === cfg.huntGroup && t.monsters?.some(isTarget)) {
         const now = groupMonsters(group);
         if (now.length && now.join('|') !== t.monsters.join('|')) {
           await save({ enabled: false, paused: false, botFight: false, huntTarget: null,
-            status: 'Arrêté : le groupe d’avis de recherche a été renouvelé' });
-          notify('wanted', `⏹️ Le groupe d’avis de recherche (${t.monsters.filter(wantedMatch).join(', ')}) a été renouvelé dans **${cfg.huntZoneName || 'zone ' + cfg.huntZone}** : pilote auto arrêté.`);
+            status: 'Arrêté : le groupe ciblé (avis / archi) a été renouvelé' });
+          notify('wanted', `⏹️ Le groupe ciblé (${t.monsters.filter(isTarget).join(', ')}) a été renouvelé dans **${cfg.huntZoneName || 'zone ' + cfg.huntZone}** : pilote auto arrêté.`);
           return;
         }
       }
@@ -2549,9 +2550,10 @@
     }
   }
 
-  // ---------- Avis de recherche : scan des zones de chasse ----------
-  // Chaque /chasse?zone=… liste ses groupes (panneaux « Groupe N ») et leurs monstres. On compare les noms
-  // à la liste locale DM.WANTED (wanted.js). Les zones en échec (site saturé…) sont réessayées par passes successives.
+  // ---------- Avis de recherche et archimonstres : scan des zones de chasse ----------
+  // Chaque /chasse?zone=… liste ses groupes (panneaux « Groupe N ») et leurs monstres. On compare les noms aux listes
+  // locales DM.WANTED (wanted.js) et DM.ARCHI (archi.js), selon les cases cochées (cfg.scanWanted, cfg.scanArchi).
+  // Les zones en échec (site saturé…) sont réessayées par passes successives.
   const normName = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const WANTED_KEYS = (DM.WANTED || []).map((name) => ({ name, key: normName(name) }));
   function wantedMatch(monster) {
@@ -2595,23 +2597,39 @@
     return { groups, rotateAt: rot ? +rot[1] : null };
   }
 
-  // Avis de recherche d'une zone, groupe par groupe ; seuls les groupes contenant au moins
-  // cfg.wantedMinPerGroup monstres recherchés sont retenus (plusieurs avis dans le même combat).
+  // Archimonstre : nom exact seulement (« Pichakoté » est le monstre normal de « Pichakoté le Dégoutant »).
+  const ARCHI_KEYS = new Map((DM.ARCHI || []).map((name) => [normName(name), name]));
+  const archiMatch = (monster) => ARCHI_KEYS.get(normName(monster)) || null;
+  const scanKinds = () => ({ wanted: cfg.scanWanted !== false, archi: cfg.scanArchi !== false });
+  const ALL_KINDS = { wanted: true, archi: true };
+  const KIND_ICON = { wanted: '🎯', archi: '👑' };
+  // Cible du scan parmi les types cochés : { kind: 'wanted' | 'archi', name } ou null (un monstre n'est jamais les deux).
+  function targetMatch(monster, kinds = scanKinds()) {
+    const a = archiMatch(monster);
+    if (a) return kinds.archi ? { kind: 'archi', name: a } : null;
+    const w = kinds.wanted && wantedMatch(monster);
+    return w ? { kind: 'wanted', name: w } : null;
+  }
+
+  // Cibles d'une zone, groupe par groupe ; seuls les groupes contenant au moins cfg.wantedMinPerGroup cibles sont retenus
+  // (avis et archis cumulés si les deux sont cochés : 1 avis + 1 archi = 2 cibles dans le même combat).
   function zoneMatches(z) {
     const out = [];
     const min = Math.max(1, cfg.wantedMinPerGroup || 1);
+    const kinds = scanKinds();
     for (const g of z.groups || []) {
       const hits = [];
       for (const raw of g.monsters) {
         const m = typeof raw === 'string' ? { name: raw } : raw;   // anciens scans : simples noms
-        const w = wantedMatch(m.name);
-        if (w) hits.push({ raw, m, w });
+        const t = targetMatch(m.name, kinds);
+        if (t) hits.push({ raw, m, t });
       }
       if (hits.length < min) continue;
-      for (const { raw, m, w } of hits) {
+      const nW = hits.filter((h) => h.t.kind === 'wanted').length, nA = hits.length - nW;
+      for (const { raw, m, t } of hits) {
         out.push({
-          zoneId: z.id, zoneName: z.name, group: g.n, monster: m.name, lvl: m.lvl, img: m.img, wanted: w,
-          rotateAt: z.rotateAt, total: g.total, diff: g.diff, count: hits.length,
+          zoneId: z.id, zoneName: z.name, group: g.n, monster: m.name, lvl: m.lvl, img: m.img, wanted: t.name, kind: t.kind,
+          rotateAt: z.rotateAt, total: g.total, diff: g.diff, count: hits.length, nW, nA,
           others: g.monsters.filter((x) => x !== raw).map((x) => (typeof x === 'string' ? { name: x } : x)),
         });
       }
@@ -2628,13 +2646,15 @@
     if (notified.has(key)) return;
     notified.add(key);
     const others = f.others.map((o) => `${o.name}${o.lvl ? ` (${o.lvl})` : ''}`).join(', ');
-    notify('wanted', `🎯 **Avis de recherche : ${f.monster}**`, [{
+    const archi = f.kind === 'archi';
+    const mix = [f.nW && `${f.nW} avis de recherche`, f.nA && `${f.nA} archimonstre${f.nA > 1 ? 's' : ''}`].filter(Boolean).join(' + ');
+    notify('wanted', `${archi ? '👑 **Archimonstre' : '🎯 **Avis de recherche'} : ${f.monster}**`, [{
       title: `${f.monster}${f.lvl ? ` — niveau ${f.lvl}` : ''}`,
       url: attackLink(f),
-      color: 0xe0b040,
+      color: archi ? 0xa070e0 : 0xe0b040,
       thumbnail: f.img ? { url: new URL(f.img, DM.ORIGIN).href } : undefined,
       description: `**${f.zoneName}** — groupe ${f.group}${f.diff ? ` (${f.diff})` : ''}`
-        + `${f.count > 1 ? `\n🎯 **${f.count} avis de recherche** dans ce combat` : ''}`
+        + `${f.count > 1 ? `\n${KIND_ICON[f.kind]} **${mix}** dans ce combat` : ''}`
         + `${f.total ? `\nNiveau total du groupe : **${f.total}**` : ''}`
         + `${others ? `\nAvec : ${others}` : ''}`
         + `${f.rotateAt ? `\nDisponible jusqu’à **${DM.hhmm(f.rotateAt)}**` : ''}`
@@ -2685,9 +2705,9 @@
     const card = el('div', 'card');
     const top = el('div', 'top');
     const icon = el('div', 'icon');
-    if (f.img) icon.append(img(f.img, f.monster)); else icon.textContent = '🎯';
+    if (f.img) icon.append(img(f.img, f.monster)); else icon.textContent = KIND_ICON[f.kind] || '🎯';
     const info = el('div');
-    info.append(el('div', 'kicker', '🎯 AVIS DE RECHERCHE'), el('div', 'name', f.monster),
+    info.append(el('div', 'kicker', f.kind === 'archi' ? '👑 ARCHIMONSTRE' : '🎯 AVIS DE RECHERCHE'), el('div', 'name', f.monster),
       el('div', 'muted', `${f.lvl ? `Niveau ${f.lvl} · ` : ''}groupe ${f.group}${f.diff ? ` (${f.diff})` : ''}`),
       el('div', 'muted', f.zoneName));
     const x = el('button', 'x', '✕');
@@ -2706,7 +2726,8 @@
       }
       card.append(grp);
     }
-    const foot = el('div', 'muted', [f.total && `Niveau total ${f.total}`, f.rotateAt && `jusqu’à ${DM.hhmm(f.rotateAt)}`].filter(Boolean).join(' · '));
+    const foot = el('div', 'muted', [f.count > 1 && `${f.count} cibles (${[f.nW && `${f.nW} 🎯`, f.nA && `${f.nA} 👑`].filter(Boolean).join(' + ')})`,
+      f.total && `Niveau total ${f.total}`, f.rotateAt && `jusqu’à ${DM.hhmm(f.rotateAt)}`].filter(Boolean).join(' · '));
     foot.style.marginTop = '6px';
     card.append(foot);
 
@@ -2722,6 +2743,18 @@
     // la carte disparaît d'elle-même au renouvellement des groupes (l'avis n'est plus garanti)
     const ttl = f.rotateAt ? f.rotateAt - Date.now() : 3 * 60000;
     setTimeout(() => card.remove(), Math.max(15000, ttl));
+  }
+
+  // Zones où des archimonstres peuvent apparaître : badge « Archi ×N » de /chasse?toutes=1 → Map(id de zone → N).
+  async function fetchArchiZones() {
+    const { flight } = await fetchFlight('/chasse?toutes=1');
+    const out = new Map();
+    for (const part of flight.split('"href":"/chasse?zone=').slice(1)) {
+      const id = +part.match(/^(\d+)/)?.[1];
+      const n = part.match(/"title":"Archimonstre"[^{}]*?"children":\["Archi"," ×(\d+)"\]/)?.[1];
+      if (id && n) out.set(id, +n);
+    }
+    return out;
   }
 
   // resume = true : ne rescanne que les zones pas encore lues avec succès.
@@ -2753,6 +2786,12 @@
             .filter((z) => z.lvlMin == null || ((z.lvlMax ?? z.lvlMin) >= lo && z.lvlMin <= hi))
             .sort((a, b) => (b.lvlMax ?? b.lvlMin ?? 0) - (a.lvlMax ?? a.lvlMin ?? 0) || (b.lvlMin ?? 0) - (a.lvlMin ?? 0));
           if (!zones.length) throw new Error(`aucune zone entre les niveaux ${lo} et ${hi === Infinity ? '∞' : hi}`);
+          const kinds = scanKinds();
+          if (!kinds.wanted && !kinds.archi) throw new Error('coche au moins « avis de recherche » ou « archimonstres »');
+          if (!kinds.wanted) {   // archis seuls : seulement les zones qui peuvent en avoir (badge « Archi ×N » de la liste)
+            const archiZones = await fetchArchiZones().catch((e) => { DM.log(`scan : badges archi illisibles (${e.message})`); return null; });
+            if (archiZones?.size) zones.splice(0, zones.length, ...zones.filter((z) => archiZones.has(z.id)));
+          }
           st = {
             at: Date.now(),
             range: [lo, hi === Infinity ? 0 : hi],
@@ -2807,7 +2846,7 @@
         await saveScan(st, true);
         const found = scanMatches(st);
         const missing = st.zones.filter((z) => !['ok', 'empty'].includes(z.status)).length;
-        scanMsg = `${found.length} avis trouvé(s) en ${Math.round((Date.now() - t0) / 1000)} s`
+        scanMsg = `${found.length} cible(s) trouvée(s) en ${Math.round((Date.now() - t0) / 1000)} s`
           + (missing ? ` · ${missing} zone(s) non scannée(s)` : '');
         renderUi();
 
@@ -2859,17 +2898,270 @@
       if (li.dataset.dmWanted) continue;
       const name = li.querySelector('.font-bold')?.textContent.trim();
       if (!name) continue;
-      const w = wantedMatch(name);
-      li.dataset.dmWanted = w ? '1' : '0';
-      if (!w) continue;
-      li.style.outline = '2px solid #e0b040';
-      li.style.boxShadow = '0 0 10px rgba(224,176,64,.5)';
-      li.title = `🎯 Avis de recherche : ${w}`;
+      const t = targetMatch(name, ALL_KINDS);
+      li.dataset.dmWanted = t ? '1' : '0';
+      if (!t) continue;
+      const color = t.kind === 'archi' ? '#a070e0' : '#e0b040';
+      li.style.outline = `2px solid ${color}`;
+      li.style.boxShadow = `0 0 10px ${color}80`;
+      li.title = t.kind === 'archi' ? `👑 Archimonstre : ${t.name}` : `🎯 Avis de recherche : ${t.name}`;
       const tag = document.createElement('span');
-      tag.textContent = '🎯 Avis';
-      tag.style.cssText = 'margin-left:auto;font-size:11px;font-weight:700;color:#e0b040;white-space:nowrap';
+      tag.textContent = t.kind === 'archi' ? '👑 Archi' : '🎯 Avis';
+      tag.style.cssText = `margin-left:auto;font-size:11px;font-weight:700;color:${color};white-space:nowrap`;
       li.appendChild(tag);
     }
+  }
+
+  // ---------- Rentabilité des zones : XP et drops mesurés à chaque combat de chasse ----------
+  // Le jeu n'affiche nulle part ce que rapporte un groupe : on l'enregistre à chaque victoire en chasse. Le groupe combattu
+  // est cfg.huntTarget (zone, n° de groupe, noms des monstres), reconnu aux noms des monstres du combat (relances comprises).
+  // XP : gain = Σ xp des monstres (champ « xp » de l'état du combat) × bonus de groupe × … × (1 + Sagesse / 100) — vérifié :
+  // 2 Pikoleurs à 132 000 → 6 319 104 avec 988 de Sagesse (= 264 000 × 1,1 × 2 × 10,88). Ramenée à 0 de Sagesse pour comparer.
+  // Drops : valeur de revente au marchand (sellPrice du jeu : min(4000, 20 × niveau), quel que soit le tier), ramenée à
+  // 100 de Prospection (chances de drop proportionnelles à la Prospection). Kamas : tels quels.
+  // Tout est réaffiché à TA Sagesse / Prospection actuelles (dernier combat). Durée : écart avec le combat précédent dans la
+  // même zone (relance, animation et délais compris), sinon depuis le lancement.
+  // cfg.farmLog[perso] = [{ at, z, zn, g, m: [[nom, niveau, xp]], xp, sag, pp, k, v, n, d }] (FARM_LOG_MAX derniers).
+  const FARM_LOG_MAX = 3000;
+  const FARM_GAP_MS = 10 * 60000;
+  const FARM_CHAR_KEY = 'dmFarmChar';   // Sagesse / Prospection du dernier combat, par personnage (localStorage de la page)
+  const sellPrice = (lvl) => Math.min(4000, 20 * Math.max(1, +lvl || 0));
+  const GROUP_COEF = [0, 1, 1.1, 1.5, 2.3, 3.1, 3.6, 4.2, 4.7];   // bonus de groupe de Dofus (1 à 8 monstres), ×2 observé en jeu
+  let farmLastSig = '', itemLvlMap = null, itemLvlLoading = false;
+
+  // Niveau d'un objet lâché (rewards.items : { id, f, … }) : lu sur l'objet, sinon dans la copie locale du bestiaire.
+  function farmItemLvl(r) {
+    if (+r.lvl) return +r.lvl;
+    if (!itemLvlMap) {
+      try {
+        const c = JSON.parse(localStorage.getItem(BESTIARY_KEY) || 'null');
+        if (c?.items?.length) itemLvlMap = new Map(c.items.map((it) => [it.id, it.lvl]));
+      } catch { /* copie illisible */ }
+      if (!itemLvlMap && !itemLvlLoading) {   // pas de copie : import en arrière-plan, pour les combats suivants
+        itemLvlLoading = true;
+        fetchBestiary().then((c) => { itemLvlMap = new Map(c.items.map((it) => [it.id, it.lvl])); }).catch(() => {}).finally(() => { itemLvlLoading = false; });
+      }
+    }
+    return itemLvlMap?.get(r.id) || 0;
+  }
+
+  const farmChar = () => { try { return JSON.parse(localStorage.getItem(FARM_CHAR_KEY) || '{}')[fightAcct()] || null; } catch { return null; } };
+
+  function farmOnRewards(st, rewards) {
+    try {
+      if (!st?.fighters?.p || !rewards || st.status === 'ongoing') return;
+      const S = st.fighters.p.stats || {};
+      const sag = +S.sagesse || 0, pp = 100 + (+S.prospection || 0) + Math.floor((+S.chance || 0) / 10);
+      try {
+        const all = JSON.parse(localStorage.getItem(FARM_CHAR_KEY) || '{}');
+        all[fightAcct()] = { sag, pp, at: Date.now() };
+        localStorage.setItem(FARM_CHAR_KEY, JSON.stringify(all));
+      } catch { /* stockage indisponible */ }
+      if (st.status !== 'won') return;
+      const mobs = Object.values(st.fighters).filter((f) => f.kind === 'monster');
+      const t = cfg.huntTarget;
+      if (!mobs.length || !t?.zone || !Array.isArray(t.monsters)) return;
+      const names = mobs.map((m) => m.name).sort();
+      // le groupe de chasse suivi ; ou, pilote en chasse, le même n° de groupe renouvelé entre deux relances
+      const same = names.join('|') === [...t.monsters].sort().join('|');
+      if (!same && !(isOwner() && cfg.mode === 'chasse' && cfg.huntZone === t.zone)) return;   // aventure, autre combat…
+      const sig = `${names.join('|')}|${st.logCount}|${rewards.xp}`;
+      if (sig === farmLastSig) return;
+      farmLastSig = sig;
+      const items = Array.isArray(rewards.items) ? rewards.items : [];
+      const me = fightAcct(), log = cfg.farmLog?.[me] || [], last = log[log.length - 1], now = Date.now();
+      const d = last && last.z === t.zone && now - last.at < FARM_GAP_MS ? now - last.at
+        : cfg.lastLaunchAt && now - cfg.lastLaunchAt < FARM_GAP_MS ? now - cfg.lastLaunchAt : null;
+      const rec = { at: now, z: t.zone, zn: cfg.huntZone === t.zone ? cfg.huntZoneName || '' : '', g: t.group,
+        m: mobs.map((m) => [m.name, +m.level || 0, +m.xp || 0]), xp: +rewards.xp || 0, sag, pp,
+        k: (+rewards.kamas || 0) + (+rewards.cardKamas || 0), v: items.reduce((s, r) => s + sellPrice(farmItemLvl(r)), 0), n: items.length, d };
+      save({ farmLog: { ...(cfg.farmLog || {}), [me]: [...log, rec].slice(-FARM_LOG_MAX) } });
+    } catch (e) {
+      DM.log(`rentabilité : ${e.message}`);
+    }
+  }
+
+  const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+
+  // Mesures et estimations, par zone + n° de groupe → lignes du classement.
+  function farmRows(log, scan, best, cur) {
+    const sagMul = 1 + (cur.sag || 0) / 100, ppMul = (cur.pp || 100) / 100;
+    // xp de base de chaque monstre (nom|niveau) et bonus de groupe réel (par nombre de monstres), appris des combats
+    const mobXp = new Map(), coefs = {};
+    for (const r of log) {
+      let sum = 0;
+      for (const [n, l, x] of r.m) { if (x) mobXp.set(`${normName(n)}|${l}`, x); sum += x; }
+      if (sum && r.xp) (coefs[r.m.length] ||= []).push(r.xp / (sum * (1 + r.sag / 100)));
+    }
+    const learned = Object.fromEntries(Object.entries(coefs).map(([n, a]) => [n, median(a)]));
+    const ratio = median(Object.entries(learned).map(([n, c]) => c / GROUP_COEF[n]).filter(Boolean)) || 2;
+    const coef = (n) => learned[n] || (GROUP_COEF[Math.min(8, n)] || 1) * ratio;
+    const cycle = median(log.map((r) => r.d).filter(Boolean)) || null;   // durée type d'un combat (estimations)
+    const rows = new Map();
+    const row = (z, g, zn) => {
+      const k = `${z}|${g}`;
+      if (!rows.has(k)) rows.set(k, { z, g, zn: zn || '', meas: null, est: null });
+      const r = rows.get(k);
+      if (zn && !r.zn) r.zn = zn;
+      return r;
+    };
+    for (const r of log) {
+      const o = row(r.z, r.g, r.zn);
+      const m = o.meas ||= { n: 0, xp: 0, v: 0, k: 0, d: [], last: 0 };
+      m.n++;
+      m.xp += r.xp / (1 + r.sag / 100);
+      m.v += r.v / ((r.pp || 100) / 100);
+      m.k += r.k;
+      if (r.d) m.d.push(r.d);
+      m.last = Math.max(m.last, r.at);
+    }
+    for (const o of rows.values()) {
+      const m = o.meas;
+      if (!m) continue;
+      const dur = median(m.d) || cycle;
+      o.xp = m.xp / m.n * sagMul;
+      o.val = m.v / m.n * ppMul + m.k / m.n;
+      o.dur = dur;
+    }
+    // estimations : groupes du dernier scan (xp si tous les monstres sont connus ; drops via le bestiaire, prospection comprise)
+    for (const z of scan?.zones || []) {
+      for (const g of z.groups || []) {
+        const mons = g.monsters.map((x) => (typeof x === 'string' ? { name: x } : x));
+        const xs = mons.map((m) => mobXp.get(`${normName(m.name)}|${m.lvl}`));
+        const xp = xs.every(Boolean) ? xs.reduce((a, b) => a + b, 0) * coef(mons.length) * sagMul : null;
+        const val = best ? mons.reduce((s, m) => s + (best.get(normName(m.name)) || 0), 0) : null;
+        const o = row(z.id, g.n, z.name);
+        o.est = { xp, val, mons: mons.map((m) => `${m.name}${m.lvl ? ` ${m.lvl}` : ''}`) };
+        if (o.xp == null) { o.xp = xp; o.val = val; o.dur = cycle; o.estOnly = true; }
+      }
+    }
+    return { rows: [...rows.values()], cycle, learned };
+  }
+
+  // Valeur de drop moyenne d'un monstre (bestiaire : ta chance % par objet, prospection comprise) → Map(nom normalisé → kamas).
+  function bestiaryMobValue(c) {
+    const lvl = new Map(c.items.map((it) => [it.id, it.lvl]));
+    const out = new Map();
+    for (const [id, list] of Object.entries(c.drops || {})) {
+      for (const [mob, , , chance] of list) {
+        if (!(chance > 0)) continue;   // 0 = « objet bonus de victoire » : chance non publiée
+        const k = normName(mob);
+        out.set(k, (out.get(k) || 0) + Math.min(1, chance / 100) * sellPrice(lvl.get(+id)));
+      }
+    }
+    return out;
+  }
+
+  async function openFarmStats() {
+    document.querySelector('.dm-picker')?.remove();
+    const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+    const fmt = (n) => (n == null || !isFinite(n) ? '—' : Math.round(n).toLocaleString('fr-FR'));
+    const ov = document.createElement('div');
+    ov.className = 'dm-picker';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:#000a;display:grid;justify-items:center;align-items:start;padding:4vh 16px 16px;font:13px system-ui,sans-serif;color:#eee';
+    const close = () => { ov.remove(); document.removeEventListener('keydown', onKey, true); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+    document.addEventListener('keydown', onKey, true);
+    ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
+    const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:4px 9px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
+    const inp = 'background:#241e16;color:#eee;border:1px solid #5a4a33;border-radius:6px;padding:3px 6px;font:12px system-ui,sans-serif';
+    ov.innerHTML = `<div style="width:min(900px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
+      <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📈 Rentabilité des zones${DM.tip('Mesuré : chaque victoire en chasse est enregistrée (XP, kamas, objets lâchés au prix de revente marchand), par zone et n° de groupe. L’XP est ramenée à 0 de Sagesse et les drops à 100 de Prospection, puis réaffichés à tes valeurs actuelles : changer d’équipement ne fausse pas le classement.&#10;≈ Estimé : groupes du dernier scan des zones ; XP si chaque monstre a déjà été combattu à ce niveau (bonus de groupe appris en jeu), drops d’après le bestiaire (tes chances, prospection comprise). Les kamas ne sont pas estimés.&#10;/min : avec la durée réelle entre deux combats (relance comprise).&#10;▶ envoie le pilote farmer ce groupe en mode chasse.')}</b>
+        <button data-a="x" style="${btn};background:transparent">✕</button></div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:12px">
+        <label>Trier par <select data-f="sort" style="${inp}"><option value="xpMin">XP / min</option><option value="xp">XP / combat</option><option value="valMin">Kamas + drops / min</option><option value="val">Kamas + drops / combat</option></select></label>
+        <label><input type="checkbox" data-f="est"> estimations (≈)</label>
+        <label>Niveau max <input type="number" data-f="lvl" min="0" max="200" style="${inp};width:60px" placeholder="—"></label>
+        <span data-k="cur" style="color:#b9a98c;margin-left:auto"></span>
+      </div>
+      <div data-k="msg" style="font-size:12px;color:#b9a98c"></div>
+      <div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:12px" data-k="tbl"></table></div>
+      <div style="display:flex;gap:8px;align-items:center"><span data-k="foot" style="flex:1;font-size:11px;color:#8a7d66"></span>
+        <button data-a="clear" style="${btn}" title="Effacer toutes les mesures de ce personnage — 2e clic pour confirmer">🗑️ Effacer les mesures</button></div></div>`;
+    document.body.appendChild(ov);
+    const $ = (q) => ov.querySelector(q);
+    let prefs = { sort: 'xpMin', est: true, lvl: '' };
+    try { prefs = { ...prefs, ...JSON.parse(localStorage.getItem('dmFarmStatsPrefs') || '{}') }; } catch { /* défaut */ }
+    $('[data-f="sort"]').value = prefs.sort;
+    $('[data-f="est"]').checked = prefs.est;
+    $('[data-f="lvl"]').value = prefs.lvl;
+    let best = null, bz = null;
+    try {
+      $('[data-k="msg"]').textContent = 'Lecture du bestiaire…';
+      const c = await fetchBestiary((t) => { $('[data-k="msg"]').textContent = t; });
+      best = bestiaryMobValue(c);
+      bz = c.zones;
+      $('[data-k="msg"]').textContent = '';
+    } catch (e) { $('[data-k="msg"]').textContent = `Bestiaire illisible (${e.message}) : pas d’estimation des drops.`; }
+    let shown = [];
+    const render = () => {
+      const log = cfg.farmLog?.[fightAcct()] || [];
+      const last = log[log.length - 1];
+      const cur = farmChar() || (last ? { sag: last.sag, pp: last.pp } : { sag: 0, pp: 100 });
+      $('[data-k="cur"]').textContent = `Sagesse ${fmt(cur.sag)} · Prospection ${fmt(cur.pp)}`;
+      const { rows, cycle } = farmRows(log, cfg.wantedScan, best, cur);
+      const lvlMax = +prefs.lvl || 0;
+      const zoneLvl = (z) => bz?.[z]?.[1];
+      for (const r of rows) {
+        r.name = r.zn || bz?.[r.z]?.[0] || `Zone ${r.z}`;
+        r.xpMin = r.xp != null && r.dur ? r.xp / (r.dur / 60000) : null;
+        r.valMin = r.val != null && r.dur ? r.val / (r.dur / 60000) : null;
+      }
+      shown = rows.filter((r) => (prefs.est || !r.estOnly) && r[prefs.sort] != null && !(lvlMax && zoneLvl(r.z) > lvlMax))
+        .sort((a, b) => (b[prefs.sort] || 0) - (a[prefs.sort] || 0)).slice(0, 150);
+      const th = 'text-align:left;padding:4px 6px;color:#b9a98c;border-bottom:1px solid #3a3024;position:sticky;top:0;background:#1d1812';
+      const td = 'padding:4px 6px;border-bottom:1px solid #2a231a';
+      $('[data-k="tbl"]').innerHTML = shown.length ? `<tr><th style="${th}">#</th><th style="${th}">Zone · groupe</th><th style="${th}">Combats</th><th style="${th}">XP / combat</th><th style="${th}">XP / min</th><th style="${th}">Kamas + drops / combat</th><th style="${th}">/ min</th><th style="${th}"></th></tr>`
+        + shown.map((r, i) => {
+          const e = r.estOnly ? '≈ ' : '';
+          const tip = [r.meas && `${r.meas.n} combat(s) mesuré(s), dernier ${new Date(r.meas.last).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}`,
+            r.dur && `durée type ${Math.round(r.dur / 1000)} s`, r.est && `dernier scan : ${r.est.mons.join(', ')}`,
+            r.est && !r.estOnly && `estimé : ${fmt(r.est.xp)} XP, ${fmt(r.est.val)} K de drops`].filter(Boolean).join('\n');
+          return `<tr title="${esc(tip)}" style="${r.estOnly ? 'color:#b9a98c;font-style:italic' : ''}"><td style="${td}">${i + 1}</td>
+            <td style="${td}">${esc(r.name)}${zoneLvl(r.z) != null ? ` <span style="color:#8a7d66">niv. ${bz[r.z][1]}–${bz[r.z][2]}</span>` : ''} · G${r.g}</td>
+            <td style="${td}">${r.meas ? r.meas.n : '—'}</td><td style="${td}">${e}${fmt(r.xp)}</td><td style="${td}">${e}${fmt(r.xpMin)}</td>
+            <td style="${td}">${e}${fmt(r.val)}</td><td style="${td}">${e}${fmt(r.valMin)}</td>
+            <td style="${td}"><button data-farm="${i}" style="${btn};background:#2e7d32" title="Farmer ce groupe (mode chasse, pilote démarré)">▶</button></td></tr>`;
+        }).join('')
+        : '<tr><td style="color:#b9a98c;padding:8px">Rien à classer : gagne des combats en chasse (ils sont enregistrés automatiquement), ou lance un scan des zones et coche « estimations ».</td></tr>';
+      $('[data-k="foot"]').textContent = `${log.length} combat(s) enregistré(s)${cycle ? ` · durée type d’un combat ${Math.round(cycle / 1000)} s` : ''}`
+        + `${cfg.wantedScan?.finishedAt ? ` · scan du ${new Date(cfg.wantedScan.finishedAt).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}` : ' · aucun scan'}`;
+    };
+    render();
+    ov.addEventListener('change', (e) => {
+      const f = e.target.dataset.f;
+      if (!f) return;
+      prefs[f] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+      try { localStorage.setItem('dmFarmStatsPrefs', JSON.stringify(prefs)); } catch { /* stockage indisponible */ }
+      render();
+    });
+    ov.addEventListener('click', async (e) => {
+      if (e.target.closest('[data-a="x"]')) return close();
+      const clr = e.target.closest('[data-a="clear"]');
+      if (clr) {
+        if (!clr.dataset.armed) {
+          clr.dataset.armed = '1';
+          clr.textContent = '⚠️ Confirmer l’effacement';
+          setTimeout(() => { if (clr.isConnected) { delete clr.dataset.armed; clr.textContent = '🗑️ Effacer les mesures'; } }, 5000);
+          return;
+        }
+        const all = { ...(cfg.farmLog || {}) };
+        delete all[fightAcct()];
+        await save({ farmLog: all });
+        delete clr.dataset.armed;
+        clr.textContent = '🗑️ Effacer les mesures';
+        return render();
+      }
+      const go = e.target.closest('[data-farm]');
+      if (!go) return;
+      const r = shown[+go.dataset.farm];
+      if (!r) return;
+      if (dropOn()) await dropStop('remplacé par ▶ Rentabilité des zones');
+      await save({ mode: 'chasse', huntZone: r.z, huntZoneName: r.name, huntGroup: r.g, huntTarget: null, pauseReason: null, lossStreak: 0 });
+      await send({ type: 'claim', start: true, status: 'Démarrage…' }).catch(() => {});
+      tradeToast(`▶ Chasse : ${r.name}, groupe ${r.g}`, 'ok');
+      close();
+    });
   }
 
   // ---------- Tierlist des sorts : dégâts des cartes de la collection (/deck) ----------
@@ -2908,7 +3200,7 @@
     try {
       const obj = JSON.parse(e.data.line);
       const st = obj.state;
-      if (obj.rewards && st?.status && st.status !== 'ongoing') dropOnRewards(obj.rewards, `${st.kind}|${st.logCount}`);
+      if (obj.rewards && st?.status && st.status !== 'ongoing') { dropOnRewards(obj.rewards, `${st.kind}|${st.logCount}`); farmOnRewards(st, obj.rewards); }
       if (!st?.fighters?.p?.stats || !st.log?.some((L) => L.t === 'play' && L.who === 'p')) return;
       const fighters = Object.fromEntries(Object.entries(st.fighters).map(([id, f]) => [id,
         { id, name: f.name, kind: f.kind, team: f.team, level: f.level, stats: f.stats, resCap: f.resCap, buffs: f.buffs }]));
@@ -5238,7 +5530,7 @@
         if (res.otherTab || !res.state) return fallback(`réponse inattendue (${Object.keys(res).join(', ')})`);
         if (pick) { casts[pick.key] = p.turnNo; keepCasts(); }
         st = res.state;
-        if (res.rewards && st.status !== 'ongoing') dropOnRewards(res.rewards, `${st.kind}|${st.logCount}`);
+        if (res.rewards && st.status !== 'ongoing') { dropOnRewards(res.rewards, `${st.kind}|${st.logCount}`); farmOnRewards(st, res.rewards); }
       }
       if (st.status !== 'ongoing') DM.log(`auto par poids : combat ${st.status === 'won' ? 'gagné' : 'perdu'}`);
     } catch (e) {
@@ -5619,7 +5911,12 @@
           <div class="row"><button data-k="spells" data-mod="spells" style="flex:1">Ouvrir la tierlist</button><button data-k="build" data-mod="build" style="flex:1" data-tip="Cherche l’équipement qui maximise tes dégâts sur un tour (sorts, PA, panoplies, prestige ; HDV en option).">🧬 Optimiser mon build</button></div>
         </div>
         <div class="sec" data-mod="wanted">
-          <div class="head"><span>🎯 Avis de recherche${DM.tip("Parcourt toutes les zones de chasse et repère les groupes contenant des monstres recherchés. Chaque trouvaille s’affiche ici et peut être envoyée sur Discord.")}</span><span class="muted" data-k="scanAge"></span></div>
+          <div class="head"><span>🎯 Avis & 👑 archis${DM.tip("Parcourt toutes les zones de chasse et repère les groupes contenant des monstres d’avis de recherche et / ou des archimonstres (selon les cases cochées). Chaque trouvaille s’affiche ici et peut être envoyée sur Discord.")}</span><span class="muted" data-k="scanAge"></span></div>
+          <div class="row" style="align-items:center;gap:10px;font-size:12px">
+            <span class="muted">Chercher</span>
+            <label class="check" style="margin:0"><input type="checkbox" data-k="scanWanted"> 🎯 Avis de recherche</label>
+            <label class="check" style="margin:0"><input type="checkbox" data-k="scanArchi"> 👑 Archimonstres${DM.tip("Les 306 archimonstres de dofusdb (archi.js), reconnus au nom exact. Archis seuls : seules les zones avec le badge « Archi » sont scannées.")}</label>
+          </div>
           <div class="row">
             <button data-k="scan" style="flex:1" data-tip="Scanne toutes les zones dans la plage de niveaux choisie (les groupes changent toutes les ~3 min).">Scanner les zones</button>
             <button data-k="scanResume" data-tip="Ne rescanne que les zones en échec lors du dernier scan.">Reprendre</button>
@@ -5632,13 +5929,14 @@
             <span class="muted" style="margin-left:auto">plus hauts d’abord</span>
           </div>
           <div class="row" style="align-items:center;gap:6px;font-size:12px">
-            <span class="muted">Au moins${DM.tip("Ne garde que les groupes contenant au moins ce nombre de monstres recherchés : plusieurs avis dans le même combat.")}</span>
+            <span class="muted">Au moins${DM.tip("Ne garde que les groupes contenant au moins ce nombre de cibles. Avis et archis cochés tous les deux : ils s’additionnent (1 avis + 1 archi = 2 cibles).")}</span>
             <input type="number" data-k="minPerGroup" min="1" max="8" class="num">
-            <span class="muted">avis dans le même combat</span>
+            <span class="muted">cible(s) dans le même combat</span>
           </div>
           <label class="check"><input type="checkbox" data-k="wantedLoop"> Scanner en continu (à chaque renouvellement des groupes)${DM.tip("Relance automatiquement un scan juste après chaque renouvellement des groupes, tant que l’onglet reste ouvert.")}</label>
           <div class="status" data-k="scanMsg"></div>
           <ul class="wanted" data-k="wanted"></ul>
+          <button data-k="farmStats" style="margin-top:6px;width:100%" data-tip="XP et drops (revente marchand) mesurés à chaque combat de chasse, par zone et groupe, ramenés à ta Sagesse / Prospection actuelles ; estimations pour les groupes du dernier scan. Bouton ▶ pour y envoyer le pilote.">📈 Rentabilité des zones</button>
         </div>
       </div>
       <div class="bubble" title="Autopilot-DM">🤖</div>
@@ -5704,6 +6002,9 @@
     $('scan').addEventListener('click', () => { if (scanRunning) scanStop = true; else runScan(false); renderUi(); });
     $('scanResume').addEventListener('click', () => runScan(true));
     $('wantedLoop').addEventListener('change', () => save({ wantedLoop: $('wantedLoop').checked }));
+    $('scanWanted').addEventListener('change', () => save({ scanWanted: $('scanWanted').checked }).then(renderUi));
+    $('scanArchi').addEventListener('change', () => save({ scanArchi: $('scanArchi').checked }).then(renderUi));
+    $('farmStats').addEventListener('click', () => { setOpen(false); openFarmStats(); });
     // Appliqué aussitôt à la liste affichée (le scan garde tous les groupes) et aux prochaines notifications.
     $('minPerGroup').addEventListener('change', () => {
       if (!scanRunning) scanMsg = '';   // le compteur « N avis trouvé(s) » est recalculé avec le nouveau seuil
@@ -6203,6 +6504,8 @@
     const missing = st?.zones?.filter((z) => !['ok', 'empty'].includes(z.status)).length || 0;
     $('scan').textContent = scanRunning ? (scanStop ? 'Arrêt…' : '■ Arrêter le scan') : 'Scanner les zones';
     $('wantedLoop').checked = !!cfg.wantedLoop;
+    $('scanWanted').checked = cfg.scanWanted !== false;
+    $('scanArchi').checked = cfg.scanArchi !== false;
     if (ui.root.activeElement !== $('minPerGroup')) $('minPerGroup').value = cfg.wantedMinPerGroup || 1;
     // ne pas écraser un champ en cours de saisie
     for (const [k, key] of [['lvlMin', 'wantedLvlMin'], ['lvlMax', 'wantedLvlMax']]) {
@@ -6211,7 +6514,7 @@
     $('scanResume').style.display =!scanRunning && missing && st?.zones?.length ? '' : 'none';
     $('scanResume').textContent = `Reprendre (${missing})`;
     $('scanAge').textContent = st?.finishedAt ? `scan ${DM.hhmm(st.finishedAt)}` : '';
-    $('scanMsg').textContent = scanMsg || (st?.zones ? `${scanMatches().length} avis trouvé(s)${missing ? ` · ${missing} zone(s) non scannée(s)` : ''}` : `${WANTED_KEYS.length} avis connus — lance un scan.`);
+    $('scanMsg').textContent = scanMsg || (st?.zones ? `${scanMatches().length} cible(s) trouvée(s)${missing ? ` · ${missing} zone(s) non scannée(s)` : ''}` : `${WANTED_KEYS.length} avis et ${ARCHI_KEYS.size} archis connus — lance un scan.`);
     const wl = $('wanted');
     wl.textContent = '';
     const now = Date.now();
@@ -6229,9 +6532,9 @@
       }
       const txt = document.createElement('div');
       const b = document.createElement('b');
-      b.textContent = f.monster;
+      b.textContent = `${KIND_ICON[f.kind] || '🎯'} ${f.monster}`;
       txt.append(b, f.lvl ? ` niv. ${f.lvl}` : '', document.createElement('br'),
-        `${f.zoneName} · G${f.group}${f.total ? ` (total ${f.total})` : ''}${f.count > 1 ? ` · 🎯×${f.count}` : ''}`,
+        `${f.zoneName} · G${f.group}${f.total ? ` (total ${f.total})` : ''}${f.count > 1 ? ` · ${f.count} cibles` : ''}`,
         f.rotateAt ? ` · ${old ? 'expiré' : `jusqu’à ${DM.hhmm(f.rotateAt)}`}` : '');
       li.appendChild(txt);
       wl.appendChild(li);
