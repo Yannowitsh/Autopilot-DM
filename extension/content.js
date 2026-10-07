@@ -816,6 +816,27 @@
     return fallback;
   }
 
+  // Résultat d'une server action dans la réponse RSC : la ligne 0 le désigne (« "a":"$@N" ») ; souvent la ligne 1, mais pas
+  // toujours (la ligne 1 peut être une référence de module « I[…] » : « Unexpected token 'I' » avant la 1.81.1).
+  // Sinon : première ligne objet { ok | error }. → objet résultat, ou null.
+  function actionResult(text) {
+    const rows = new Map();
+    for (const l of text.split(/\r?\n/)) {
+      const m = l.match(/^([0-9a-f]+):(.*)$/);
+      if (m && !rows.has(m[1])) rows.set(m[1], m[2]);
+    }
+    const parse = (v) => { try { const o = JSON.parse(v); return o && typeof o === 'object' && !Array.isArray(o) ? o : null; } catch { return null; } };
+    const ref = rows.get('0')?.match(/^\{"a":"\$@([0-9a-f]+)"/)?.[1];
+    const res = parse(rows.get(ref || '1') || '');
+    if (res) return res;
+    for (const [k, v] of rows) {
+      if (k === '0' || v[0] !== '{') continue;
+      const o = parse(v);
+      if (o && ('ok' in o || 'error' in o)) return o;
+    }
+    return null;
+  }
+
   // Appelle une server action de la page /<segment> ; renvoie son résultat (ligne « 1: » de la réponse RSC).
   // Erreur renvoyée par le jeu (« Pas assez de kamas »…) : err.game = true ; sinon problème de protocole (ID périmé…).
   async function callAction(segment, actionId, args, query = '') {
@@ -838,8 +859,7 @@
     });
     if (!r.ok) throw Object.assign(new Error(`HTTP ${r.status}`), { status: r.status });
     const text = await r.text();
-    const line = text.split(/\r?\n/).find((l) => l.startsWith('1:'));
-    const res = line ? JSON.parse(line.slice(2)) : null;
+    const res = actionResult(text);
     if (!res) throw new Error('Réponse du serveur illisible');
     if (res.error) throw Object.assign(new Error(res.error), { game: true });
     return { res, text };
@@ -3673,8 +3693,7 @@
         });
         if (!r.ok) throw Object.assign(new Error(`HTTP ${r.status}`), { status: r.status });
         const text = await r.text();
-        const line = text.split(/\r?\n/).find((l) => l.startsWith('1:'));
-        const res = line ? JSON.parse(line.slice(2)) : null;
+        const res = actionResult(text);
         if (res?.error) throw Object.assign(new Error(res.error), { game: true });
         const free = text.match(/"pointsFree":(\d+)/);
         const rows = text.match(/"rows":(\[.*?\]),"pointsFree"/);
