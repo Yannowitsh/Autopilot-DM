@@ -3528,23 +3528,32 @@
           }
           if (evals % 400 < 40) await sleep(0);
         }
-        // panoplies : poser d'un coup les meilleurs objets d'une panoplie (le palier ne vient qu'à plusieurs)
+        // panoplies : poser d'un coup 2, 3… objets d'une panoplie (le palier ne vient qu'à plusieurs, et passer de 2 à 3
+        // ou 4 objets demande souvent de changer plusieurs emplacements à la fois). Objets ajoutés du plus utile seul
+        // au moins utile ; chaque taille est essayée, la meilleure est gardée.
         for (const name of Object.keys(setFx)) {
           if (!setFx[name]) continue;
           const items = pool.filter((c) => c.setName === name && cands[c.type]?.includes(c));
           if (items.length < 2) continue;
-          const b = { ...build };
-          for (const c of items) {
+          const place = (b, c) => {
             const free = slots.filter((s) => s.accepts === c.type && b[s.slot]?.setName !== name);
-            if (!free.length) continue;
+            if (!free.length) return false;
             // emplacement le moins utile du type (vide d'abord)
             const target = free.find((s) => !b[s.slot]) || free[0];
             b[target.slot] = c;
             if (c.two && target.slot === 'arme') b.bouclier = null;
+            return true;
+          };
+          const solo = items.map((c) => { const b = { ...build }; return { c, v: place(b, c) && valid(b) ? score(b) : -Infinity }; })
+            .sort((x, y) => y.v - x.v).map((x) => x.c);
+          const b = { ...build };
+          let n = 0;
+          for (const c of solo) {
+            if (!place(b, c)) continue;
+            if (++n < 2 || !valid(b)) continue;
+            const v = score(b);
+            if (v > best + 1e-6) { build = { ...b }; best = v; improved = true; }
           }
-          if (!valid(b)) continue;
-          const v = score(b);
-          if (v > best + 1e-6) { build = b; best = v; improved = true; }
         }
         if (!improved) break;
       }
