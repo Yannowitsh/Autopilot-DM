@@ -54,6 +54,7 @@
     quiet(() => queueBox?.remove());
     quiet(() => toastEl?.remove());
     quiet(() => cardStack?.host.remove());
+    quiet(() => document.querySelectorAll('.dm-deck-weights, .dm-fuse-all').forEach((el) => el.remove()));
     document.querySelectorAll('.dm-trade, .dm-lock, .dm-picker, .dm-tip, .dm-tip-style').forEach((el) => el.remove());
     console.info('[Autopilot-DM] Extension rechargée : recharge la page pour la réactiver.');
   }
@@ -67,6 +68,8 @@
     if (cfg.status !== status || !!cfg.paused !== paused) save({ status, paused });
   };
   const isOwner = () => cfg.enabled && myTabId != null && cfg.ownerTabId === myTabId;
+  const modOn = (k) => DM.modOn(cfg, k);   // module activé dans la popup de l'extension
+  const weightsOn = () => cfg.fightEngine === 'weights' && modOn('weights');
 
   // ---------- DOM ----------
   const visibleButtons = () => [...document.querySelectorAll('button')].filter((b) => b.offsetParent !== null);
@@ -500,7 +503,7 @@
           setStatus(`Défaite — nouvel essai ${cfg.lossStreak}/${maxRetries()}…`);
           await sleep(relaunchDelay());
           if (!isOwner()) return;
-          const autoRetry = cfg.fightEngine === 'weights' ? null : findBtn(/^Réessayer en auto$/i);
+          const autoRetry = weightsOn() ? null : findBtn(/^Réessayer en auto$/i);
           const retry = autoRetry || findBtn(isHunt() ? HUNT_RETRY : isAsc() ? /^Réessayer l.étage$/i : /^Réessayer l.étape$/i);
           if (!retry) return;
           await save({ botFight: true });
@@ -522,7 +525,7 @@
         await sleep(relaunchDelay());
         if (!isOwner()) return;
         // Bouton « en auto » de préférence ; sinon relance simple, le mode Auto sera activé dans le combat.
-        const autoNext = cfg.fightEngine === 'weights' ? null : findBtn(AUTO_NEXT);
+        const autoNext = weightsOn() ? null : findBtn(AUTO_NEXT);
         const next = autoNext || findBtn(isHunt() ? HUNT_RETRY : isAsc() ? /^Étage suivant$/ : /^Étape suivante$/);
         if (!next) return;
         await save({ botFight: true });
@@ -550,7 +553,7 @@
         return progress();
       }
       // Auto par poids : le pilote joue lui-même les cartes (sauf repli sur l'Auto du jeu pour cette page)
-      if (cfg.fightEngine === 'weights' && !useGameAuto) {
+      if (weightsOn() && !useGameAuto) {
         if (isOwner() && !weightedBusy) weightedFight();
         return progress();
       }
@@ -1728,11 +1731,20 @@
     }
   }
 
+  // Ajouts dans les pages du jeu, selon les modules activés (un module désactivé retire ses boutons).
+  function scanModules() {
+    if (modOn('autosell')) scanLockButtons(); else document.querySelectorAll('.dm-lock').forEach((el) => el.remove());
+    if (modOn('trade')) scanTradeButtons(); else { document.querySelectorAll('.dm-trade').forEach((el) => el.remove()); document.querySelector('.dm-queue')?.remove(); }
+    if (modOn('wanted')) highlightWanted();
+    if (modOn('fusion')) scanFuseButtons(); else document.querySelectorAll('.dm-fuse-all').forEach((el) => el.remove());
+    scanDeckButton();
+  }
+
   let lockScanQueued = false;
   const domObserver = new MutationObserver(() => {
     if (dead || lockScanQueued) return;
     lockScanQueued = true;
-    requestAnimationFrame(() => { lockScanQueued = false; scanLockButtons(); scanTradeButtons(); highlightWanted(); scanFuseButtons(); });
+    requestAnimationFrame(() => { lockScanQueued = false; scanModules(); });
   }).observe(document.documentElement, { childList: true, subtree: true });
 
   async function runAutosell(dryRun) {
@@ -2392,7 +2404,7 @@
           renderUi();
           while (Date.now() < until && !scanStop && cfg.wantedLoop) await sleep(1000);
         }
-      } while (cfg.wantedLoop && !scanStop);
+      } while (cfg.wantedLoop && !scanStop && modOn('wanted'));
     } catch (e) {
       scanMsg = `❌ ${e.message}`;
     } finally {
@@ -4174,7 +4186,7 @@
       const keepCasts = () => { try { sessionStorage.setItem('dmAutoCasts', JSON.stringify({ key: fightKey, casts })); } catch { /* rien */ } };
       let blocked = new Set(), blockedTurn = null, errors = 0;
       for (let i = 0; i < 400 && st.status === 'ongoing'; i++) {
-        if (!isOwner() || !cfg.botFight || cfg.fightEngine !== 'weights' || presenceDialog()) { reload = false; return; }
+        if (!isOwner() || !cfg.botFight || !weightsOn() || presenceDialog()) { reload = false; return; }
         if (st.currentId !== 'p') return fallback(`pas notre tour (${st.currentId})`);
         const p = st.fighters.p;
         if (blockedTurn !== p.turnNo) { blocked = new Set(); blockedTurn = p.turnNo; }
@@ -4224,20 +4236,21 @@
     ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
     ov.addEventListener('keydown', (e) => e.stopPropagation());
 
-    let cards, deckNo;
+    // toute la collection (une entrée par carte) + la composition de chaque deck
+    let all, decks, active;
     try {
       const { flight } = await fetchFlight('/deck');
       const { rows, props } = rscProps(flight, (x) => Array.isArray(x.collection) && 'initialDecks' in x);
       if (!props) throw new Error('Deck introuvable sur /deck');
       const res = (v) => rscResolve(rows, v);
-      deckNo = +res(props.initialActive) || 0;
-      const ids = new Set((res(res(props.initialDecks)?.[deckNo]) || []).map((k) => +String(k).split(':')[0]));
+      active = +res(props.initialActive) || 0;
+      decks = (res(props.initialDecks) || []).map((d) => (res(d) || []).map((k) => +String(k).split(':')[0]));
       const byId = new Map();
       for (const raw of props.collection) {
         const card = rscDeep(rows, res(raw)?.card);
-        if (card?.id && ids.has(card.id) && !byId.has(card.id)) byId.set(card.id, { ...card, name: card.n });
+        if (card?.id && !byId.has(card.id)) byId.set(card.id, { ...card, name: card.n });
       }
-      cards = [...byId.values()];
+      all = [...byId.values()].sort((a, b) => a.name.localeCompare(b.name, 'fr'));
     } catch (e) {
       ov.firstElementChild.textContent = `❌ ${e.message}`;
       return;
@@ -4247,19 +4260,34 @@
     const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:5px 10px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
     ov.innerHTML = `
       <div style="width:min(640px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
-        <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🎯 Poids des cartes — deck ${deckNo + 1}${DM.tip('Utilisé par le mode de combat « Auto par poids ». À chaque action, le pilote garde la combinaison de cartes jouables qui tient dans tes PA avec le plus gros total de poids, et joue la plus lourde en premier. 0 = jamais jouée. « Tous les » : au plus une fois tous les N tours (buffs qui durent) ; vide ou 0 = dès que possible. Les réglages sont par carte : ils suivent la carte si tu changes de deck.')}</b><button data-a="reset" style="${btn}" data-tip="Remet toutes les cartes aux valeurs par défaut : gain de PA 100, buffs 90 (relancés à la fin de leur durée), soins 80, dégâts selon leurs dégâts de base par PA, arme 30.">↺ Par défaut</button><button data-a="x" style="${btn};background:transparent">✕</button></div>
+        <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🎯 Poids des cartes${DM.tip('Utilisé par le mode de combat « Auto par poids ». À chaque action, le pilote garde la combinaison de cartes jouables qui tient dans tes PA avec le plus gros total de poids, et joue la plus lourde en premier. 0 = jamais jouée. « Tous les » : au plus une fois tous les N tours (buffs qui durent) ; vide ou 0 = dès que possible. Les réglages sont par carte : ils suivent la carte si tu changes de deck.')}</b><button data-a="reset" style="${btn}" data-tip="Remet les cartes affichées (et l’arme) aux valeurs par défaut : gain de PA 100, buffs 90 (relancés à la fin de leur durée), soins 80, dégâts selon leurs dégâts de base par PA, arme 30.">↺ Par défaut</button><button data-a="x" style="${btn};background:transparent">✕</button></div>
         <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:12px;color:#b9a98c">
           <label data-tip="Les cartes de soin ne sont jouées que si tes PV sont sous ce pourcentage.">Soigner sous <input data-o="autoHealBelow" type="number" min="0" max="100" style="${inp}"> % PV</label>
           <label data-tip="Pause aléatoire entre deux actions (carte ou fin de tour), en secondes.">Entre deux actions <input data-o="autoActMin" type="number" min="0" step="0.1" style="${inp}"> à <input data-o="autoActMax" type="number" min="0" step="0.1" style="${inp}"> s</label>
         </div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center" data-k="tabs"></div>
+        <input data-k="q" placeholder="Rechercher une carte…" style="${inp};width:100%;display:none">
         <div style="overflow-y:auto;display:flex;flex-direction:column;gap:4px" data-k="list"></div>
         <div style="font-size:12px;color:#b9a98c">Mode de combat actuel : <b data-k="engine"></b> (menu 🤖 → Activité → Combat).</div>
       </div>`;
     const $ = (q) => ov.querySelector(q);
+    let view = active;   // n° de deck affiché, ou 'all' (toute la collection)
+    const byId = new Map(all.map((c) => [c.id, c]));
+    const shown = () => {
+      if (view === 'all') {
+        const q = normName($('[data-k="q"]').value);
+        return all.filter((c) => !q || normName(c.name).includes(q));
+      }
+      return [...new Set(decks[view] || [])].map((id) => byId.get(id)).filter(Boolean);
+    };
     const render = () => {
       $('[data-k="engine"]').textContent = cfg.fightEngine === 'weights' ? 'Auto par poids' : 'Auto du jeu';
       for (const el of ov.querySelectorAll('[data-o]')) el.value = cfg[el.dataset.o] ?? '';
-      $('[data-k="list"]').innerHTML = [...cards, WEAPON].map((c) => {
+      $('[data-k="tabs"]').innerHTML = decks.map((d, i) => `<button data-v="${i}" style="${btn};${view === i ? 'background:#2e6fbf' : ''}"${d.length ? '' : ' disabled'}>Deck ${i + 1}${i === active ? ' ★' : ''}</button>`).join('')
+        + `<button data-v="all" style="${btn};${view === 'all' ? 'background:#2e6fbf' : ''}">Toute la collection (${all.length})</button>`;
+      $('[data-k="q"]').style.display = view === 'all' ? '' : 'none';
+      const list = shown();
+      $('[data-k="list"]').innerHTML = (list.length ? [...list, WEAPON] : []).map((c) => {
         const weapon = c === WEAPON;
         const { w, every, own } = weightOf(c, weapon);
         const kind = weapon ? '🗡️ arme' : KIND_LABEL[cardKind(c)];
@@ -4268,16 +4296,17 @@
           <label style="font-size:12px;color:#b9a98c">Poids <input data-w="${esc(c.id)}" type="number" min="0" max="100" value="${w}" style="${inp}"></label>
           <label style="font-size:12px;color:#b9a98c">tous les <input data-e="${esc(c.id)}" type="number" min="0" max="20" value="${every || ''}" placeholder="—" style="${inp};width:52px"> tours</label>
         </div>`;
-      }).join('');
+      }).join('') || '<div style="color:#b9a98c">Aucune carte.</div>';
     };
     render();
     DM.installTips(ov);
+    $('[data-k="q"]').addEventListener('input', render);
     const setCard = (id, patch) => {
-      const all = { ...(cfg.cardWeights || {}) };
-      const card = id === WEAPON_KEY ? WEAPON : cards.find((c) => String(c.id) === id);
+      const w = { ...(cfg.cardWeights || {}) };
+      const card = id === WEAPON_KEY ? WEAPON : byId.get(+id);
       const cur = weightOf(card, id === WEAPON_KEY);
-      all[id] = { w: cur.w, every: cur.every, ...patch };
-      save({ cardWeights: all });
+      w[id] = { w: cur.w, every: cur.every, ...patch };
+      save({ cardWeights: w });
     };
     ov.addEventListener('change', (e) => {
       const t = e.target;
@@ -4288,16 +4317,33 @@
       render();
     });
     ov.addEventListener('click', (e) => {
+      const v = e.target.closest('[data-v]')?.dataset.v;
+      if (v != null) { view = v === 'all' ? 'all' : +v; render(); if (view === 'all') $('[data-k="q"]').focus(); return; }
       const a = e.target.closest('[data-a]')?.dataset.a;
       if (a === 'x') close();
-      if (a === 'reset') {
-        const all = { ...(cfg.cardWeights || {}) };
-        for (const c of cards) delete all[c.id];
-        delete all[WEAPON_KEY];
-        save({ cardWeights: all });
+      if (a === 'reset') {   // cartes affichées (deck ou collection) + arme
+        const w = { ...(cfg.cardWeights || {}) };
+        for (const c of shown()) delete w[c.id];
+        delete w[WEAPON_KEY];
+        save({ cardWeights: w });
         render();
       }
     });
+  }
+
+  // Bouton « 🎯 Poids des cartes » sur la page /deck (module Auto par poids).
+  function scanDeckButton() {
+    let b = document.querySelector('.dm-deck-weights');
+    if (!location.pathname.startsWith('/deck') || !modOn('weights')) { b?.remove(); return; }
+    if (b) return;
+    b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'dm-deck-weights';
+    b.textContent = '🎯 Poids des cartes';
+    b.title = 'Autopilot-DM : priorité de chaque carte pour l’Auto par poids';
+    b.style.cssText = 'position:fixed;right:16px;bottom:80px;z-index:2147483000;padding:9px 14px;border-radius:10px;border:1px solid #c9a24a;background:#2a231a;color:#f0d78c;font:700 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 4px 16px #000a';
+    b.addEventListener('click', () => openCardWeights());
+    document.body.appendChild(b);
   }
 
   // ---------- Bulle en bas à gauche + menu (pilote, chasse, autosell) ----------
@@ -4397,14 +4443,16 @@
             </div>
             <div class="muted" style="margin-top:4px">Astuce : clique toi-même sur « Attaquer » dans n’importe quelle zone, le pilote relancera ce groupe en Auto.</div>
           </div>
+          <div data-mod="weights">
           <div class="muted" style="margin:6px 0 4px">Combat${DM.tip("Auto du jeu : le bouton Auto du site (animations à vitesse ×1).\nAuto par poids : le pilote joue lui-même les cartes selon tes poids (🎯), sans animation, avec une courte pause entre deux actions. Récompenses entières, comme l’Auto du jeu.")}</div>
           <div class="seg" style="grid-template-columns:1fr 1fr">
             <button data-engine="game">Auto du jeu</button>
             <button data-engine="weights">Auto par poids</button>
           </div>
-          <button data-k="weights" style="margin-top:4px" data-tip="Régler la priorité de chaque carte de ton deck actif pour l’Auto par poids.">🎯 Poids des cartes</button>
+          <button data-k="weights" style="margin-top:4px;width:100%" data-tip="Régler la priorité de chaque carte (decks et collection) pour l’Auto par poids.">🎯 Poids des cartes</button>
+          </div>
         </div>
-        <div class="sec">
+        <div class="sec" data-mod="autosell">
           <div class="head"><span>🧹 Autosell${DM.tip("Vend au marchand, en un clic, tous les objets non équipés sauf ceux que tu conserves. 1er clic : aperçu ; 2e clic dans les 8 s : vente.")}</span></div>
           <div class="muted">Vend les objets non équipés (familiers, dofus, Rayonnants et objets 🔒 conservés).</div>
           <label class="check"><input type="checkbox" data-k="keepAbove"> Garder les objets au-dessus de mon niveau${DM.tip("Ne vend pas les objets d’un niveau supérieur à ton personnage : tu pourras les porter plus tard.")}</label>
@@ -4417,7 +4465,7 @@
             <ul class="locks" data-k="locks"></ul>
           </details>
         </div>
-        <div class="sec">
+        <div class="sec" data-mod="fusion">
           <div class="head"><span>✨ Fusion${DM.tip("3 exemplaires d’un même objet au même tier → 1 exemplaire du tier suivant (+10 % de stats), jusqu’au tier Rayonnant. Les objets portés ne sont pas touchés.")}</span><span class="muted">3 identiques → tier +1</span></div>
           <div class="row">
             <button data-k="fuseScan" style="flex:1" data-tip="Liste les objets que tu peux fusionner, avec le résultat des fusions en cascade.">Chercher les doublons</button>
@@ -4426,7 +4474,7 @@
           <div class="status" data-k="fuseMsg"></div>
           <ul class="fuse" data-k="fuseList"></ul>
         </div>
-        <div class="sec">
+        <div class="sec" data-mod="equip">
           <div class="head"><span>🛡️ Auto-équipement${DM.tip("Équipe automatiquement les meilleurs objets de ton inventaire selon jusqu’à 5 caractéristiques par ordre de priorité. La 1re compte pleinement, la 2e pour 35 %, la 3e pour 15 %, puis les 4e et 5e (facultatives) pour 8 % et 4 % : elles départagent les objets proches. Un emplacement vide est toujours rempli, même par un objet sans ces stats. Chaque stat est comparée au meilleur objet du même type (ex. meilleur chapeau). Les bonus de panoplie ne sont pas pris en compte.")}</span></div>
           <div class="seg eqmode">
             <button data-eqmode="off" data-tip="Pas de vérification automatique : utilise Aperçu / Équiper ci-dessous.">Off</button>
@@ -4450,11 +4498,11 @@
           <div class="status" data-k="eqMsg"></div>
           <ul class="eqplan" data-k="eqPlan"></ul>
         </div>
-        <div class="sec">
+        <div class="sec" data-mod="tools">
           <div class="head"><span>📚 Tierlist des sorts${DM.tip("Classe tous tes sorts à dégâts : dégâts totaux (toutes lignes et éléments additionnés), dégâts par PA ou coût en PA, avec filtres cible unique / zone et par élément. Le cadenas met un sort en favori sur le site.")}</span></div>
-          <div class="row"><button data-k="spells" style="flex:1">Ouvrir la tierlist</button><button data-k="build" style="flex:1" data-tip="Cherche l’équipement qui maximise tes dégâts sur un tour (sorts, PA, panoplies, prestige ; HDV en option).">🧬 Optimiser mon build</button></div>
+          <div class="row"><button data-k="spells" data-mod="spells" style="flex:1">Ouvrir la tierlist</button><button data-k="build" data-mod="build" style="flex:1" data-tip="Cherche l’équipement qui maximise tes dégâts sur un tour (sorts, PA, panoplies, prestige ; HDV en option).">🧬 Optimiser mon build</button></div>
         </div>
-        <div class="sec">
+        <div class="sec" data-mod="wanted">
           <div class="head"><span>🎯 Avis de recherche${DM.tip("Parcourt toutes les zones de chasse et repère les groupes contenant des monstres recherchés. Chaque trouvaille s’affiche ici et peut être envoyée sur Discord.")}</span><span class="muted" data-k="scanAge"></span></div>
           <div class="row">
             <button data-k="scan" style="flex:1" data-tip="Scanne toutes les zones dans la plage de niveaux choisie (les groupes changent toutes les ~3 min).">Scanner les zones</button>
@@ -4478,7 +4526,7 @@
         </div>
       </div>
       <div class="bubble" title="Autopilot-DM">🤖</div>
-      <div class="bubble fav" title="Favoris : builds enregistrés et objets à looter">❤️</div>`;
+      <div class="bubble fav" data-mod="build" title="Favoris : builds enregistrés et objets à looter">❤️</div>`;
     DM.installTips(root);
     const $ = (k) => root.querySelector(`[data-k="${k}"]`);
     const panel = root.querySelector('.panel');
@@ -4721,7 +4769,7 @@
 
   async function autoEquipTick(force = false) {
     const mode = cfg.equipAuto || 'off';
-    if (dead || mode === 'off' || eqAutoBusy || equipBusy || !equipStats()[0] || eqAsk?.host.isConnected) return;
+    if (dead || mode === 'off' || !modOn('equip') || eqAutoBusy || equipBusy || !equipStats()[0] || eqAsk?.host.isConnected) return;
     const path = location.pathname;
     if (/^\/(inventaire|connexion)/.test(path) || (path.startsWith('/combat') && !endTitle())) return;
     if (!isOwner() && document.visibilityState !== 'visible') return;   // onglet du pilote, ou onglet affiché
@@ -4982,6 +5030,11 @@
 
     for (const b of ui.root.querySelectorAll('[data-mode]')) b.classList.toggle('on', b.dataset.mode === cfg.mode);
     for (const b of ui.root.querySelectorAll('[data-engine]')) b.classList.toggle('on', b.dataset.engine === (cfg.fightEngine || 'game'));
+    // modules désactivés dans la popup : leurs sections du menu sont masquées
+    for (const el of ui.root.querySelectorAll('[data-mod]')) {
+      const k = el.dataset.mod;
+      el.style.display = (k === 'tools' ? modOn('spells') || modOn('build') : modOn(k)) ? '' : 'none';
+    }
     $('zoneBox').style.display = hunt ? '' : 'none';
     $('groupInfo').textContent = cfg.huntGroup ? `Groupe ${cfg.huntGroup} (choisi en jeu)` : 'Groupe le plus dur';
     $('groupReset').style.display = cfg.huntGroup ? '' : 'none';
@@ -5063,8 +5116,9 @@
     if (Object.keys(ch).every((k) => k === 'debugLog')) return;   // journal : rien à mettre à jour
     for (const k in ch) cfg[k] = ch[k].newValue;
     if (ch.enabled?.newValue) progress();
-    if (ch.lockedItems) scanLockButtons();
-    if (ch.tradeQueues || ch.tradeHistory || ch.tradeLastRun) renderQueue();
+    if (ch.lockedItems && modOn('autosell')) scanLockButtons();
+    if (ch.modules) scanModules();
+    if ((ch.tradeQueues || ch.tradeHistory || ch.tradeLastRun) && modOn('trade')) renderQueue();
     renderUi();
   });
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {

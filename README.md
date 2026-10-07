@@ -22,11 +22,15 @@ En secours, tu peux aussi double-cliquer **`mettre-a-jour.bat`** dans le dossier
 
 Tes réglages (webhook Discord, objets verrouillés, file d'échange…) sont conservés : ils sont stockés dans Chrome, pas dans le dossier.
 
+## Modules
+
+Dans la popup de l'extension (icône en haut à droite de Chrome), bloc **Modules** : coche ou décoche chaque module (Auto par poids, Autosell, Fusion, Auto-équipement, Tierlist, Optimiseur, Avis de recherche, Échange entre comptes). Un module décoché disparaît du menu 🤖 en jeu et ses boutons sont retirés des pages du jeu. Le pilote (aventure, chasse, ascension) est toujours là.
+
 ## Auto par poids
 
 Menu 🤖 → Activité → **Combat** : **Auto du jeu** (le bouton Auto du site) ou **Auto par poids** : le pilote joue lui-même les cartes, sans animation, avec une courte pause aléatoire entre deux actions (réglable).
 
-**🎯 Poids des cartes** règle chaque carte du deck actif (et l'arme) : à chaque action, le pilote garde la combinaison de cartes jouables qui tient dans tes PA avec le plus gros total de poids, et joue la plus lourde en premier. Poids **0** = jamais jouée ; **tous les N tours** = au plus une fois tous les N tours (pour les buffs qui durent). Les soins ne sont joués que sous un seuil de PV. Cible : l'ennemi qui a le moins de PV. Par défaut : gain de PA 100, buffs 90 (relancés à la fin de leur durée), soins 80, dégâts selon leurs dégâts de base par PA, arme 30. En cas de souci (état illisible, réponse inattendue), le combat repasse sur l'Auto du jeu.
+**🎯 Poids des cartes** (menu 🤖, ou bouton en bas à droite de la page `/deck`) règle chaque carte, deck par deck ou dans toute la collection (avec recherche), et l'arme : à chaque action, le pilote garde la combinaison de cartes jouables qui tient dans tes PA avec le plus gros total de poids, et joue la plus lourde en premier. Poids **0** = jamais jouée ; **tous les N tours** = au plus une fois tous les N tours (pour les buffs qui durent). Les soins ne sont joués que sous un seuil de PV. Cible : l'ennemi qui a le moins de PV. Par défaut : gain de PA 100, buffs 90 (relancés à la fin de leur durée), soins 80, dégâts selon leurs dégâts de base par PA, arme 30. En cas de souci (état illisible, réponse inattendue), le combat repasse sur l'Auto du jeu.
 
 ## Auto-équipement
 

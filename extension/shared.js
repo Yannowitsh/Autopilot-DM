@@ -35,6 +35,7 @@ const DM = {
     autoHealBelow: 70,   // auto par poids : cartes de soin jouées seulement sous ce % de PV
     autoActMin: 0.8,     // auto par poids : pause entre deux actions (s)
     autoActMax: 1.5,
+    modules: {},         // modules désactivés dans la popup : { clé: false } (absent = activé)
     huntRetries: 3,      // chasse (avis de recherche…) : nouveaux essais après une défaite avant arrêt
     errorReloadSec: 5,   // page d'erreur du site (508 « Resource Limit Is Reached », 5xx…) : rechargée après N s
     reloadGapSec: 30,    // anti-blocage : au plus un rechargement toutes les N s
@@ -55,6 +56,21 @@ const DM = {
     updateCheckMin: 180, // vérification d'une nouvelle version sur GitHub, en minutes (0 = jamais automatiquement)
     wins: 0,
     losses: 0,
+  },
+
+  // Modules activables depuis la popup de l'extension ; un module désactivé disparaît du menu 🤖 et des pages du jeu.
+  MODULES: [
+    { key: 'weights', label: '🎯 Auto par poids', tip: 'Choix du mode de combat (Auto du jeu / Auto par poids) et réglage du poids des cartes, aussi depuis la page /deck. Désactivé : le pilote utilise l’Auto du jeu.' },
+    { key: 'autosell', label: '🧹 Autosell', tip: 'Vente au marchand de l’inventaire non équipé, et boutons 🔒 Verrouiller sur /inventaire.' },
+    { key: 'fusion', label: '✨ Fusion', tip: 'Fusion des doublons en cascade, et bouton ⚡ Tout fusionner sur la fiche d’objet de /inventaire.' },
+    { key: 'equip', label: '🛡️ Auto-équipement', tip: 'Équipement automatique des meilleurs objets selon tes caractéristiques (Off / Semi / Auto).' },
+    { key: 'spells', label: '📚 Tierlist des sorts', tip: 'Classement des sorts de ta collection par dégâts.' },
+    { key: 'build', label: '🧬 Optimiseur de build', tip: 'Recherche du meilleur équipement, builds enregistrés et bulle ❤️ Favoris.' },
+    { key: 'wanted', label: '🎯 Avis de recherche', tip: 'Scan des zones de chasse pour trouver les monstres recherchés, et surlignage dans les zones.' },
+    { key: 'trade', label: '🔁 Échange entre comptes', tip: 'Boutons 🔁 Échanger / ➕ File et file d’échange sur /inventaire et l’HDV.' },
+  ],
+  modOn(s, key) {
+    return s?.modules?.[key] !== false;
   },
 
   // Raretés du jeu : champ « r » des objets (0 = Commun … 5 = Légendaire), même ordre que le filtre de /inventaire.

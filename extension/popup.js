@@ -164,6 +164,32 @@ async function renderNotifs() {
 $('bossPreAlertMin').onchange = () => chrome.storage.local.set({ bossPreAlertMin: Math.max(0, Number($('bossPreAlertMin').value) || 0) });
 renderNotifs();
 
+// Modules : une case par module (DM.MODULES), enregistrée immédiatement ; le bloc Autosell suit son module.
+async function renderModules() {
+  const s = await DM.getAll();
+  const box = $('modules');
+  box.textContent = '';
+  for (const m of DM.MODULES) {
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = DM.modOn(s, m.key);
+    cb.onchange = async () => {
+      const modules = { ...((await DM.getAll()).modules || {}) };
+      if (cb.checked) delete modules[m.key]; else modules[m.key] = false;
+      await chrome.storage.local.set({ modules });
+      $('sellPanel').hidden = !DM.modOn({ modules }, 'autosell');
+    };
+    const text = document.createElement('span');
+    text.innerHTML = DM.tip(m.tip);
+    text.prepend(m.label);
+    label.append(text, cb);
+    box.appendChild(label);
+  }
+  $('sellPanel').hidden = !DM.modOn(s, 'autosell');
+}
+renderModules();
+
 chrome.storage.onChanged.addListener(render);
 chrome.runtime.sendMessage({ type: 'refreshBoss' }).then(render);
 chrome.runtime.sendMessage({ type: 'checkUpdate' }).then(render);
