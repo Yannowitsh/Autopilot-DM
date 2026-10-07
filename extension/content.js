@@ -1974,6 +1974,34 @@
     return done;
   }
 
+  // Fusion ciblée (liste de courses du farm de drop) : seulement les objets de `targets` (id → tier voulu, 1 à 5), en cascade
+  // depuis le tier de base, jamais au-delà du tier voulu. Exemplaires de l'inventaire seulement (pas l'objet porté).
+  // Les autres objets ne sont pas touchés (contrairement à « Tout fusionner »). → nombre de fusions faites.
+  async function fuseTowards(targets) {
+    if (!targets.size) return 0;
+    const { entries, chunks } = await fetchInventory();
+    fuseChunks = chunks;
+    const items = [];
+    for (const [id, tier] of targets) {
+      const top = Math.min(FUSION_MAX, tier - 1);   // fusion visée (T2 = 1)
+      const t = {};
+      for (const e of entries) if (e.id === id) t[e.fusion || 0] = (t[e.fusion || 0] || 0) + e.qty;
+      const steps = [];
+      for (let f = 0; f < top; f++) {
+        while ((t[f] || 0) >= FUSE_COPIES) { steps.push(f); t[f] -= FUSE_COPIES; t[f + 1] = (t[f + 1] || 0) + 1; }
+      }
+      if (steps.length) items.push({ id, name: entries.find((e) => e.id === id)?.name || `objet ${id}`, steps });
+    }
+    if (!items.length) return 0;
+    try {
+      return await fuseItems(items);
+    } catch (e) {
+      fuseActionId = null;   // l'ID a peut-être changé : relu au prochain essai
+      DM.log(`fusion ciblée : ${e.message}`);
+      return 0;
+    }
+  }
+
   // Bouton « ⚡ Tout fusionner » sous le bouton du jeu « Fusionner 3 → Tiers 2 (130/3) » (fiche d'objet de /inventaire) :
   // enchaîne toutes les fusions possibles à ce tier (130/3 → 43), sans cascade vers les tiers suivants. 2e clic = confirmation.
   // Le jeu désactive son bouton (objet verrouillé, pas assez d'exemplaires) : le nôtre suit.
@@ -4327,6 +4355,8 @@
       try { tiers = JSON.parse(localStorage.getItem(DROP_TIERS_KEY) || '{}'); } catch { /* stockage indisponible */ }
       const inCart = new Set(cart.map((c) => c.id));
       $('[data-k="cart"]').innerHTML = `<div style="display:flex;align-items:center;gap:8px"><b style="font-size:13px;flex:1">🛒 Liste de courses${cart.length ? ` (${cart.length})` : ''}</b>
+          ${cart.length ? `<label style="font-size:12px;color:#b9a98c;display:flex;align-items:center;gap:4px" title="Pendant le farm de drop (toutes les 5 min, entre deux combats) et à la fin : 3 exemplaires d’un objet de la liste → tier suivant, jusqu’au tier voulu. Les autres objets ne sont jamais fusionnés."><input type="checkbox" data-a="autoFuse"${cfg.dropAutoFuse !== false ? ' checked' : ''}> fusion auto</label>
+          <button data-a="fuseCart" style="${btn}" title="Fusionne maintenant les objets de la liste jusqu’à leur tier voulu (seulement ceux-là)">⚡ Fusionner la liste</button>` : ''}
           <button data-a="drop" style="${btn};background:#6a3fa0" title="Ouvre la liste de courses complète : objets du build et favoris, tiers voulus, exemplaires déjà possédés, puis lancer le farm">🐉 ${cart.length ? 'Modifier / lancer le farm' : 'Composer la liste'}</button></div>`
         + (cart.length ? cart.map((c) => `<div style="display:flex;gap:8px;align-items:center;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:4px 8px">
           ${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:24px;height:24px;object-fit:contain">` : ''}
@@ -4345,6 +4375,9 @@
         : '<div style="color:#b9a98c">Aucun objet favori : dans l’optimiseur de build, clique sur le cœur ♡ à côté d’un objet.</div>';
     };
     render();
+    ov.addEventListener('change', (e) => {
+      if (e.target.dataset.a === 'autoFuse') save({ dropAutoFuse: e.target.checked });
+    });
     ov.addEventListener('click', async (e) => {
       if (e.target.closest('[data-a="x"]')) return close();
       if (e.target.closest('[data-a="drop"]')) {
@@ -4352,6 +4385,20 @@
         let r = null;
         try { const last = lastBuild(); if (last) r = unpackBuild(last.data); } catch { /* pas de dernière recherche */ }
         openDropFarm(r);
+        return;
+      }
+      const fz = e.target.closest('[data-a="fuseCart"]');
+      if (fz) {
+        let tiers = {};
+        try { tiers = JSON.parse(localStorage.getItem(DROP_TIERS_KEY) || '{}'); } catch { /* idem */ }
+        fz.disabled = true;
+        fz.textContent = 'Fusion…';
+        try {
+          const n = await fuseTowards(new Map((cfg.dropCart || []).map((c) => [c.id, tiers[c.id] || 1])));
+          say(n ? `⚡ ${n} fusion(s) faite(s) vers les tiers voulus.` : 'Rien à fusionner : pas 3 exemplaires d’un même tier en dessous du tier voulu.');
+        } catch (err) { say(`❌ ${err.message}`); }
+        fz.disabled = false;
+        fz.textContent = '⚡ Fusionner la liste';
         return;
       }
       const unc = e.target.closest('[data-uncart]');
@@ -4679,6 +4726,10 @@
     });
     const before = cur.items.filter((it) => it.got < it.need).length;
     await save({ dropRun: { ...cur, items, syncAt: Date.now() } });
+    if (cfg.dropAutoFuse !== false) {   // 3 exemplaires → tier suivant, jusqu'au tier voulu (objets de la liste seulement)
+      const n = await fuseTowards(new Map(items.map((it) => [it.id, it.tier || 1])));
+      if (n) DM.log(`farm de drop : ${n} fusion(s) vers les tiers voulus`);
+    }
     for (const it of items) {
       const old = cur.items.find((x) => x.id === it.id);
       if (it.got >= it.need && old && old.got < old.need) notify('drop', `🐉 **${it.name}** : ${it.got}/${it.need} ✔ (trouvé dans l’inventaire)`);
@@ -4715,6 +4766,9 @@
   async function dropEnd(status, msg) {
     const run = cfg.dropRun;
     if (!run) return;
+    if (cfg.dropAutoFuse !== false) {
+      try { await fuseTowards(new Map(run.items.map((it) => [it.id, it.tier || 1]))); } catch { /* fusion facultative */ }
+    }
     const prev = run.prev || {};
     await save({ dropRun: { ...run, active: false, endedAt: Date.now() }, enabled: false, paused: false, botFight: false, status,
       mode: prev.mode || cfg.mode, huntZone: prev.huntZone ?? null, huntZoneName: prev.huntZoneName || '', huntGroup: prev.huntGroup ?? null, huntTarget: null });
