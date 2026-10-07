@@ -48,6 +48,7 @@
     quiet(() => clearInterval(ticker));
     quiet(() => clearInterval(aliveTimer));
     quiet(() => clearInterval(eqTimer));
+    quiet(() => clearInterval(lockTimer));
     quiet(() => eqAsk?.host.remove());
     quiet(() => domObserver.disconnect());
     quiet(() => ui?.host.remove());
@@ -797,9 +798,9 @@
 
     const entries = props.entries.map((e) => {
       const item = rscResolve(rows, e.item) || {};
-      return { id: item.id, name: item.n, lvl: item.lvl, slot: item.s, rarity: item.r, fusion: e.fusion, qty: e.qty };
+      return { id: item.id, name: item.n, lvl: item.lvl, slot: item.s, rarity: item.r, fusion: e.fusion, qty: e.qty, locked: !!e.locked };
     }).filter((e) => Number.isInteger(e.id) && e.qty > 0);
-    return { entries, chunks, level: +props.level || null };
+    return { entries, chunks, level: +props.level || null, lockable: props.lockable !== false };
   }
 
   // L'ID d'une server action change à chaque déploiement : on le relit dans les chunks JS de la page.
@@ -849,13 +850,18 @@
 
   // dryRun = true : renvoie seulement ce qui serait vendu.
   async function autosell(dryRun) {
+    // cadenas à jour d'abord (équipements enregistrés, liste de drops…) ; à défaut, les derniers verrous connus
+    let sync = null;
+    try { sync = await syncLocks({ force: true }); } catch (e) { DM.log(`autosell : synchro des verrous impossible (${e.message})`); }
     const { entries, chunks, level } = await fetchInventory();
     const keepAbove = cfg.sellKeepAbove !== false;
     if (keepAbove && !level) throw new Error('Niveau du personnage illisible : vente annulée');
-    const locked = cfg.lockedItems || {};
+    const ls = lockStateOf();
+    const locked = sync?.want || new Set([...Object.keys(ls ? ls.manual : cfg.lockedItems || {}),
+      ...Object.keys(ls?.auto || {}).filter((k) => !ls.optOut?.[k])]);
     const keepRar = new Set(cfg.sellKeepRarities || []);
     // Raison de garder un objet (par ordre de priorité), ou null s'il est vendable.
-    const keepReason = (e) => locked[DM.lockKey(e.name, e.lvl)] ? 'locked'
+    const keepReason = (e) => e.locked || locked.has(DM.lockKey(e.name, e.lvl)) ? 'locked'
       : NEVER_SELL_SLOTS.has(e.slot) ? 'slot'
       : keepRar.has(e.rarity) ? 'rarity'
       : e.fusion >= FUSION_MAX ? 'radiant'
@@ -883,59 +889,166 @@
     return { ok: true, count: sold, estimate, ...info, kamas };
   }
 
-  // ---------- Verrou d'objets (interne à l'extension) ----------
-  // Sur /inventaire, le panneau d'un objet contient « Vendre au marchand » : on ajoute un bouton 🔒 à côté de « Vendre ».
-  // Clé = nom + niveau (le panneau n'affiche pas l'ID) : le verrou couvre tous les tiers de fusion de l'objet.
-  function itemFromSellBox(box) {
-    let panel = box.parentElement;
-    while (panel && !panel.querySelector('.title.leading-tight')) panel = panel.parentElement;
-    const title = panel?.querySelector('.title.leading-tight');
-    if (!title) return null;
-    const name = [...title.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join('').trim();
-    const lvl = +([...panel.querySelectorAll('span')].map((s) => s.textContent.match(/^Niveau (\d+)$/)).find(Boolean)?.[1] || 0);
-    return name ? { name, lvl } : null;
-  }
+  // ---------- Verrou d'objets : cadenas du jeu, synchronisé avec l'extension ----------
+  // Server action « setItemLock(itemId, fusion, verrouillé) » (/inventaire) : le jeu pose le cadenas par pile (objet + tier).
+  // Objet verrouillé : ni vendu, ni brisé, ni fusionné, ni mis à l'HDV. L'extension raisonne par objet (clé nom + niveau) :
+  // tous ses tiers suivent. État par personnage (le stockage est commun aux deux comptes) : cfg.lockState[nom] = {
+  //   manual:  { clé: { name, lvl } }        cadenas mis à la main (en jeu ou ici) : jamais retirés automatiquement
+  //   auto:    { clé: { name, lvl, src } }   objets des équipements enregistrés (/personnage) et de la liste de drops
+  //   optOut:  { clé: 1 }                    objets « auto » déverrouillés à la main : plus reverrouillés tant qu'ils y restent
+  //   seen:    ['id|fusion', …]              piles verrouillées à la dernière lecture : repère les cadenas ouverts / fermés en jeu
+  //   presets: [{ slot, name, items }]       équipements enregistrés à la dernière lecture (noms d'objets, sans ID)
+  //   syncAt }
+  // Cadenas fermé en jeu sur un objet que rien ne verrouille → verrou « à la main » (tous les tiers) ; cadenas ouvert en jeu →
+  // tout l'objet est déverrouillé. Objet sorti des équipements enregistrés / de la liste de drops → déverrouillé, sauf s'il
+  // était verrouillé à la main.
+  const LOCK_ACTION_FALLBACK = '705e9898422cc41c27d2a949ae2d46fa5df960a549';
+  const LOCK_SYNC_MS = 5 * 60000;
+  let lockActionId = null, lockSyncTimer = null, lockTimer = null;
+  const lockStateOf = () => cfg.lockState?.[myName() || '?'] || null;
+  const stackKey = (id, f) => `${id}|${f || 0}`;
+  const nameKey = (s) => String(s || '').trim().toLowerCase();
 
-  function scanLockButtons() {
-    if (!location.pathname.startsWith('/inventaire')) return;
-    for (const label of document.querySelectorAll('div.text-sm.text-muted')) {
-      if (label.textContent.trim() !== 'Vendre au marchand') continue;
-      const box = label.parentElement;
-      const row = label.nextElementSibling;
-      const item = row && itemFromSellBox(box);
-      if (!item) continue;
-      const key = DM.lockKey(item.name, item.lvl);
-      let btn = row.querySelector('.dm-lock');
-      if (!btn) {
-        btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'dm-lock btn !py-1.5 text-sm';
-        btn.addEventListener('click', (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const k = btn.dataset.key;
-          const lockedItems = { ...(cfg.lockedItems || {}) };
-          if (lockedItems[k]) delete lockedItems[k];
-          else lockedItems[k] = { name: btn.dataset.name, lvl: +btn.dataset.lvl };
-          save({ lockedItems });
-          paintLock(btn);
-        });
-        row.appendChild(btn);
-      }
-      Object.assign(btn.dataset, { key, name: item.name, lvl: item.lvl });
-      paintLock(btn);
+  async function setItemLock(id, fusion, on) {
+    if (!lockActionId) lockActionId = await findAction((await fetchFlight('/inventaire')).chunks, 'setItemLock', LOCK_ACTION_FALLBACK);
+    try {
+      await callAction('inventaire', lockActionId, [id, fusion || 0, !!on]);
+    } catch (e) {
+      if (!e.game) lockActionId = null;   // l'ID a peut-être changé : relu au prochain appel
+      throw e;
     }
   }
 
-  function paintLock(btn) {
-    const on = !!cfg.lockedItems?.[btn.dataset.key];
-    const text = on ? '🔒 Verrouillé' : '🔓 Verrouiller';
-    if (btn.textContent !== text) btn.textContent = text;
-    btn.dataset.tip = on ? 'Protégé de l’Autosell (extension) — cliquer pour déverrouiller' : 'Empêcher l’Autosell de vendre cet objet';
-    btn.style.cssText = on
-      ? 'background:#b07400;color:#fff;border-color:#b07400;white-space:nowrap'
-      : 'background:transparent;white-space:nowrap';
+  // Note une pile (dé)verrouillée par l'extension elle-même (fusion…), pour ne pas la prendre pour un clic en jeu.
+  function lockSeen(id, fusion, on) {
+    const me = myName(), st = cfg.lockState?.[me];
+    if (!st?.seen) return;
+    const seen = new Set(st.seen);
+    if (on) seen.add(stackKey(id, fusion)); else seen.delete(stackKey(id, fusion));
+    return save({ lockState: { ...cfg.lockState, [me]: { ...st, seen: [...seen] } } });
   }
+
+  // Équipements enregistrés de /personnage (composant GearPresets) ; null si illisibles (on garde alors la dernière lecture).
+  async function fetchPresets() {
+    const { flight } = await fetchFlight('/personnage');
+    const { props } = rscProps(flight, (x) => Array.isArray(x.presets));
+    return props && props.presets.map((p) => ({ slot: p.slot, name: String(p.name || `Équipement ${(+p.slot || 0) + 1}`), items: (p.items || []).filter(Boolean) }));
+  }
+
+  // Synchronise les cadenas du jeu et l'état de l'extension. `unlock` : clés à déverrouiller (✕ dans le menu de l'extension) ;
+  // `ifStale` : seulement si la dernière synchro a plus de LOCK_SYNC_MS. Une seule synchro à la fois par profil de navigateur
+  // (Web Locks : les onglets d'un même compte ne se marchent pas dessus ; la navigation privée a les siens).
+  // → { want: Set des clés à protéger, locked, unlocked } ; null si rien n'a été fait (personnage inconnu, synchro récente).
+  function syncLocks(opts = {}) {
+    const asked = Date.now();
+    const run = () => doSyncLocks({ ...opts, asked });
+    return navigator.locks?.request ? navigator.locks.request('dm-item-locks', run) : run();
+  }
+
+  async function doSyncLocks({ unlock, asked = 0, ifStale = false, force = false, reload = false }) {
+    const me = myName();
+    if (!me) return null;
+    const prev = cfg.lockState?.[me];
+    if (ifStale && Date.now() - (prev?.syncAt || 0) < LOCK_SYNC_MS) return null;   // un autre onglet vient de le faire
+    if (!force && !unlock && !ifStale && (prev?.syncAt || 0) > asked) return null;   // idem, depuis la demande
+    const [inv, presets] = await Promise.all([fetchInventory(),
+      fetchPresets().catch((e) => { DM.log(`verrous : équipements enregistrés illisibles (${e.message})`); return null; })]);
+    const cur = cfg.lockState?.[me];
+    // 1re synchro de ce personnage : on reprend les verrous de l'extension (avant la 1.79, communs aux deux comptes)
+    const st = cur ? { manual: { ...cur.manual }, auto: { ...cur.auto }, optOut: { ...cur.optOut }, seen: cur.seen, presets: cur.presets || [] }
+      : { manual: { ...(cfg.lockedItems || {}) }, auto: {}, optOut: {}, seen: null, presets: [] };
+    if (presets) st.presets = presets;
+    const inPreset = new Map();   // nom d'objet → équipements enregistrés qui le contiennent
+    for (const p of st.presets) for (const n of p.items) inPreset.set(nameKey(n), [...new Set([...(inPreset.get(nameKey(n)) || []), p.name])]);
+    const cart = cfg.dropLockCart !== false ? cfg.dropCart || [] : [];
+    const cartIds = new Set(cart.map((c) => c.id)), cartNames = new Set(cart.map((c) => nameKey(c.name)));
+    const sourcesOf = (e) => [...(inPreset.get(nameKey(e.name)) || []).map((n) => `équipement « ${n} »`), ...(cartIds.has(e.id) ? ['liste de drops'] : [])];
+    const seen = st.seen && new Set(st.seen);
+    const groups = new Map();
+    for (const e of inv.entries) {
+      const k = DM.lockKey(e.name, e.lvl);
+      if (!groups.has(k)) groups.set(k, { name: e.name, lvl: e.lvl, stacks: [] });
+      groups.get(k).stacks.push(e);
+    }
+    const toLock = [], toUnlock = [], want = new Set();
+    for (const [k, g] of groups) {
+      const locked = g.stacks.filter((e) => e.locked);
+      const src = sourcesOf(g.stacks[0]);
+      // cadenas ouvert en jeu (pile verrouillée à la dernière lecture, toujours là mais ouverte), ou ✕ dans l'extension
+      if (unlock?.has(k) || (seen && g.stacks.some((e) => !e.locked && seen.has(stackKey(e.id, e.fusion))))) {
+        if (st.manual[k] || (st.auto[k] && !st.optOut[k])) DM.log(`verrous : ${g.name} déverrouillé à la main`);
+        delete st.manual[k];
+        if (src.length) { st.auto[k] = { name: g.name, lvl: g.lvl, src }; st.optOut[k] = 1; } else delete st.auto[k];
+        toUnlock.push(...locked);
+        continue;
+      }
+      const autoOn = src.length > 0 && !st.optOut[k];
+      // cadenas fermé en jeu sur un objet que rien ne verrouille (ou déjà fermé à la 1re synchro) → verrou « à la main »
+      if (!st.manual[k] && !autoOn && !st.auto[k] && locked.some((e) => !seen || !seen.has(stackKey(e.id, e.fusion)))) {
+        st.manual[k] = { name: g.name, lvl: g.lvl };
+        delete st.optOut[k];
+        DM.log(`verrous : ${g.name} verrouillé à la main (en jeu)`);
+      }
+      if (src.length) st.auto[k] = { name: g.name, lvl: g.lvl, src };
+      else if (st.auto[k]) {   // sorti des équipements enregistrés / de la liste de drops
+        delete st.auto[k];
+        delete st.optOut[k];
+        if (!st.manual[k]) { toUnlock.push(...locked); continue; }
+      }
+      if (st.manual[k] || autoOn) {
+        want.add(k);
+        toLock.push(...g.stacks.filter((e) => !e.locked));
+      }
+    }
+    for (const k of unlock || []) {   // ✕ sur un objet absent de l'inventaire (porté…) : on oublie son verrou
+      if (groups.has(k)) continue;
+      delete st.manual[k];
+      if (st.auto[k]) st.optOut[k] = 1;
+    }
+    // objets « auto » absents de l'inventaire (portés, vendus…) : oubliés quand ils ne sont plus dans aucune source
+    for (const [k, a] of Object.entries(st.auto)) {
+      if (!groups.has(k) && !inPreset.has(nameKey(a.name)) && !cartNames.has(nameKey(a.name))) { delete st.auto[k]; delete st.optOut[k]; }
+    }
+    let done = 0;
+    if (inv.lockable && (toLock.length || toUnlock.length)) {
+      let failed = 0;
+      for (const [list, on] of [[toUnlock, false], [toLock, true]]) {
+        for (const e of list) {
+          try {
+            await setItemLock(e.id, e.fusion, on);
+            e.locked = on;
+            done++;
+          } catch (err) {
+            failed++;
+            DM.log(`verrous : ${e.name} (${tierLabel(e.fusion || 0)}) ${on ? 'verrouillage' : 'déverrouillage'} refusé : ${err.message}`);
+          }
+          await sleep(250 + Math.random() * 300);
+        }
+      }
+      DM.log(`verrous : ${toLock.filter((e) => e.locked).length} pile(s) verrouillée(s), ${toUnlock.filter((e) => !e.locked).length} déverrouillée(s)${failed ? `, ${failed} échec(s)` : ''}`);
+    } else if (!inv.lockable && toLock.length) DM.log('verrous : cadenas du jeu indisponible sur ce compte, verrou de l’extension seulement (Autosell)');
+    st.seen = inv.entries.filter((e) => e.locked).map((e) => stackKey(e.id, e.fusion));
+    st.syncAt = Date.now();
+    await save({ lockState: { ...(cfg.lockState || {}), [me]: st } });
+    // grille de /inventaire à jour (seulement si aucune fiche d'objet n'est ouverte)
+    if (reload && done && location.pathname.startsWith('/inventaire') && !document.querySelector('.title.leading-tight')) location.reload();
+    return { want, locked: toLock.length, unlocked: toUnlock.length };
+  }
+
+  // Synchro différée et regroupée (clic en jeu sur un cadenas ou un équipement enregistré, liste de drops modifiée…).
+  function scheduleLockSync(ms = 2500) {
+    clearTimeout(lockSyncTimer);
+    lockSyncTimer = setTimeout(() => syncLocks({ reload: true }).catch((e) => DM.log(`verrous : ${e.message}`)), ms);
+  }
+
+  // Clics du joueur qui changent les cadenas ou ce qui est porté : cadenas, équipements enregistrés, (dés)équiper.
+  document.addEventListener('click', (e) => {
+    if (dead || !/^\/(inventaire|personnage)/.test(location.pathname)) return;
+    const b = e.target.closest('button');
+    if (!b || [...b.classList].some((c) => c.startsWith('dm-'))) return;
+    const txt = `${b.getAttribute('aria-label') || ''} ${b.title || ''} ${b.textContent || ''}`;
+    if (/verrouill|cadenas|enregistr|[ée]quip|retirer|porter|charger/i.test(txt)) scheduleLockSync();
+  }, true);
 
   // ---------- Échange entre deux comptes via l'HDV ----------
   // Compte A (onglet normal) et compte B (onglet en navigation privée, extension autorisée en privé) :
@@ -1889,7 +2002,7 @@
 
   // Ajouts dans les pages du jeu, selon les modules activés (un module désactivé retire ses boutons).
   function scanModules() {
-    if (modOn('autosell')) scanLockButtons(); else document.querySelectorAll('.dm-lock').forEach((el) => el.remove());
+    document.querySelectorAll('.dm-lock').forEach((el) => el.remove());   // ancien bouton 🔒 (avant le cadenas du jeu)
     if (modOn('trade')) scanTradeButtons(); else { document.querySelectorAll('.dm-trade').forEach((el) => el.remove()); document.querySelector('.dm-queue')?.remove(); }
     if (modOn('wanted')) highlightWanted();
     if (modOn('fusion')) scanFuseButtons(); else document.querySelectorAll('.dm-fuse-all').forEach((el) => el.remove());
@@ -1934,8 +2047,9 @@
     const byId = new Map();
     for (const e of entries) {
       if (e.fusion >= FUSION_MAX) continue;
-      const g = byId.get(e.id) || { id: e.id, name: e.name, lvl: e.lvl, rarity: e.rarity, tiers: {} };
+      const g = byId.get(e.id) || { id: e.id, name: e.name, lvl: e.lvl, rarity: e.rarity, tiers: {}, locks: [] };
       g.tiers[e.fusion] = (g.tiers[e.fusion] || 0) + e.qty;
+      if (e.locked) g.locks.push(e.fusion || 0);
       byId.set(e.id, g);
     }
     const plan = [];
@@ -1957,18 +2071,36 @@
   }
 
   // Exécute les fusions de `items` (sous-ensemble de fusePlan) ; s'arrête à la première erreur.
+  // Le jeu refuse de fusionner un objet verrouillé (`locks` : tiers sous cadenas) : on ouvre ses cadenas le temps de fusionner,
+  // puis la synchro des verrous les referme sur tous les tiers (résultat compris).
   async function fuseItems(items, onProgress) {
     if (!fuseActionId) fuseActionId = await findAction(fuseChunks || (await fetchFlight('/inventaire')).chunks, 'fuseItem', FUSE_ACTION_FALLBACK);
     let done = 0;
     const total = items.reduce((n, it) => n + it.steps.length, 0);
-    for (const it of items) {
-      for (const f of it.steps) {
-        const r = await callAction('inventaire', fuseActionId, [it.id, f]);
-        if (r.newFusion !== f + 1) throw new Error(`${it.name} : réponse inattendue (${JSON.stringify(r)})`);
-        done++;
-        onProgress?.(done, total, it);
-        if (done < total) await sleep(400 + Math.random() * 400);
+    // verrous à jour avant d'ouvrir des cadenas (sinon une synchro les prendrait pour un clic en jeu), puis cadenas relus
+    let opened = false;
+    try {
+      await syncLocks({ force: true });
+      const { entries } = await fetchInventory();
+      for (const it of items) it.locks = entries.filter((e) => e.id === it.id && e.locked).map((e) => e.fusion || 0);
+    } catch (e) { DM.log(`fusion : synchro des verrous impossible (${e.message})`); }
+    try {
+      for (const it of items) {
+        for (const f of it.locks || []) {
+          opened = true;
+          await setItemLock(it.id, f, false);
+          await lockSeen(it.id, f, false);
+        }
+        for (const f of it.steps) {
+          const r = await callAction('inventaire', fuseActionId, [it.id, f]);
+          if (r.newFusion !== f + 1) throw new Error(`${it.name} : réponse inattendue (${JSON.stringify(r)})`);
+          done++;
+          onProgress?.(done, total, it);
+          if (done < total) await sleep(400 + Math.random() * 400);
+        }
       }
+    } finally {
+      if (opened) await syncLocks({ force: true }).catch((e) => DM.log(`fusion : cadenas pas refermés (${e.message}), nouvel essai à la prochaine synchro`));
     }
     DM.log(`fusion: ${done} fusion(s) sur ${items.length} objet(s)`);
     return done;
@@ -1990,7 +2122,8 @@
       for (let f = 0; f < top; f++) {
         while ((t[f] || 0) >= FUSE_COPIES) { steps.push(f); t[f] -= FUSE_COPIES; t[f + 1] = (t[f + 1] || 0) + 1; }
       }
-      if (steps.length) items.push({ id, name: entries.find((e) => e.id === id)?.name || `objet ${id}`, steps });
+      const locks = entries.filter((e) => e.id === id && e.locked).map((e) => e.fusion || 0);
+      if (steps.length) items.push({ id, name: entries.find((e) => e.id === id)?.name || `objet ${id}`, steps, locks });
     }
     if (!items.length) return 0;
     try {
@@ -2052,6 +2185,7 @@
         await sleep(150);
       }
       DM.log(`tout retirer : ${done} objet(s) retiré(s)${failed ? `, ${failed} échec(s)` : ''}`);
+      if (done) await syncLocks({ force: true }).catch((e) => DM.log(`verrous : ${e.message}`));   // cadenas des objets revenus
       tradeToast(worn.length ? `🧺 ${done} objet(s) retiré(s)${failed ? ` · ${failed} échec(s) (voir le journal)` : ''}` : '🧺 Aucun objet porté.', failed ? 'err' : 'ok');
     } catch (err) {
       tradeToast(`🧺 Échec : ${err.message}`, 'err');
@@ -2276,6 +2410,7 @@
       if (done < plan.changes.length) await sleep(350 + Math.random() * 350);
     }
     DM.log(`équipement auto : ${done} objet(s) équipé(s) (${plan.stats.join(', ')})`);
+    if (done) scheduleLockSync(5000);   // objets retirés revenus dans l'inventaire : cadenas à reposer
     return done;
   }
 
@@ -4356,6 +4491,7 @@
       const inCart = new Set(cart.map((c) => c.id));
       $('[data-k="cart"]').innerHTML = `<div style="display:flex;align-items:center;gap:8px"><b style="font-size:13px;flex:1">🛒 Liste de courses${cart.length ? ` (${cart.length})` : ''}</b>
           ${cart.length ? `<label style="font-size:12px;color:#b9a98c;display:flex;align-items:center;gap:4px" title="Pendant le farm de drop (toutes les 5 min, entre deux combats) et à la fin : 3 exemplaires d’un objet de la liste → tier suivant, jusqu’au tier voulu. Les autres objets ne sont jamais fusionnés."><input type="checkbox" data-a="autoFuse"${cfg.dropAutoFuse !== false ? ' checked' : ''}> fusion auto</label>
+          <label style="font-size:12px;color:#b9a98c;display:flex;align-items:center;gap:4px" title="Verrouille d’office (cadenas du jeu) les objets de la liste, tous tiers confondus : ni vendus, ni brisés, ni mis à l’HDV. Un objet retiré de la liste est déverrouillé, sauf s’il était verrouillé à la main ou fait partie d’un équipement enregistré. La fusion auto les déverrouille le temps de fusionner."><input type="checkbox" data-a="lockCart"${cfg.dropLockCart !== false ? ' checked' : ''}> 🔒 verrouiller</label>
           <button data-a="fuseCart" style="${btn}" title="Fusionne maintenant les objets de la liste jusqu’à leur tier voulu (seulement ceux-là)">⚡ Fusionner la liste</button>` : ''}
           <button data-a="drop" style="${btn};background:#6a3fa0" title="Ouvre la liste de courses complète : objets du build et favoris, tiers voulus, exemplaires déjà possédés, puis lancer le farm">🐉 ${cart.length ? 'Modifier / lancer le farm' : 'Composer la liste'}</button></div>`
         + (cart.length ? cart.map((c) => `<div style="display:flex;gap:8px;align-items:center;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:4px 8px">
@@ -4377,6 +4513,7 @@
     render();
     ov.addEventListener('change', (e) => {
       if (e.target.dataset.a === 'autoFuse') save({ dropAutoFuse: e.target.checked });
+      if (e.target.dataset.a === 'lockCart') save({ dropLockCart: e.target.checked });
     });
     ov.addEventListener('click', async (e) => {
       if (e.target.closest('[data-a="x"]')) return close();
@@ -5439,8 +5576,9 @@
           <button data-k="sell">${SELL_LABEL}</button>
           <div class="status" data-k="sellMsg"></div>
           <details data-k="lockBox">
-            <summary class="muted"><span data-k="lockTitle"></span>${DM.tip("Objets protégés de l’Autosell. Pour en ajouter : ouvre un objet dans /inventaire et clique « 🔓 Verrouiller ». ✕ pour déverrouiller.")}</summary>
+            <summary class="muted"><span data-k="lockTitle"></span>${DM.tip("Cadenas du jeu (ni vendu, ni brisé, ni fusionné, ni mis à l’HDV), synchronisés avec ce compte toutes les 5 min et après chaque clic sur un cadenas, un équipement enregistré ou la liste de drops. Tous les tiers d’un objet suivent. Verrouillés d’office : les objets des équipements enregistrés (/personnage) et de la liste de drops (option dans la bulle ❤️). Pour en ajouter : cadenas du jeu sur l’objet dans /inventaire. ✕ pour déverrouiller (aussi en jeu).")}</summary>
             <ul class="locks" data-k="locks"></ul>
+            <button data-k="lockSync" style="margin-top:4px;padding:2px 7px;font-size:12px">⟳ Synchroniser maintenant</button>
           </details>
         </div>
         <div class="sec" data-mod="fusion">
@@ -5582,11 +5720,15 @@
       if (href) location.assign(href);   // avis encore valable : attaque directe en pilote auto ; sinon ouverture de la zone
     });
     $('locks').addEventListener('click', (e) => {
-      const k = e.target.closest('button[data-unlock]')?.dataset.unlock;
-      if (!k) return;
-      const lockedItems = { ...(cfg.lockedItems || {}) };
-      delete lockedItems[k];
-      save({ lockedItems });
+      const b = e.target.closest('button[data-unlock]');
+      if (!b) return;
+      b.disabled = true;
+      syncLocks({ unlock: new Set([b.dataset.unlock]), reload: true }).catch((err) => DM.log(`verrous : ${err.message}`));
+    });
+    $('lockSync').addEventListener('click', async (e) => {
+      e.target.disabled = true;
+      try { await syncLocks({ force: true, reload: true }); } catch (err) { DM.log(`verrous : ${err.message}`); }
+      e.target.disabled = false;
     });
 
     for (const n of [1, 2, 3, 4, 5]) {
@@ -6095,8 +6237,11 @@
       wl.appendChild(li);
     }
 
-    const locks = Object.entries(cfg.lockedItems || {}).sort((a, b) => a[1].name.localeCompare(b[1].name));
-    $('lockBox').style.display = locks.length ? '' : 'none';
+    const ls = lockStateOf();
+    const locks = ls ? [...Object.entries(ls.manual || {}).map(([k, it]) => [k, { ...it, why: 'à la main' }]),
+      ...Object.entries(ls.auto || {}).filter(([k]) => !ls.manual?.[k] && !ls.optOut?.[k]).map(([k, it]) => [k, { ...it, why: it.src.join(', ') }])]
+      : Object.entries(cfg.lockedItems || {}).map(([k, it]) => [k, { ...it, why: 'à la main' }]);
+    locks.sort((a, b) => a[1].name.localeCompare(b[1].name));
     $('lockTitle').textContent = `🔒 ${locks.length} objet${locks.length > 1 ? 's' : ''} verrouillé${locks.length > 1 ? 's' : ''}`;
     const ul = $('locks');
     ul.textContent = '';
@@ -6104,6 +6249,11 @@
       const li = document.createElement('li');
       const span = document.createElement('span');
       span.textContent = `${it.name} (niv. ${it.lvl})`;
+      span.title = `Verrouillé : ${it.why}`;
+      const why = document.createElement('small');
+      why.className = 'muted';
+      why.textContent = ` — ${it.why}`;
+      span.appendChild(why);
       const x = document.createElement('button');
       x.textContent = '✕';
       x.title = 'Déverrouiller';
@@ -6119,7 +6269,7 @@
     if (Object.keys(ch).every((k) => k === 'debugLog')) return;   // journal : rien à mettre à jour
     for (const k in ch) cfg[k] = ch[k].newValue;
     if (ch.enabled?.newValue) progress();
-    if (ch.lockedItems && modOn('autosell')) scanLockButtons();
+    if (ch.dropCart || ch.dropLockCart) scheduleLockSync();   // liste de drops verrouillée : suit ses changements
     if (ch.modules) scanModules();
     if ((ch.tradeQueues || ch.tradeHistory || ch.tradeLastRun) && modOn('trade')) renderQueue();
     renderUi();
@@ -6150,6 +6300,10 @@
     runBuyTab();
     ticker = setInterval(tick, TICK_MS);
     eqTimer = setInterval(() => autoEquipTick(), 15000);
+    // cadenas du jeu : synchro toutes les LOCK_SYNC_MS (un seul onglet par compte s'en charge, cf. syncLocks)
+    const lockTick = () => { if (!dead) syncLocks({ ifStale: true, reload: true }).catch((e) => DM.log(`verrous : ${e.message}`)); };
+    lockTimer = setInterval(lockTick, 60000);
+    setTimeout(lockTick, 4000 + Math.random() * 4000);
     tick();
   })();
 })();
