@@ -1169,7 +1169,12 @@
       if (c.error && !c.gone) throw tradeErr(`${entry.name} : mise en vente incertaine (${e.message}) et retrait impossible (${c.error}) — vérifie tes ventes à l’HDV !`, { lost: 'maybe', why: e.message, cancel: c.error });
       throw tradeErr(`${entry.name} : mise en vente impossible (${e.message})`, { retry: true });
     }
-    const listingId = findMyListing(text, entry.id, entry.fusion);
+    let listingId = findMyListing(text, entry.id, entry.fusion);
+    if (!listingId) {
+      // numéro d'annonce absent de la réponse : on relit mes ventes plutôt que de faire chercher l'acheteur à l'HDV (lent)
+      try { listingId = myTradeListing((await fetchSellable()).own, entry); } catch { /* l'acheteur cherchera */ }
+      DM.log(`échange: ${entry.name} : n° d'annonce absent de la réponse${listingId ? `, relu dans mes ventes (${listingId})` : ', introuvable dans mes ventes'}`);
+    }
     say(`${entry.name} : achat par ${ctx.to}…`);
     const buyP = send({ type: 'tradeBuy', listingId, itemId: entry.id, fusion: entry.fusion, seller: myName(), last })
       .catch((e) => ({ ok: false, error: e.message, retry: true }));
@@ -4107,7 +4112,7 @@
           <button data-a="saveBuild" style="${btn};background:#2e6fbf" title="Garde ce résultat : tu pourras le rouvrir sans relancer la recherche (ici ou depuis la bulle ❤️)">💾 Enregistrer ce build</button>`}
         </div>
         <div style="display:flex;gap:8px;align-items:center">
-          ${Object.values(r.final).some((c) => c?.src === 'drop') ? `<button data-a="dropFarm" style="${btn};background:#6a3fa0" title="Lance des combats de chasse automatiques dans les zones où tombent les objets à looter du build, jusqu’à les avoir tous">🐉 Aller dropper</button>` : ''}
+          <button data-a="dropFarm" style="${btn};background:#6a3fa0" title="Liste de courses : objets à looter du build et favoris ❤️ ; le pilote enchaîne les combats de chasse dans les zones où ils tombent, jusqu’à les avoir tous">🐉 Aller dropper</button>
           <button data-a="equip" style="${btn};background:#2e7d32" ${owned ? '' : 'disabled'}>✅ Équiper ce build${Object.values(r.final).some((c) => c?.src === 'hdv') ? ' (objets possédés seulement)' : ''}</button>
           <span style="font-size:11px;color:#8a7d66">Les objets HDV (🛒) sont à acheter, ceux de la banque (🏦) à échanger d’abord, ceux du bestiaire (🐉) à looter (ou à acheter s’ils sont en vente) ; relance ensuite la recherche pour les équiper.</span>
         </div>
@@ -4132,7 +4137,7 @@
     ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
     const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:4px 9px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
     ov.innerHTML = `<div style="width:min(720px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
-      <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">❤️ Favoris${DM.tip('Builds enregistrés avec 💾 dans l’optimiseur : « Ouvrir » les réaffiche sans relancer la recherche. Objets ajoutés avec le cœur ♡ de l’optimiseur de build. Clique sur un objet pour voir les boss et monstres qui le lâchent, avec tes chances ; clique sur une zone pour ouvrir ses groupes de chasse.')}</b><button data-a="clear" style="${btn}" title="Retirer tous les objets favoris (les builds enregistrés sont gardés) — 2e clic pour confirmer">🗑️ Vider tout</button><button data-a="x" style="${btn};background:transparent">✕</button></div>
+      <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">❤️ Favoris${DM.tip('Builds enregistrés avec 💾 dans l’optimiseur : « Ouvrir » les réaffiche sans relancer la recherche. Objets ajoutés avec le cœur ♡ de l’optimiseur de build. Clique sur un objet pour voir les boss et monstres qui le lâchent, avec tes chances ; clique sur une zone pour ouvrir ses groupes de chasse.')}</b><button data-a="drop" style="${btn};background:#6a3fa0" title="Farmer des objets favoris : liste de courses, puis combats de chasse automatiques dans les zones où ils tombent">🐉 Aller dropper</button><button data-a="clear" style="${btn}" title="Retirer tous les objets favoris (les builds enregistrés sont gardés) — 2e clic pour confirmer">🗑️ Vider tout</button><button data-a="x" style="${btn};background:transparent">✕</button></div>
       <div data-k="msg" style="font-size:12px;color:#b9a98c"></div>
       <div style="overflow-y:auto;display:flex;flex-direction:column;gap:10px">
         <div data-k="saves" style="display:flex;flex-direction:column;gap:4px"></div>
@@ -4178,6 +4183,7 @@
     render();
     ov.addEventListener('click', async (e) => {
       if (e.target.closest('[data-a="x"]')) return close();
+      if (e.target.closest('[data-a="drop"]')) { close(); openDropFarm(); return; }
       const clr = e.target.closest('[data-a="clear"]');
       if (clr) {
         if (!clr.dataset.armed) {   // 2e clic dans les 5 s pour confirmer
@@ -4488,12 +4494,19 @@
   // Fenêtre « 🐉 Aller dropper » : objets à looter du build (à cocher, rien par défaut) → liste de courses en dessous,
   // avec le tier voulu pour chacun (retenu d'une fois sur l'autre).
   const DROP_TIERS_KEY = 'dmDropTiers';
-  function openDropFarm(r) {
+  // Candidats : objets à looter du build (r, facultatif) puis objets favoris ❤️ ; sources lues dans le bestiaire.
+  async function openDropFarm(r = null) {
     document.querySelector('.dm-drop-farm')?.remove();
     const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
-    const zones = r.bestiary?.zones || {};
-    const items = Object.values(r.final).filter((c) => c?.src === 'drop').map((c) => {
-      const srcs = (c.sources || []).filter(([, , , p, zs]) => p > 0 && zs?.length).map(([m, , , p, z]) => ({ m, p, z }));
+    let b;
+    try { b = await fetchBestiary(); } catch (e) { tradeToast(`🐉 Bestiaire illisible : ${e.message}`, 'err'); return; }
+    const zones = b.zones || {};
+    const cands = [
+      ...Object.values(r?.final || {}).filter((c) => c?.src === 'drop').map((c) => ({ id: c.id, name: c.name, icon: c.icon, from: 'build' })),
+      ...Object.entries(buildFavs()).map(([id, f]) => ({ id: +id, name: f.name, icon: f.icon, from: 'fav' })),
+    ].filter((c, i, a) => a.findIndex((x) => x.id === c.id) === i);
+    const items = cands.map((c) => {
+      const srcs = (b.drops[c.id] || []).filter(([, , , p, zs]) => p > 0 && zs?.length).map(([m, , , p, z]) => ({ m, p, z }));
       return { c, srcs, best: Math.max(0, ...srcs.map((s) => s.p)) };
     });
     let tiers = {};
@@ -4510,12 +4523,12 @@
     const tierOf = (i) => tiers[items[i].c.id] || 1;
     ov.innerHTML = `<div style="width:min(680px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
       <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🐉 Aller dropper${DM.tip('Coche les objets à aller chercher : ils passent dans la liste de courses, où tu choisis le tier voulu. Le pilote passe ensuite en mode Chasse : il va dans la zone la plus rentable, n’attaque que les groupes qui contiennent un monstre qui lâche un objet de la liste, compte les objets reçus en fin de combat et change de zone quand celle-ci n’a plus rien à donner (ou aucun groupe utile). 5 défaites d’affilée dans une zone : elle est abandonnée (notification) et on passe à la suivante. Plus aucune zone possible : arrêt + notification. Tout est droppé : arrêt + notification. Le mode de combat (Auto du jeu / par poids) est celui du menu 🤖. Tier : T1 = 1 exemplaire, T2 = 3, T3 = 9, T4 = 27, T5 (Rayonnant) = 81 (fusion 3 → 1).')}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
-      <div style="font-size:12px;color:#b9a98c">Objets à looter du build — coche ceux à farmer :</div>
+      <div style="font-size:12px;color:#b9a98c">Objets à looter du build et objets favoris ❤️ — coche ceux à farmer :</div>
       <div style="overflow-y:auto;max-height:38vh;display:flex;flex-direction:column;gap:4px">${items.map(({ c, srcs, best }, i) => `<label style="${row};cursor:${srcs.length ? 'pointer' : 'default'};${srcs.length ? '' : 'opacity:.55'}">
         <input type="checkbox" data-i="${i}" ${srcs.length ? '' : 'disabled'}>
         ${icon(c)}
-        <span style="flex:1;min-width:0"><b>${esc(c.name)}</b><br><span style="color:#8a7d66;font-size:12px">${srcs.length ? `meilleure chance ${pct(best)} · ${new Set(srcs.flatMap((s) => s.z)).size} zone(s) · ${esc(srcs.slice().sort((a, b) => b.p - a.p).slice(0, 2).map((s) => `${s.m} (${pct(s.p)})`).join(', '))}` : 'pas de drop de monstre connu (bonus de victoire, boss…)'}</span></span>
-      </label>`).join('') || '<div style="color:#b9a98c">Aucun objet à looter dans ce build.</div>'}</div>
+        <span style="flex:1;min-width:0"><b>${esc(c.name)}</b> <span style="font-size:11px;color:${c.from === 'fav' ? '#ff5c7a' : '#c99bff'}">${c.from === 'fav' ? '❤️ favori' : '🧬 build'}</span><br><span style="color:#8a7d66;font-size:12px">${srcs.length ? `meilleure chance ${pct(best)} · ${new Set(srcs.flatMap((s) => s.z)).size} zone(s) · ${esc(srcs.slice().sort((a, b) => b.p - a.p).slice(0, 2).map((s) => `${s.m} (${pct(s.p)})`).join(', '))}` : 'pas de drop de monstre connu (bonus de victoire, boss…)'}</span></span>
+      </label>`).join('') || '<div style="color:#b9a98c">Aucun objet : ce build n’a pas d’objet à looter (🐉), et tu n’as pas de favori ❤️. Ajoute des objets en favori avec le cœur ♡ de l’optimiseur.</div>'}</div>
       <div style="border-top:1px solid #3a3024;padding-top:8px;display:flex;flex-direction:column;gap:4px">
         <b style="font-size:13px">🛒 Liste de courses</b>
         <div data-k="cart" style="overflow-y:auto;max-height:30vh;display:flex;flex-direction:column;gap:4px"></div>
