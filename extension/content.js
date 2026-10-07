@@ -4223,19 +4223,39 @@
 
   // useGameAuto : sur cette page, on laisse l'Auto du jeu (état illisible, combat déjà en Auto, erreur…).
   let weightedBusy = false, useGameAuto = false;
+  // État de départ du combat, capté par netwatch dans la réponse de lancement : évite de recharger /combat.
+  let fightInit = null;
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || e.data?.type !== 'dm-fight-init' || typeof e.data.json !== 'string') return;
+    try { fightInit = { st: rscDeep({}, JSON.parse(e.data.json)), at: Date.now() }; } catch { return; }
+    if (weightsOn() && isOwner()) setTimeout(tick, 50);   // pas besoin d'attendre le prochain tour de boucle
+  });
+  // ID de la server action du combat : gardé pour l'onglet ; relu dans les chunks seulement s'il est refusé.
+  const FIGHT_ID_KEY = 'dmFightActionId';
+  const cachedFightId = () => { try { return sessionStorage.getItem(FIGHT_ID_KEY) || FIGHT_ACTION_FALLBACK; } catch { return FIGHT_ACTION_FALLBACK; } };
+  async function refreshFightId() {
+    const id = await findAction((await fetchFlight('/combat')).chunks, 'fightAction', FIGHT_ACTION_FALLBACK);
+    try { sessionStorage.setItem(FIGHT_ID_KEY, id); } catch { /* rien */ }
+    return id;
+  }
   async function weightedFight() {
     if (weightedBusy) return;
     weightedBusy = true;
     let reload = true;
     const fallback = (why) => { DM.log(`auto par poids : ${why} → Auto du jeu`); useGameAuto = true; reload = false; };
     try {
-      const { flight, chunks } = await fetchFlight('/combat');
-      const { rows, props } = rscProps(flight, (x) => 'initial' in x && 'charId' in x);
-      let st = props && rscDeep(rows, props.initial);
+      // état de départ : celui capté au lancement (récent), sinon la page /combat
+      let st = fightInit && Date.now() - fightInit.at < 60000 && fightInit.st?.status === 'ongoing' ? fightInit.st : null;
+      fightInit = null;
+      if (!st) {
+        const { flight } = await fetchFlight('/combat');
+        const { rows, props } = rscProps(flight, (x) => 'initial' in x && 'charId' in x);
+        st = props && rscDeep(rows, props.initial);
+      }
       if (!st?.fighters?.p) return fallback('état du combat introuvable');
       if (st.status !== 'ongoing') return;   // déjà fini : le rechargement affiche l'écran de fin
       if (st.auto) return fallback('combat déjà lancé en Auto');
-      const actionId = await findAction(chunks, 'fightAction', FIGHT_ACTION_FALLBACK);
+      let actionId = cachedFightId(), idChecked = false;
       const tabId = gameTabId();
       // dernier tour où chaque carte a été jouée (règle « tous les X tours »), conservé pour ce combat
       const fightKey = `${st.kind}|${Object.values(st.fighters).filter((f) => f.id !== 'p').map((f) => `${f.name}:${f.maxHp}`).join(',')}`;
@@ -4256,6 +4276,12 @@
         try {
           res = await callAction('combat', actionId, [action, tabId, st.seq]);
         } catch (e) {
+          // ID périmé (nouveau déploiement du site) : relu une fois dans les chunks, puis on réessaie
+          if (!e.game && !idChecked && (e.status === 404 || e.message === 'Réponse du serveur illisible')) {
+            idChecked = true;
+            actionId = await refreshFightId();
+            continue;
+          }
           if (!e.game || ++errors > 5) throw e;
           if (/aucun combat en cours/i.test(e.message)) return;
           DM.log(`auto par poids : « ${label} » refusé (${e.message})`);

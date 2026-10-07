@@ -28,6 +28,20 @@
       return null;
     }
   };
+  // Objet « "initial":{…} » (état de départ du combat) d'une réponse de lancement, en texte JSON.
+  const initialState = (t) => {
+    const i = t.indexOf('"initial":{"v":');
+    if (i < 0) return null;
+    let depth = 0, str = false;
+    for (let k = i + 10; k < t.length; k++) {
+      const c = t[k];
+      if (str) { if (c === '\\') k++; else if (c === '"') str = false; continue; }
+      if (c === '"') str = true;
+      else if (c === '{' || c === '[') depth++;
+      else if ((c === '}' || c === ']') && --depth === 0) return t.slice(i + 10, k + 1);
+    }
+    return null;
+  };
   const orig = window.fetch;
   window.fetch = function (input, init) {
     const kind = tracked(input, init);
@@ -45,6 +59,8 @@
         if (m && document.documentElement) document.documentElement.dataset.dmFightEnd = `${m[1]}:${Date.now()}`;
         const line = t.split('\n').find((l) => l.startsWith('1:{"state":{'));
         if (line) window.postMessage({ type: 'dm-fight', line: line.slice(2) }, location.origin);
+        const init = initialState(t);   // lancement d'un combat : son état de départ (Auto par poids)
+        if (init) window.postMessage({ type: 'dm-fight-init', json: init }, location.origin);
       }).catch(() => {});
     }
     return p;
