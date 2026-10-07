@@ -2917,33 +2917,41 @@
   // est cfg.huntTarget (zone, n° de groupe, noms des monstres), reconnu aux noms des monstres du combat (relances comprises).
   // XP : gain = Σ xp des monstres (champ « xp » de l'état du combat) × bonus de groupe × … × (1 + Sagesse / 100) — vérifié :
   // 2 Pikoleurs à 132 000 → 6 319 104 avec 988 de Sagesse (= 264 000 × 1,1 × 2 × 10,88). Ramenée à 0 de Sagesse pour comparer.
-  // Drops : valeur de revente au marchand (sellPrice du jeu : min(4000, 20 × niveau), quel que soit le tier), ramenée à
-  // 100 de Prospection (chances de drop proportionnelles à la Prospection). Kamas : tels quels.
+  // Drops : valeur de revente au marchand (sellPrice du jeu : min(4000, 20 × niveau), quel que soit le tier). Règle du jeu :
+  // chance = chance de base × Prospection / 100, 90 % au plus par objet ; l'objet bonus de victoire et les coffres n'en
+  // dépendent pas. Chaque objet lâché est gardé avec sa chance de base (bestiaire, monstres du combat ; 0 = bonus de victoire
+  // ou inconnu → pas ajusté) pour être recalculé à la Prospection actuelle. Kamas : tels quels.
   // Tout est réaffiché à TA Sagesse / Prospection actuelles (dernier combat). Durée : écart avec le combat précédent dans la
   // même zone (relance, animation et délais compris), sinon depuis le lancement.
-  // cfg.farmLog[perso] = [{ at, z, zn, g, m: [[nom, niveau, xp]], xp, sag, pp, k, v, n, d }] (FARM_LOG_MAX derniers).
+  // cfg.farmLog[perso] = [{ at, z, zn, g, m: [[nom, niveau, xp]], xp, sag, pp, k, v, it: [[prix, chance de base]], n, d }].
   const FARM_LOG_MAX = 3000;
   const FARM_GAP_MS = 10 * 60000;
   const FARM_CHAR_KEY = 'dmFarmChar';   // Sagesse / Prospection du dernier combat, par personnage (localStorage de la page)
   const sellPrice = (lvl) => Math.min(4000, 20 * Math.max(1, +lvl || 0));
   const GROUP_COEF = [0, 1, 1.1, 1.5, 2.3, 3.1, 3.6, 4.2, 4.7];   // bonus de groupe de Dofus (1 à 8 monstres), ×2 observé en jeu
-  let farmLastSig = '', itemLvlMap = null, itemLvlLoading = false;
+  const DROP_CAP = 90;   // % de chance au plus par objet (Prospection comprise)
+  const dropChance = (base, pp) => Math.min(DROP_CAP, base * (pp || 100) / 100);
+  let farmLastSig = '', itemLvlMap = null, itemBaseMap = null, itemLvlLoading = false;
 
-  // Niveau d'un objet lâché (rewards.items : { id, f, … }) : lu sur l'objet, sinon dans la copie locale du bestiaire.
-  function farmItemLvl(r) {
-    if (+r.lvl) return +r.lvl;
-    if (!itemLvlMap) {
-      try {
-        const c = JSON.parse(localStorage.getItem(BESTIARY_KEY) || 'null');
-        if (c?.items?.length) itemLvlMap = new Map(c.items.map((it) => [it.id, it.lvl]));
-      } catch { /* copie illisible */ }
-      if (!itemLvlMap && !itemLvlLoading) {   // pas de copie : import en arrière-plan, pour les combats suivants
-        itemLvlLoading = true;
-        fetchBestiary().then((c) => { itemLvlMap = new Map(c.items.map((it) => [it.id, it.lvl])); }).catch(() => {}).finally(() => { itemLvlLoading = false; });
-      }
-    }
-    return itemLvlMap?.get(r.id) || 0;
+  // Copie locale du bestiaire → niveau des objets et chance de base par (objet, monstre).
+  function farmUseBestiary(c) {
+    itemLvlMap = new Map(c.items.map((it) => [it.id, it.lvl]));
+    itemBaseMap = new Map(Object.entries(c.drops || {}).map(([id, list]) => [+id, new Map(list.map((x) => [normName(x[0]), +x[5] || 0]))]));
   }
+  function farmLoadBestiary() {
+    if (itemLvlMap) return;
+    try {
+      const c = JSON.parse(localStorage.getItem(BESTIARY_KEY) || 'null');
+      if (c?.v === 3 && c.items?.length) return farmUseBestiary(c);
+    } catch { /* copie illisible */ }
+    if (itemLvlLoading) return;
+    itemLvlLoading = true;   // pas de copie : import en arrière-plan, pour les combats suivants
+    fetchBestiary().then(farmUseBestiary).catch(() => {}).finally(() => { itemLvlLoading = false; });
+  }
+  // Niveau d'un objet lâché (rewards.items : { id, f, … }) : lu sur l'objet, sinon dans le bestiaire.
+  const farmItemLvl = (r) => +r.lvl || itemLvlMap?.get(r.id) || 0;
+  // Chance de base de l'objet sur les monstres du combat (la plus forte) ; 0 = objet bonus de victoire / inconnu.
+  const farmItemBase = (r, mobNames) => Math.max(0, ...mobNames.map((n) => itemBaseMap?.get(r.id)?.get(n) || 0));
 
   const farmChar = () => { try { return JSON.parse(localStorage.getItem(FARM_CHAR_KEY) || '{}')[fightAcct()] || null; } catch { return null; } };
 
@@ -2969,12 +2977,15 @@
       if (sig === farmLastSig) return;
       farmLastSig = sig;
       const items = Array.isArray(rewards.items) ? rewards.items : [];
+      farmLoadBestiary();
+      const mobNames = [...new Set(mobs.map((m) => normName(m.name)))];
+      const it = items.map((r) => [sellPrice(farmItemLvl(r)), farmItemBase(r, mobNames)]);
       const me = fightAcct(), log = cfg.farmLog?.[me] || [], last = log[log.length - 1], now = Date.now();
       const d = last && last.z === t.zone && now - last.at < FARM_GAP_MS ? now - last.at
         : cfg.lastLaunchAt && now - cfg.lastLaunchAt < FARM_GAP_MS ? now - cfg.lastLaunchAt : null;
       const rec = { at: now, z: t.zone, zn: cfg.huntZone === t.zone ? cfg.huntZoneName || '' : '', g: t.group,
         m: mobs.map((m) => [m.name, +m.level || 0, +m.xp || 0]), xp: +rewards.xp || 0, sag, pp,
-        k: (+rewards.kamas || 0) + (+rewards.cardKamas || 0), v: items.reduce((s, r) => s + sellPrice(farmItemLvl(r)), 0), n: items.length, d };
+        k: (+rewards.kamas || 0) + (+rewards.cardKamas || 0), v: it.reduce((s, x) => s + x[0], 0), it, n: items.length, d };
       save({ farmLog: { ...(cfg.farmLog || {}), [me]: [...log, rec].slice(-FARM_LOG_MAX) } });
     } catch (e) {
       DM.log(`rentabilité : ${e.message}`);
@@ -2984,8 +2995,14 @@
   const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
 
   // Mesures et estimations, par zone + n° de groupe → lignes du classement.
+  // Valeur des objets d'un combat recalculée à la Prospection `pp` (chaque objet : chance actuelle / chance d'alors, plafond
+  // 90 % ; objet bonus de victoire inchangé). Combats enregistrés sans détail (1.80.0) : proportionnel, sans plafond.
+  const farmValueAt = (r, pp) => (r.it
+    ? r.it.reduce((s, [v, base]) => s + (base > 0 ? v * dropChance(base, pp) / dropChance(base, r.pp) : v), 0)
+    : r.v * (pp || 100) / (r.pp || 100));
+
   function farmRows(log, scan, best, cur) {
-    const sagMul = 1 + (cur.sag || 0) / 100, ppMul = (cur.pp || 100) / 100;
+    const sagMul = 1 + (cur.sag || 0) / 100;
     // xp de base de chaque monstre (nom|niveau) et bonus de groupe réel (par nombre de monstres), appris des combats
     const mobXp = new Map(), coefs = {};
     for (const r of log) {
@@ -3010,7 +3027,7 @@
       const m = o.meas ||= { n: 0, xp: 0, v: 0, k: 0, d: [], last: 0 };
       m.n++;
       m.xp += r.xp / (1 + r.sag / 100);
-      m.v += r.v / ((r.pp || 100) / 100);
+      m.v += farmValueAt(r, cur.pp);
       m.k += r.k;
       if (r.d) m.d.push(r.d);
       m.last = Math.max(m.last, r.at);
@@ -3020,7 +3037,7 @@
       if (!m) continue;
       const dur = median(m.d) || cycle;
       o.xp = m.xp / m.n * sagMul;
-      o.val = m.v / m.n * ppMul + m.k / m.n;
+      o.val = (m.v + m.k) / m.n;
       o.dur = dur;
     }
     // estimations : groupes du dernier scan (xp si tous les monstres sont connus ; drops via le bestiaire, prospection comprise)
@@ -3038,15 +3055,17 @@
     return { rows: [...rows.values()], cycle, learned };
   }
 
-  // Valeur de drop moyenne d'un monstre (bestiaire : ta chance % par objet, prospection comprise) → Map(nom normalisé → kamas).
-  function bestiaryMobValue(c) {
+  // Valeur de drop moyenne d'un monstre à la Prospection `pp` (bestiaire : chance de base par objet × pp / 100, 90 % au plus)
+  // → Map(nom normalisé → kamas). Objets bonus de victoire (chance non publiée) non comptés.
+  function bestiaryMobValue(c, pp) {
     const lvl = new Map(c.items.map((it) => [it.id, it.lvl]));
     const out = new Map();
     for (const [id, list] of Object.entries(c.drops || {})) {
-      for (const [mob, , , chance] of list) {
-        if (!(chance > 0)) continue;   // 0 = « objet bonus de victoire » : chance non publiée
+      for (const [mob, , , mine, , base] of list) {
+        const chance = base > 0 ? dropChance(base, pp) : Math.min(DROP_CAP, mine || 0);
+        if (!(chance > 0)) continue;
         const k = normName(mob);
-        out.set(k, (out.get(k) || 0) + Math.min(1, chance / 100) * sellPrice(lvl.get(+id)));
+        out.set(k, (out.get(k) || 0) + chance / 100 * sellPrice(lvl.get(+id)));
       }
     }
     return out;
@@ -3066,7 +3085,7 @@
     const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:4px 9px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
     const inp = 'background:#241e16;color:#eee;border:1px solid #5a4a33;border-radius:6px;padding:3px 6px;font:12px system-ui,sans-serif';
     ov.innerHTML = `<div style="width:min(900px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
-      <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📈 Rentabilité des zones${DM.tip('Mesuré : chaque victoire en chasse est enregistrée (XP, kamas, objets lâchés au prix de revente marchand), par zone et n° de groupe. L’XP est ramenée à 0 de Sagesse et les drops à 100 de Prospection, puis réaffichés à tes valeurs actuelles : changer d’équipement ne fausse pas le classement.&#10;≈ Estimé : groupes du dernier scan des zones ; XP si chaque monstre a déjà été combattu à ce niveau (bonus de groupe appris en jeu), drops d’après le bestiaire (tes chances, prospection comprise). Les kamas ne sont pas estimés.&#10;/min : avec la durée réelle entre deux combats (relance comprise).&#10;▶ envoie le pilote farmer ce groupe en mode chasse.')}</b>
+      <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📈 Rentabilité des zones${DM.tip('Mesuré : chaque victoire en chasse est enregistrée (XP, kamas, objets lâchés au prix de revente marchand), par zone et n° de groupe. L’XP est ramenée à 0 de Sagesse et chaque objet lâché recalculé à ta Prospection actuelle (+1 % de chance par point, 90 % au plus par objet ; objet bonus de victoire inchangé) : changer d’équipement ne fausse pas le classement.&#10;≈ Estimé : groupes du dernier scan des zones ; XP si chaque monstre a déjà été combattu à ce niveau (bonus de groupe appris en jeu), drops d’après le bestiaire (chance de base × ta Prospection / 100, 90 % au plus par objet ; objets bonus de victoire non comptés). Les kamas ne sont pas estimés.&#10;/min : avec la durée réelle entre deux combats (relance comprise).&#10;▶ envoie le pilote farmer ce groupe en mode chasse.')}</b>
         <button data-a="x" style="${btn};background:transparent">✕</button></div>
       <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:12px">
         <label>Trier par <select data-f="sort" style="${inp}"><option value="xpMin">XP / min</option><option value="xp">XP / combat</option><option value="valMin">Kamas + drops / min</option><option value="val">Kamas + drops / combat</option></select></label>
@@ -3085,12 +3104,12 @@
     $('[data-f="sort"]').value = prefs.sort;
     $('[data-f="est"]').checked = prefs.est;
     $('[data-f="lvl"]').value = prefs.lvl;
-    let best = null, bz = null;
+    let bc = null, bz = null, best = null, bestPp = null;
     try {
       $('[data-k="msg"]').textContent = 'Lecture du bestiaire…';
-      const c = await fetchBestiary((t) => { $('[data-k="msg"]').textContent = t; });
-      best = bestiaryMobValue(c);
-      bz = c.zones;
+      bc = await fetchBestiary((t) => { $('[data-k="msg"]').textContent = t; });
+      farmUseBestiary(bc);
+      bz = bc.zones;
       $('[data-k="msg"]').textContent = '';
     } catch (e) { $('[data-k="msg"]').textContent = `Bestiaire illisible (${e.message}) : pas d’estimation des drops.`; }
     let shown = [];
@@ -3099,6 +3118,7 @@
       const last = log[log.length - 1];
       const cur = farmChar() || (last ? { sag: last.sag, pp: last.pp } : { sag: 0, pp: 100 });
       $('[data-k="cur"]').textContent = `Sagesse ${fmt(cur.sag)} · Prospection ${fmt(cur.pp)}`;
+      if (bc && bestPp !== cur.pp) { best = bestiaryMobValue(bc, cur.pp); bestPp = cur.pp; }
       const { rows, cycle } = farmRows(log, cfg.wantedScan, best, cur);
       const lvlMax = +prefs.lvl || 0;
       const zoneLvl = (z) => bz?.[z]?.[1];
@@ -3615,7 +3635,7 @@
   async function fetchBestiary(say) {
     try {
       const c = JSON.parse(localStorage.getItem(BESTIARY_KEY) || 'null');
-      if (c?.v === 2 && Date.now() - c.at < BESTIARY_MS) return c;
+      if (c?.v === 3 && Date.now() - c.at < BESTIARY_MS) return c;
     } catch { /* copie absente ou illisible */ }
     say?.('Import du bestiaire (copie locale absente ou de plus d’un jour)…');
     const { flight } = await fetchFlight('/bestiaire');
@@ -3625,10 +3645,10 @@
     const zones = Object.fromEntries((props.zones || []).map((z) => [z.id, [z.area && z.area !== z.n ? `${z.n} (${z.area})` : z.n, z.min, z.max]]));
     const items = props.items.filter((it) => it?.id).map((it) => ({ id: it.id, n: it.n, lvl: it.lvl, s: it.s, icon: it.icon, r: it.r,
       st: it.st || {}, setName: it.setName || null, two: !!it.w?.twoHanded }));
-    const drops = {};   // id objet → [[monstre, niveau min, niveau max, ta chance %, ids de zones]], meilleure chance d'abord
+    const drops = {};   // id objet → [[monstre, niveau min, niveau max, ta chance %, ids de zones, chance de base %]], meilleure chance d'abord
     for (const m of props.monsters) {
-      for (const [id, , mine] of Array.isArray(m.d) ? m.d : []) {
-        (drops[id] ||= []).push([m.n, m.lo, m.hi, +mine || 0, m.z || []]);
+      for (const [id, base, mine] of Array.isArray(m.d) ? m.d : []) {
+        (drops[id] ||= []).push([m.n, m.lo, m.hi, +mine || 0, m.z || [], +base || 0]);
       }
     }
     for (const id in drops) drops[id].sort((a, b) => b[3] - a[3]);
@@ -3667,7 +3687,7 @@
         if (it) (boss[it.id] ||= []).push(Object.assign([...src], { 3: pct ? +pct[1].replace(',', '.') : 0 }));
       }
     }
-    const out = { v: 2, at: Date.now(), items, drops, boss, zones };
+    const out = { v: 3, at: Date.now(), items, drops, boss, zones };
     try { localStorage.setItem(BESTIARY_KEY, JSON.stringify(out)); } catch (e) { DM.log(`bestiaire : copie locale impossible (${e.message})`); }
     DM.log(`bestiaire : ${items.length} objets, ${props.monsters.length} monstres importés`);
     return out;
