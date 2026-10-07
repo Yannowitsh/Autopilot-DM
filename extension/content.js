@@ -3613,6 +3613,35 @@
       top = res.best > p.best + 1e-6 ? res : { build: p.build, best: p.best };
     }
 
+    // Tolérance « mes objets » : un objet à acheter / looter est remplacé par un objet possédé (porté, inventaire, banque)
+    // tant que le build reste à moins de ownTol % du meilleur trouvé. Remplacements les moins coûteux d'abord.
+    const ownTol = Math.max(0, Math.min(50, +opts.ownTol || 0));
+    const isOwned = (c) => !c || c.src === 'worn' || c.src === 'inv' || c.src === 'bank';
+    let ownKept = 0, bestFound = top.best;
+    if (ownTol > 0 && top.best > 0) {
+      say('Préférence pour tes objets…');
+      const floor = top.best * (1 - ownTol / 100);
+      let b = { ...top.build }, v = top.best;
+      for (;;) {
+        let move = null;
+        for (const s of slots) {
+          if (isOwned(b[s.slot])) continue;
+          for (const c of cands[s.accepts]) {
+            if (!isOwned(c)) continue;
+            const t = { ...b, [s.slot]: c };
+            if (c.two && s.slot === 'arme') t.bouclier = null;
+            if (!valid(t)) continue;
+            const tv = score(t);
+            if (tv >= floor && (!move || tv > move.v)) move = { t, v: tv };
+          }
+        }
+        if (!move) break;
+        b = move.t; v = move.v; ownKept++;
+        await sleep(0);
+      }
+      if (ownKept) top = { build: b, best: v };
+    }
+
     // anneaux / dofus : un objet déjà porté garde son emplacement (moins d'équipements à changer)
     const final = { ...top.build };
     for (const type of new Set(slots.map((s) => s.accepts))) {
@@ -3655,6 +3684,7 @@
     const dmgIds = new Set(sp.spells.map((x) => x.id));
     const keepCards = sp.deckIds(DECK_TARGET).filter((id) => !dmgIds.has(id) && !deck.some((x) => x.id === id)).slice(0, DECK_CARDS - deck.length);
     return { gearMult, sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, paOff, deckN, planLevel, statLevel, planCapital, setFx, hdv: opts.hdv, target, goal, bestiary,
+      ownTol, ownKept, ownLoss: ownKept && bestFound > 0 ? (1 - top.best / bestFound) * 100 : 0,
       pvMin, pvShort: pvMin && pvOf(nxt.S) < pvMin, paMin, paShort: paMin && paOf(nxt.S) < paMin, bank, budget, hdvFailed, realloc: opts.realloc !== false, cost: costOf(final), deck: deck.map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })),
       deckChunks: sp.chunks, keepCards };
   }
@@ -3686,6 +3716,7 @@
           <label data-tip="Affichage seulement : nombre de sorts offensifs conseillés pour ton deck avec le build proposé (bouton « Écrire dans le deck 3 »). Ne change pas les objets choisis.">Sorts conseillés <select data-o="deckN" style="${inp}">${[2, 3, 4, 5, 6, 7, 8].map((n) => `<option value="${n}">${n}</option>`).join('')}</select></label>
           <label>PV minimum <input data-o="pvMin" type="number" min="0" placeholder="aucun" style="${inp};width:90px"></label>
           <label data-tip="Le build garde au moins ce nombre de PA (base 6, 7 dès le niveau 100, + PA de l’équipement et des panoplies, 12 au maximum). Vide = sans contrainte. En objectif Dégâts avec des PA offensifs fixés, chaque PA au-delà compte quand même pour +3 % : il n’est pas sacrifié pour un petit bonus.">PA minimum <input data-o="paMin" type="number" min="0" max="12" placeholder="aucun" style="${inp};width:70px"></label>
+          <label data-tip="Préférer tes objets (portés, inventaire, banque) à ceux qu’il faudrait acheter ou looter, tant que le build reste à moins de ce pourcentage du meilleur trouvé. Ex. 3 : un objet possédé qui fait perdre 2 % est gardé. Vide = le meilleur build, d’où que viennent les objets.">Tolérance mes objets <input data-o="ownTol" type="number" min="0" max="50" step="0.5" placeholder="0" style="${inp};width:60px"> %</label>
           <label style="cursor:pointer"><input data-o="deckOnly" type="checkbox"> Sorts du deck actif uniquement</label>
           <label style="cursor:pointer" data-tip="Considère tous tes points de caractéristiques comme redistribuables (comme après une réinitialisation) : l’optimiseur choisit en même temps l’équipement et la répartition. Décoché : tes points restent comme ils sont."><input data-o="realloc" type="checkbox"> Redistribuer mes points</label>
           <label style="cursor:pointer" data-tip="Ajoute les objets de ton autre compte (onglet ouvert en navigation privée ou normale), sauf ceux encore liés (reçus ou achetés il y a moins de 24 h). Un bouton les met dans la file d’échange de ce compte."><input data-o="bank" type="checkbox"> Inclure la banque (autre compte)</label>
@@ -4019,6 +4050,7 @@
         ${r.planLevel && r.planLevel !== r.sheet.level ? `<div style="font-size:12px;color:#8fd4ee">📅 ${ahead ? `Prévision au niveau ${r.planLevel} (tu es niveau ${r.sheet.level}) : objets jusqu’au niveau ${r.planLevel}, PV, PA et ${fmt(r.planCapital)} points de caractéristiques de ce niveau. Les objets au-dessus de ton niveau actuel ne seront pas équipés.` : `Objets limités au niveau ${r.planLevel} (tu es niveau ${r.sheet.level}).`}</div>` : ''}
         ${r.bestiary ? `<div style="font-size:12px;color:#c99bff">🐉 Bestiaire : ${r.bestiary.count} objet(s) lootable(s) à ton niveau que tu n’as pas, pris en compte (copie du ${new Date(r.bestiary.at).toLocaleString('fr-FR')})${drops.length ? ` — ${drops.length} à looter dans le build proposé${drops.some((c) => c.offer) ? `, dont ${drops.filter((c) => c.offer).length} en vente à l’HDV` : ''}` : ''}.</div>` : ''}
         ${r.bank ? `<div style="font-size:12px;color:#8fb8ee">🏦 Banque ${esc(r.bank.name)} : ${r.bank.count} objet(s) disponible(s)${r.bank.bound ? `, ${r.bank.bound} lié(s) ignoré(s)` : ''}.</div>` : ''}
+        ${r.ownKept ? `<div style="font-size:12px;color:#6fcf7a">🎒 Tolérance ${String(r.ownTol).replace('.', ',')} % : ${r.ownKept} objet(s) à acheter ou looter remplacé(s) par des objets que tu as (−${r.ownLoss.toFixed(1).replace('.', ',')} % par rapport au meilleur build trouvé).</div>` : ''}
         ${r.paShort ? `<div style="color:#ff7b6b;font-weight:700">⚠️ PA minimum (${r.paMin}) impossible à atteindre avec tes objets : le build ci-dessous est celui qui a le plus de PA (${r.paOf(r.nxt.S)}).</div>` : ''}
         ${r.hdvFailed.length ? `<div style="color:#f0a040">⚠️ HDV illisible pour : ${r.hdvFailed.map((t) => esc(SLOT_NAMES[t] || t)).join(', ')} (site saturé) — ces emplacements n’ont pas d’objet HDV proposé.</div>` : ''}
         ${r.pvShort ? `<div style="color:#ff7b6b;font-weight:700">⚠️ PV minimum (${fmt(r.pvMin)}) impossible à atteindre avec tes objets : le build ci-dessous est celui qui a le plus de PV (${fmt(r.pvOf(r.nxt.S))}).</div>` : ''}
