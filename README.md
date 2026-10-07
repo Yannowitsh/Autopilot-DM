@@ -22,6 +22,10 @@ En secours, tu peux aussi double-cliquer **`mettre-a-jour.bat`** dans le dossier
 
 Tes réglages (webhook Discord, objets verrouillés, file d'échange…) sont conservés : ils sont stockés dans Chrome, pas dans le dossier.
 
+## Farm de drop
+
+Dans l'optimiseur, avec **Chercher dans le bestiaire** (et **Drops de monstres uniquement**, coché par défaut : pas d'objets « bonus de victoire » ni de boss), le bouton **🐉 Aller dropper** liste les objets à looter du build. Choisis le tier voulu pour chacun (T1 = 1 exemplaire, T2 = 3, T3 = 9, T4 = 27, T5 Rayonnant = 81) : la fenêtre affiche ta meilleure chance et le nombre de combats estimé. **Lancer le farm** passe le pilote en mode Chasse : il va dans la zone la plus rentable, n'attaque que les groupes contenant un monstre qui lâche un objet voulu, compte les objets reçus en fin de combat et change de zone quand celle-ci n'a plus rien à donner ou plus de groupe utile. 5 défaites d'affilée dans une zone : elle est abandonnée (notification) et on passe à la suivante. Arrêt + notification Discord quand tout est droppé, ou quand plus aucune zone n'a de groupe utile (avec la raison). Le suivi s'affiche dans le menu 🤖 (■ Arrêter le farm) ; le mode de combat est celui choisi (Auto du jeu / par poids).
+
 ## Modules
 
 Dans la popup de l'extension (icône en haut à droite de Chrome), bloc **Modules** : coche ou décoche chaque module (Auto par poids, Autosell, Fusion, Auto-équipement, Tierlist, Optimiseur, Avis de recherche, Échange entre comptes). Un module décoché disparaît du menu 🤖 en jeu et ses boutons sont retirés des pages du jeu. Le pilote (aventure, chasse, ascension) est toujours là.

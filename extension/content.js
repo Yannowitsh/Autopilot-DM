@@ -83,7 +83,7 @@
   const HUNT_RETRY = /^(Refaire ce combat|Réessayer ce groupe)$/;
   const isHunt = () => cfg.mode === 'chasse' && !!cfg.huntZone;
   const isAsc = () => cfg.mode === 'ascension';
-  const maxRetries = () => (isHunt() ? Math.max(0, Math.round(+cfg.huntRetries || 0)) : MAX_PATH_RETRIES);
+  const maxRetries = () => (isHunt() ? (cfg.dropRun?.active ? DROP_MAX_DEFEATS - 1 : Math.max(0, Math.round(+cfg.huntRetries || 0))) : MAX_PATH_RETRIES);
   // Fin d'un combat d'Ascension : boutons propres aux étages (« Suivant en auto » / « Réessayer en auto » existent aussi).
   const ASC_END = /^(Étage suivant|Réessayer l.étage|Voir l.Ascension)$/;
   const ASC_START = /^Affronter l.étage \d+$/;   // bouton de /ascension
@@ -489,6 +489,12 @@
             const stop = streak > maxRetries();
             timeFightEnd();
             await save({ botFight: false, losses: (cfg.losses || 0) + 1, lossStreak: stop ? 0 : streak });
+            if (stop && dropOn() && isHunt()) {   // farm de drop : zone abandonnée, on passe à la suivante
+              const z = cfg.huntZone;
+              notify('drop', `❌ Farm de drop : ${streak} défaites d’affilée dans **${dropZoneName(z)}** — zone abandonnée, passage à la suivante.${hint() ? `\n> 💡 ${hint()}` : ''}`);
+              await save({ dropRun: { ...cfg.dropRun, skipped: [...(cfg.dropRun.skipped || []), z] } });
+              return dropGoZone(`${streak} défaites dans ${dropZoneName(z)}`);
+            }
             if (stop) {
               await save({ enabled: false, paused: false, status: 'Arrêté : combat perdu' });
               const where = `${isHunt() ? ` en chasse (${cfg.huntZoneName || 'zone ' + cfg.huntZone})` : ` en ${isAsc() ? 'ascension' : 'aventure'}`}`
@@ -519,6 +525,10 @@
         }
 
         if (cfg.botFight) { timeFightEnd(); await save({ botFight: false, wins: (cfg.wins || 0) + 1, lossStreak: 0 }); }
+        if (dropOn() && isHunt()) {
+          if (cfg.dropRun.tried?.length) await save({ dropRun: { ...cfg.dropRun, tried: [] } });
+          if (!dropTargets(cfg.huntZone).size) return dropGoZone(`${dropZoneName(cfg.huntZone)} : plus rien à y dropper`);
+        }
         if (!(await gate())) return progress();
         // Relance refusée (groupes renouvelés…) : on repasse par la page de la zone.
         if (++endRetries > 2) { endRetries = 0; return goHome(); }
@@ -580,12 +590,21 @@
 
     if (isHunt()) {
       if (!onHome()) return goHome();
+      if (dropOn()) {
+        const g = dropPickGroup();
+        if (g === null) return;   // page pas encore chargée
+        if (g === false) {
+          await save({ dropRun: { ...cfg.dropRun, tried: [...new Set([...(cfg.dropRun.tried || []), cfg.huntZone])] } });
+          return dropGoZone(`aucun groupe utile dans ${dropZoneName(cfg.huntZone)}`);
+        }
+        if (cfg.huntGroup !== g) await save({ huntGroup: g });
+      }
       const group = targetGroup();
       if (!group) return;   // page pas encore chargée
       // Groupe d'avis de recherche choisi à la main, renouvelé depuis (combat perdu au rechargement…) :
       // attaquer le nouveau groupe n'a pas de sens → arrêt.
       const t = cfg.huntTarget;
-      if (cfg.huntGroup && t?.zone === cfg.huntZone && t.group === cfg.huntGroup && t.monsters?.some(wantedMatch)) {
+      if (!dropOn() && cfg.huntGroup && t?.zone === cfg.huntZone && t.group === cfg.huntGroup && t.monsters?.some(wantedMatch)) {
         const now = groupMonsters(group);
         if (now.length && now.join('|') !== t.monsters.join('|')) {
           await save({ enabled: false, paused: false, botFight: false, huntTarget: null,
@@ -601,7 +620,7 @@
       const attack = () => [...targetGroup()?.querySelectorAll('button') || []]
         .find((b) => !b.disabled && b.offsetParent !== null && /^Attaquer$/.test(b.textContent.trim()));
       if (!attack()) return;
-      setStatus(`Chasse : attaque du groupe ${cfg.huntGroup || groupNumber(group)} (${cfg.huntZoneName || 'zone ' + cfg.huntZone})…`);
+      setStatus(`${dropOn() ? `Farm de drop (${dropLeft().length} objet(s) restant(s))` : 'Chasse'} : attaque du groupe ${cfg.huntGroup || groupNumber(group)} (${cfg.huntZoneName || 'zone ' + cfg.huntZone})…`);
       await sleep(humanDelay());
       const btn = isOwner() && attack();
       if (!btn) return;
@@ -2684,7 +2703,9 @@
   window.addEventListener('message', (e) => {
     if (e.source !== window || e.data?.type !== 'dm-fight' || typeof e.data.line !== 'string') return;
     try {
-      const st = JSON.parse(e.data.line).state;
+      const obj = JSON.parse(e.data.line);
+      const st = obj.state;
+      if (obj.rewards && st?.status && st.status !== 'ongoing') dropOnRewards(obj.rewards, `${st.kind}|${st.logCount}`);
       if (!st?.fighters?.p?.stats || !st.log?.some((L) => L.t === 'play' && L.who === 'p')) return;
       const fighters = Object.fromEntries(Object.entries(st.fighters).map(([id, f]) => [id,
         { id, name: f.name, kind: f.kind, team: f.team, level: f.level, stats: f.stats, resCap: f.resCap, buffs: f.buffs }]));
@@ -3346,7 +3367,10 @@
       const b = await fetchBestiary(say);
       // seulement ce que tu possèdes : un objet aussi en vente à l'HDV reste lootable (sinon, au-dessus du budget, il disparaissait)
       const have = new Set(pool.filter((c) => c.src !== 'hdv').map((c) => c.id));
-      const add = b.items.filter((it) => !have.has(it.id) && !(it.lvl > planLevel));
+      // option « drops de monstres uniquement » : seulement les objets qu'un monstre de chasse lâche avec une vraie chance
+      // (pas les objets bonus de victoire, ni ceux des seuls boss)
+      const realDrop = (id) => (b.drops[id] || []).some(([, , , p, zs]) => p > 0 && zs?.length);
+      const add = b.items.filter((it) => !have.has(it.id) && !(it.lvl > planLevel) && (opts.dropsOnly === false || realDrop(it.id)));
       pool.push(...add.map((it) => ({ id: it.id, name: it.n, lvl: it.lvl, type: it.s, rarity: it.r, icon: it.icon, fusion: 0,
         setName: it.setName, two: it.two, eff: fusedStats(it.st, it.s, 0), src: 'drop' })));
       bestiary = { drops: b.drops, boss: b.boss, zones: b.zones, count: add.length, at: b.at };
@@ -3701,7 +3725,7 @@
     document.addEventListener('keydown', onKey, true);
     ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
     ov.addEventListener('keydown', (e) => e.stopPropagation());
-    let o = { deckN: 4, paOff: '', pvMin: '', deckOnly: false, hdv: false, realloc: true };
+    let o = { deckN: 4, paOff: '', pvMin: '', deckOnly: false, hdv: false, realloc: true, dropsOnly: true };
     try { o = { ...o, ...JSON.parse(localStorage.getItem(BUILD_OPTS_KEY) || '{}') }; } catch { /* stockage indisponible */ }
     if (!BUILD_GOALS[o.goal]) o.goal = o.krala ? 'krala' : 'dps';   // ancienne case « Kralamoure »
     delete o.krala;
@@ -3723,6 +3747,7 @@
           <label style="cursor:pointer" data-tip="Ajoute les objets de ton autre compte (onglet ouvert en navigation privée ou normale), sauf ceux encore liés (reçus ou achetés il y a moins de 24 h). Un bouton les met dans la file d’échange de ce compte."><input data-o="bank" type="checkbox"> Inclure la banque (autre compte)</label>
           <label style="cursor:pointer" data-tip="Ajoute les objets en vente à l’HDV (jusqu’à 400 annonces par emplacement) : le build peut alors contenir des objets à acheter, avec leur prix."><input data-o="hdv" type="checkbox"> Fouiller l’HDV</label>
           <label style="cursor:pointer" data-tip="Ajoute tous les objets lootables du bestiaire (à ton niveau) que tu n’as pas : le build peut alors contenir des objets à aller chercher, avec les monstres qui les lâchent, leurs zones et tes chances. Pour ceux-là, l’HDV est vérifié : s’ils sont en vente, tu peux les acheter directement. Le bestiaire est importé une fois puis gardé en copie locale (rafraîchie chaque jour)."><input data-o="bestiary" type="checkbox"> Chercher dans le bestiaire</label>
+          <label data-k="dropsOnlyBox" style="cursor:pointer" data-tip="Avec le bestiaire : seulement les objets qu’un monstre de chasse lâche avec une vraie chance (pas les objets « bonus de victoire », ni ceux des boss du Chemin ou de chasse). Tu es sûr de pouvoir aller les chercher (🐉 Aller dropper)."><input data-o="dropsOnly" type="checkbox"> Drops de monstres uniquement</label>
           <label data-k="budgetBox" data-tip="Total maximum des achats HDV du build proposé. Vide = pas de limite.">Budget <input data-o="budget" type="number" min="0" placeholder="illimité" style="${inp};width:110px"> K</label>
           <button data-a="go" style="${btn};background:#8a5a1a;margin-left:auto">Lancer</button>
         </div>
@@ -3741,7 +3766,7 @@
         syncOpts();
       });
     }
-    const syncOpts = () => { $('[data-k="budgetBox"]').style.display = o.hdv ? '' : 'none'; };
+    const syncOpts = () => { $('[data-k="budgetBox"]').style.display = o.hdv ? '' : 'none'; $('[data-k="dropsOnlyBox"]').style.display = o.bestiary ? '' : 'none'; };
     syncOpts();
     // liste noire : visible et modifiable ici
     const renderBl = () => {
@@ -3944,6 +3969,7 @@
           $('[data-a="go"]').disabled = false;
         }
       }
+      if (e.target.closest('[data-a="dropFarm"]') && result) return openDropFarm(result);
       const eq = e.target.closest('[data-a="equip"]');
       if (eq && result && !eq.disabled) {
         const changes = result.slots.map((s) => ({ s, to: result.final[s.slot], from: result.current[s.slot] }))
@@ -4081,6 +4107,7 @@
           <button data-a="saveBuild" style="${btn};background:#2e6fbf" title="Garde ce résultat : tu pourras le rouvrir sans relancer la recherche (ici ou depuis la bulle ❤️)">💾 Enregistrer ce build</button>`}
         </div>
         <div style="display:flex;gap:8px;align-items:center">
+          ${Object.values(r.final).some((c) => c?.src === 'drop') ? `<button data-a="dropFarm" style="${btn};background:#6a3fa0" title="Lance des combats de chasse automatiques dans les zones où tombent les objets à looter du build, jusqu’à les avoir tous">🐉 Aller dropper</button>` : ''}
           <button data-a="equip" style="${btn};background:#2e7d32" ${owned ? '' : 'disabled'}>✅ Équiper ce build${Object.values(r.final).some((c) => c?.src === 'hdv') ? ' (objets possédés seulement)' : ''}</button>
           <span style="font-size:11px;color:#8a7d66">Les objets HDV (🛒) sont à acheter, ceux de la banque (🏦) à échanger d’abord, ceux du bestiaire (🐉) à looter (ou à acheter s’ils sont en vente) ; relance ensuite la recherche pour les équiper.</span>
         </div>
@@ -4344,6 +4371,175 @@
     if (f.real) applyStats(); else render();
   }
 
+  // ---------- Farm de drop (🐉 Aller dropper, depuis l'optimiseur) ----------
+  // cfg.dropRun = { active, items: [{ id, name, icon, tier, need, got, srcs: [{ m: monstre, p: ta chance %, z: [zones] }] }],
+  //   zoneNames: { id: libellé }, zone, tried: [zones sans groupe utile depuis le dernier combat], skipped: [zones abandonnées],
+  //   prev: { mode, huntZone, huntZoneName, huntGroup }, startedAt }
+  // Le pilote passe en mode Chasse sur la zone la plus rentable, n'attaque que les groupes contenant un monstre qui lâche
+  // un objet voulu, compte les objets reçus (butin de fin de combat) et change de zone quand celle-ci n'a plus rien à donner.
+  // Copies : T1 = 1 exemplaire, T2 = 3, T3 = 9, T4 = 27, T5 (Rayonnant) = 81 (fusion 3 → 1).
+  const DROP_MAX_DEFEATS = 5;
+  const dropOn = () => !!cfg.dropRun?.active;
+  const dropLeft = (run = cfg.dropRun) => (run?.items || []).filter((it) => it.got < it.need);
+  const dropZoneName = (z, run = cfg.dropRun) => run?.zoneNames?.[z] || `zone ${z}`;
+  // Zones utiles : objets restants qu'on peut y obtenir, et somme des chances (la plus rentable d'abord).
+  function dropZones(run = cfg.dropRun) {
+    const zones = new Map();
+    for (const it of dropLeft(run)) {
+      for (const s of it.srcs) {
+        for (const z of s.z || []) {
+          if (run.skipped?.includes(z)) continue;
+          const e = zones.get(z) || { ids: new Set(), score: 0 };
+          if (!e.ids.has(it.id)) e.score += s.p;
+          e.ids.add(it.id);
+          zones.set(z, e);
+        }
+      }
+    }
+    return [...zones].sort((a, b) => b[1].ids.size - a[1].ids.size || b[1].score - a[1].score);
+  }
+  // Monstres à attaquer dans une zone (noms normalisés) : ceux qui lâchent un objet restant.
+  const dropTargets = (zone, run = cfg.dropRun) => new Set(dropLeft(run)
+    .flatMap((it) => it.srcs.filter((s) => (s.z || []).includes(zone)).map((s) => normName(s.m))));
+
+  // Groupe à attaquer sur la page de la zone : n° du groupe avec le plus de monstres voulus ; false si aucun ; null si la
+  // page n'est pas encore chargée.
+  function dropPickGroup() {
+    const cards = groupCards();
+    if (!cards.length) return null;
+    const targets = dropTargets(cfg.huntZone);
+    let best = null;
+    for (const p of cards) {
+      const n = groupMonsters(p).filter((m) => targets.has(normName(m))).length;
+      if (n && (!best || n > best.n)) best = { g: groupNumber(p), n };
+    }
+    return best ? best.g : false;
+  }
+
+  // Zone suivante (la plus rentable, hors zones déjà essayées sans groupe utile et zones abandonnées).
+  async function dropGoZone(why) {
+    const run = cfg.dropRun;
+    if (!run?.active) return;
+    if (!dropLeft(run).length) return dropFinish();
+    const next = dropZones(run).find(([z]) => !(run.tried || []).includes(z));
+    if (!next) {
+      const lost = dropLeft(run).map((it) => it.name);
+      return dropStop(`aucune zone restante n’a de groupe avec les monstres voulus${run.skipped?.length ? ` (${run.skipped.length} zone(s) abandonnée(s) après ${DROP_MAX_DEFEATS} défaites)` : ''}. Objets manquants : ${lost.join(', ')}`);
+    }
+    const [z, info] = next;
+    DM.log(`farm de drop : ${why} → ${dropZoneName(z)} (${info.ids.size} objet(s) possible(s))`);
+    await save({ dropRun: { ...run, zone: z }, huntZone: z, huntZoneName: dropZoneName(z), huntGroup: null, huntTarget: null, lossStreak: 0 });
+    setStatus(`Farm de drop : ${why} → ${dropZoneName(z)}…`);
+    progress();
+    if (isOwner()) location.assign(`/chasse?zone=${z}`);
+  }
+
+  // Butin de fin de combat (rewards.items : un exemplaire par ligne, « f » = tier de fusion).
+  let dropLastReward = '';
+  function dropOnRewards(rewards, key) {
+    if (!dropOn() || !Array.isArray(rewards?.items) || !rewards.items.length) return;
+    const sig = `${key}|${rewards.items.map((i) => `${i.id}:${i.f || 0}`).join(',')}`;
+    if (sig === dropLastReward) return;
+    dropLastReward = sig;
+    const run = { ...cfg.dropRun, items: cfg.dropRun.items.map((it) => ({ ...it })) };
+    const got = [];
+    for (const r of rewards.items) {
+      const it = run.items.find((x) => x.id === r.id && x.got < x.need);
+      if (!it) continue;
+      it.got = Math.min(it.need, it.got + 3 ** (+r.f || 0));
+      got.push(it);
+    }
+    if (!got.length) return;
+    run.tried = [];
+    save({ dropRun: run });
+    for (const it of got) {
+      DM.log(`farm de drop : ${it.name} ${it.got}/${it.need}`);
+      notify('drop', `🐉 Drop : **${it.name}** (${it.got}/${it.need}${it.got >= it.need ? ' ✔' : ''}) — ${dropZoneName(run.zone, run)}`);
+    }
+    if (!dropLeft(run).length) dropFinish();
+  }
+
+  // Fin du farm : pilote arrêté, mode précédent rétabli.
+  async function dropEnd(status, msg) {
+    const run = cfg.dropRun;
+    if (!run) return;
+    const prev = run.prev || {};
+    await save({ dropRun: { ...run, active: false, endedAt: Date.now() }, enabled: false, paused: false, botFight: false, status,
+      mode: prev.mode || cfg.mode, huntZone: prev.huntZone ?? null, huntZoneName: prev.huntZoneName || '', huntGroup: prev.huntGroup ?? null, huntTarget: null });
+    notify('drop', msg);
+  }
+  const dropFinish = () => dropEnd('Farm de drop terminé ✔',
+    `✅ **Farm de drop terminé** : tout est droppé (${(cfg.dropRun?.items || []).map((it) => `${it.name} ×${it.need}`).join(', ')}). Pilote arrêté.`);
+  const dropStop = (reason) => dropEnd(`Farm de drop arrêté : ${reason}`.slice(0, 200), `⏹️ **Farm de drop arrêté** : ${reason}`);
+
+  // Lancement depuis l'optimiseur : items = [{ id, name, icon, tier, srcs }], zoneNames = { id: libellé }.
+  async function startDropFarm(items, zoneNames) {
+    const run = {
+      active: true, startedAt: Date.now(), zoneNames, tried: [], skipped: [], zone: null,
+      items: items.map((it) => ({ ...it, need: 3 ** (it.tier - 1), got: 0 })),
+      prev: dropOn() ? cfg.dropRun.prev : { mode: cfg.mode, huntZone: cfg.huntZone, huntZoneName: cfg.huntZoneName, huntGroup: cfg.huntGroup },
+    };
+    if (!dropZones(run).length) throw new Error('aucune zone de chasse connue pour ces objets');
+    await save({ dropRun: run, mode: 'chasse', pauseReason: null });
+    await send({ type: 'claim', start: true }).catch(() => {});   // le pilote démarre sur cet onglet
+    await dropGoZone('départ');
+  }
+
+  // Fenêtre « 🐉 Aller dropper » : objets à looter du build, tier voulu pour chacun.
+  function openDropFarm(r) {
+    document.querySelector('.dm-drop-farm')?.remove();
+    const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+    const zones = r.bestiary?.zones || {};
+    const items = Object.values(r.final).filter((c) => c?.src === 'drop').map((c) => {
+      const srcs = (c.sources || []).filter(([, , , p, zs]) => p > 0 && zs?.length).map(([m, , , p, z]) => ({ m, p, z }));
+      return { c, srcs, best: Math.max(0, ...srcs.map((s) => s.p)) };
+    });
+    const ov = document.createElement('div');
+    ov.className = 'dm-drop-farm';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483601;background:#000c;display:grid;justify-items:center;align-items:start;padding:4vh 16px 16px;font:13px system-ui,sans-serif;color:#eee';
+    const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:5px 10px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
+    const inp = 'background:#2a231a;border:1px solid #5a4a33;border-radius:8px;color:#eee;padding:3px 6px;font:13px system-ui,sans-serif';
+    const pct = (x) => `${(x >= 1 ? x.toFixed(1) : x.toFixed(2)).replace('.', ',')} %`;
+    ov.innerHTML = `<div style="width:min(680px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
+      <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🐉 Aller dropper${DM.tip('Le pilote passe en mode Chasse : il va dans la zone la plus rentable, n’attaque que les groupes qui contiennent un monstre qui lâche un objet voulu, compte les objets reçus en fin de combat et change de zone quand celle-ci n’a plus rien à donner (ou aucun groupe utile). 5 défaites d’affilée dans une zone : elle est abandonnée (notification) et on passe à la suivante. Plus aucune zone possible : arrêt + notification. Tout est droppé : arrêt + notification. Le mode de combat (Auto du jeu / par poids) est celui du menu 🤖. Tier : T1 = 1 exemplaire, T2 = 3, T3 = 9, T4 = 27, T5 (Rayonnant) = 81 (fusion 3 → 1).')}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
+      <div style="overflow-y:auto;display:flex;flex-direction:column;gap:4px">${items.map(({ c, srcs, best }, i) => `<div style="display:flex;align-items:center;gap:8px;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:5px 8px;${srcs.length ? '' : 'opacity:.55'}">
+        <input type="checkbox" data-i="${i}" ${srcs.length ? 'checked' : 'disabled'}>
+        ${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain">` : ''}
+        <span style="flex:1;min-width:0"><b>${esc(c.name)}</b><br><span style="color:#8a7d66;font-size:12px">${srcs.length ? `meilleure chance ${pct(best)} · ${new Set(srcs.flatMap((s) => s.z)).size} zone(s) · ${esc(srcs.slice().sort((a, b) => b.p - a.p).slice(0, 2).map((s) => `${s.m} (${pct(s.p)})`).join(', '))}` : 'pas de drop de monstre connu (bonus de victoire, boss…) : ignoré'}</span></span>
+        <select data-t="${i}" style="${inp}" ${srcs.length ? '' : 'disabled'}>${[1, 2, 3, 4, 5].map((t) => `<option value="${t}">T${t}${t === 5 ? ' (Rayonnant)' : ''}</option>`).join('')}</select>
+        <span data-est="${i}" style="color:#b9a98c;font-size:12px;width:92px;text-align:right"></span>
+      </div>`).join('') || '<div style="color:#b9a98c">Aucun objet à looter dans ce build.</div>'}</div>
+      <div style="display:flex;gap:8px;align-items:center"><span data-k="msg" style="flex:1;font-size:12px;color:#b9a98c"></span><button data-a="go" style="${btn};background:#8a5a1a">🐉 Lancer le farm</button></div></div>`;
+    document.body.appendChild(ov);
+    DM.installTips(ov);
+    const $ = (q) => ov.querySelector(q);
+    const est = () => items.forEach(({ best }, i) => {
+      const el = $(`[data-est="${i}"]`);
+      if (!el || !best) return;
+      const need = 3 ** (+$(`[data-t="${i}"]`).value - 1);
+      el.textContent = `${need} ex. · ~${Math.ceil(need / (best / 100)).toLocaleString('fr-FR')} combats`;
+    });
+    est();
+    const close = () => ov.remove();
+    ov.addEventListener('change', est);
+    ov.addEventListener('click', async (e) => {
+      if (e.target === ov || e.target.closest('[data-a="x"]')) return close();
+      if (!e.target.closest('[data-a="go"]')) return;
+      const pick = items.map((x, i) => ({ ...x, i })).filter(({ srcs, i }) => srcs.length && $(`[data-i="${i}"]`).checked);
+      if (!pick.length) { $('[data-k="msg"]').textContent = 'Coche au moins un objet.'; return; }
+      const zoneNames = {};
+      for (const { srcs } of pick) for (const s of srcs) for (const z of s.z) zoneNames[z] = zones[z]?.[0] || `Zone ${z}`;
+      try {
+        $('[data-k="msg"]').textContent = 'Lancement…';
+        await startDropFarm(pick.map(({ c, srcs, i }) => ({ id: c.id, name: c.name, icon: c.icon, tier: +$(`[data-t="${i}"]`).value, srcs })), zoneNames);
+        close();
+        document.querySelector('.dm-picker')?.remove();
+      } catch (err) {
+        $('[data-k="msg"]').textContent = `❌ ${err.message}`;
+      }
+    });
+  }
+
   // ---------- Auto par poids : notre propre mode auto (cfg.fightEngine === 'weights') ----------
   // L'Auto du jeu joue à la vitesse ×1 ; ici le pilote joue lui-même, comme à la main, par la server action du combat
   // « fightAction(action, idOnglet, seq) » : { type:'play', card: uid, target } ou { type:'end' }. Chaque réponse
@@ -4522,6 +4718,7 @@
         if (res.otherTab || !res.state) return fallback(`réponse inattendue (${Object.keys(res).join(', ')})`);
         if (pick) { casts[pick.key] = p.turnNo; keepCasts(); }
         st = res.state;
+        if (res.rewards && st.status !== 'ongoing') dropOnRewards(res.rewards, `${st.kind}|${st.logCount}`);
       }
       if (st.status !== 'ongoing') DM.log(`auto par poids : combat ${st.status === 'won' ? 'gagné' : 'perdu'}`);
     } catch (e) {
@@ -4767,6 +4964,10 @@
           <div class="head"><span>🤖 Pilote auto${DM.tip("Démarre ou arrête le pilote sur cet onglet. Il enchaîne les combats en Auto selon l’activité choisie ci-dessous. Compteur : victoires / défaites du pilote.")}</span><span class="muted" data-k="stats"></span></div>
           <div class="status" data-k="status"></div>
           <button data-k="toggle"></button>
+          <div data-k="dropBox" class="muted" style="display:none;flex-direction:column;gap:3px;border:1px solid #6a3fa0;border-radius:6px;padding:6px">
+            <div data-k="dropInfo"></div>
+            <button data-k="dropStop" style="padding:2px 7px;font-size:12px" data-tip="Arrête le farm de drop (le pilote s’arrête aussi).">■ Arrêter le farm</button>
+          </div>
           <details data-k="timesBox">
             <summary class="muted">⏱ Chronomètre des combats${DM.tip("Durée moyenne d’un combat du pilote (du lancement à l’écran de fin) et de la boucle complète (d’un lancement au suivant, pauses de plus de 5 min exclues), par activité et par mode de combat. Pour comparer l’Auto du jeu et l’Auto par poids sur la durée.")}</summary>
             <div class="muted" data-k="times" style="display:flex;flex-direction:column;gap:3px;margin-top:4px"></div>
@@ -4916,6 +5117,7 @@
     $('fuseScan').addEventListener('click', () => scanFusions());
     $('spells').addEventListener('click', () => { setOpen(false); openSpellList(); });
     $('timesReset').addEventListener('click', () => save({ fightTimes: {} }));
+    $('dropStop').addEventListener('click', () => dropStop('arrêté à la main'));
     $('weights').addEventListener('click', () => { setOpen(false); openCardWeights(); });
     for (const b of root.querySelectorAll('[data-engine]')) {
       b.addEventListener('click', async () => { await save({ fightEngine: b.dataset.engine }); renderUi(); });
@@ -5370,6 +5572,15 @@
     const hunt = cfg.mode === 'chasse';
     $('stats').textContent = `${cfg.wins || 0} V / ${cfg.losses || 0} D`;
     { const h = timeLines() || 'Pas encore de mesure : lance le pilote.'; if ($('times').innerHTML !== h) $('times').innerHTML = h; }
+    {
+      const run = cfg.dropRun;
+      $('dropBox').style.display = run?.active ? 'flex' : 'none';
+      if (run?.active) {
+        const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+        const h = `<b>🐉 Farm de drop</b> · ${esc(dropZoneName(run.zone))}${run.items.map((it) => `<div>${it.got >= it.need ? '✔' : '•'} ${esc(it.name)} : ${it.got}/${it.need}</div>`).join('')}`;
+        if ($('dropInfo').innerHTML !== h) $('dropInfo').innerHTML = h;
+      }
+    }
     $('status').textContent = on ? (cfg.status || '—') : cfg.enabled ? 'Actif dans un autre onglet' : 'Arrêté';
     const tg = $('toggle');
     tg.textContent = cfg.enabled ? '■ Arrêter' : `▶ Démarrer (${DM.modeLabel(cfg)})`;
