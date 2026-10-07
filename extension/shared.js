@@ -108,8 +108,10 @@ const DM = {
       || zone.match(/class="title text-xl leading-tight"[^>]*>([^<]+)</);
     if (name) info.name = name[1];
 
+    // Compte à rebours du boss (« Arrive dans » / « Repart dans ») : dans le payload RSC, loin du texte rendu
+    // de la section (v2 du site) → cherché dans toute la page, les autres comptes à rebours ont un autre libellé.
     let found = false;
-    for (const m of zone.matchAll(/"to"\s*:\s*(\d{12,14})\s*,\s*"prefix"\s*:\s*"([^"]*)"/g)) {
+    for (const m of s.matchAll(/"to"\s*:\s*(\d{12,14})\s*,\s*"prefix"\s*:\s*"((?:Arrive|Repart)[^"]*)"/gi)) {
       const to = +m[1];
       info.anchor = /arrive/i.test(m[2]) ? to : to - info.duration;
       info.timerPrefix = m[2];
