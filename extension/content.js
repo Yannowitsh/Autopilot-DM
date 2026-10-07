@@ -1449,7 +1449,7 @@
     const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:6px 12px;color:#fff;cursor:pointer;font:600 13px system-ui,sans-serif';
     const ov = document.createElement('div');
     ov.className = 'dm-history dm-picker';
-    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:#000a;display:grid;place-items:center;padding:16px;font:13px system-ui,sans-serif;color:#eee';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:#000a;display:grid;justify-items:center;align-items:start;padding:4vh 16px 16px;font:13px system-ui,sans-serif;color:#eee';
     ov.innerHTML = `
       <div style="width:min(680px,100%);max-height:88vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
         <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🕘 Historique des échanges${DM.tip('Chaque envoi (bouton « Échanger » ou file) avec ce qui est parti, ce qui a été perdu, ce qui n’a pas pu partir et pourquoi. Gardé dans Chrome (1000 dernières lignes), commun à tes deux comptes.')}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
@@ -1576,7 +1576,7 @@
     const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
     const ov = document.createElement('div');
     ov.className = 'dm-picker';
-    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:#000a;display:grid;place-items:center;padding:16px;font:13px system-ui,sans-serif;color:#eee';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:#000a;display:grid;justify-items:center;align-items:start;padding:4vh 16px 16px;font:13px system-ui,sans-serif;color:#eee';
     ov.innerHTML = '<div style="background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:16px">Chargement des objets…</div>';
     document.body.appendChild(ov);
     const close = () => { ov.remove(); document.removeEventListener('keydown', onKey, true); };
@@ -2862,7 +2862,7 @@
     const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
     const ov = document.createElement('div');
     ov.className = 'dm-dtest dm-picker';
-    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483601;background:#000c;display:grid;place-items:center;padding:16px;font:13px system-ui,sans-serif;color:#eee';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483601;background:#000c;display:grid;justify-items:center;align-items:start;padding:4vh 16px 16px;font:13px system-ui,sans-serif;color:#eee';
     const close = () => ov.remove();
     ov.addEventListener('click', (e) => { if (e.target === ov || e.target.closest('[data-a="close"]')) close(); });
     ov.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Escape') close(); });
@@ -3694,7 +3694,7 @@
     const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
     const ov = document.createElement('div');
     ov.className = 'dm-picker';
-    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:#000a;display:grid;place-items:center;padding:16px;font:13px system-ui,sans-serif;color:#eee';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:#000a;display:grid;justify-items:center;align-items:start;padding:4vh 16px 16px;font:13px system-ui,sans-serif;color:#eee';
     const close = () => { ov.remove(); document.removeEventListener('keydown', onKey, true); };
     const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
     document.addEventListener('keydown', onKey, true);
@@ -4097,14 +4097,14 @@
     const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
     const ov = document.createElement('div');
     ov.className = 'dm-picker';
-    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:#000a;display:grid;place-items:center;padding:16px;font:13px system-ui,sans-serif;color:#eee';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:#000a;display:grid;justify-items:center;align-items:start;padding:4vh 16px 16px;font:13px system-ui,sans-serif;color:#eee';
     const close = () => { ov.remove(); document.removeEventListener('keydown', onKey, true); };
     const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
     document.addEventListener('keydown', onKey, true);
     ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
     const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:4px 9px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
     ov.innerHTML = `<div style="width:min(720px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
-      <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">❤️ Favoris${DM.tip('Builds enregistrés avec 💾 dans l’optimiseur : « Ouvrir » les réaffiche sans relancer la recherche. Objets ajoutés avec le cœur ♡ de l’optimiseur de build. Clique sur un objet pour voir les boss et monstres qui le lâchent, avec tes chances ; clique sur une zone pour ouvrir ses groupes de chasse.')}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
+      <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">❤️ Favoris${DM.tip('Builds enregistrés avec 💾 dans l’optimiseur : « Ouvrir » les réaffiche sans relancer la recherche. Objets ajoutés avec le cœur ♡ de l’optimiseur de build. Clique sur un objet pour voir les boss et monstres qui le lâchent, avec tes chances ; clique sur une zone pour ouvrir ses groupes de chasse.')}</b><button data-a="clear" style="${btn}" title="Retirer tous les objets favoris (les builds enregistrés sont gardés) — 2e clic pour confirmer">🗑️ Vider tout</button><button data-a="x" style="${btn};background:transparent">✕</button></div>
       <div data-k="msg" style="font-size:12px;color:#b9a98c"></div>
       <div style="overflow-y:auto;display:flex;flex-direction:column;gap:10px">
         <div data-k="saves" style="display:flex;flex-direction:column;gap:4px"></div>
@@ -4138,6 +4138,7 @@
         <span style="flex:1">${esc(x.name)} <span style="color:#8a7d66;font-size:12px">— ${esc(x.who || '?')}, ${new Date(x.at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}</span></span>
         <button data-open-save="${esc(x.id)}" style="${btn};background:#2e6fbf">📂 Ouvrir</button></div>`).join('')}<b style="font-size:13px;margin-top:6px">❤️ Objets</b>` : '';
       const favs = Object.entries(buildFavs()).sort((x, y) => (y[1].lvl || 0) - (x[1].lvl || 0));
+      $('[data-a="clear"]').style.display = favs.length ? '' : 'none';
       $('[data-k="list"]').innerHTML = favs.length ? favs.map(([id, f]) => `<details style="background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:6px 8px">
         <summary style="cursor:pointer;display:flex;align-items:center;gap:6px">${f.icon ? `<img src="/img/items/${+f.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain">` : ''}
           <b style="flex:1">${esc(f.name)}</b><span style="color:#8a7d66;font-size:12px">${esc(SLOT_NAMES[f.type] || f.type || '')}${f.lvl ? ` · niv. ${f.lvl}` : ''}${f.setName ? ` · ${esc(f.setName)}` : ''}</span>
@@ -4149,6 +4150,20 @@
     render();
     ov.addEventListener('click', async (e) => {
       if (e.target.closest('[data-a="x"]')) return close();
+      const clr = e.target.closest('[data-a="clear"]');
+      if (clr) {
+        if (!clr.dataset.armed) {   // 2e clic dans les 5 s pour confirmer
+          clr.dataset.armed = '1';
+          clr.textContent = `⚠️ Confirmer : retirer ${Object.keys(buildFavs()).length} objet(s)`;
+          setTimeout(() => { if (clr.isConnected) { delete clr.dataset.armed; clr.textContent = '🗑️ Vider tout'; } }, 5000);
+          return;
+        }
+        delete clr.dataset.armed;
+        clr.textContent = '🗑️ Vider tout';
+        await save({ buildFavs: {} });
+        render();
+        return;
+      }
       const os = e.target.closest('[data-open-save]');
       if (os) { close(); openBuildOptimizer({ load: os.dataset.openSave }); return; }
       const un = e.target.closest('[data-unfav]');
@@ -4167,7 +4182,7 @@
     const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
     const ov = document.createElement('div');
     ov.className = 'dm-picker';
-    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:#000a;display:grid;place-items:center;padding:16px;font:13px system-ui,sans-serif;color:#eee';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:#000a;display:grid;justify-items:center;align-items:start;padding:4vh 16px 16px;font:13px system-ui,sans-serif;color:#eee';
     ov.innerHTML = '<div style="background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:16px">Lecture de tes sorts…</div>';
     document.body.appendChild(ov);
     let favChanged = false;
@@ -4516,7 +4531,7 @@
     const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
     const ov = document.createElement('div');
     ov.className = 'dm-picker';
-    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:#000a;display:grid;place-items:center;padding:16px;font:13px system-ui,sans-serif;color:#eee';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:#000a;display:grid;justify-items:center;align-items:start;padding:4vh 16px 16px;font:13px system-ui,sans-serif;color:#eee';
     ov.innerHTML = '<div style="background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:16px">Lecture de ton deck…</div>';
     document.body.appendChild(ov);
     const close = () => { ov.remove(); document.removeEventListener('keydown', onKey, true); };
