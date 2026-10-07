@@ -2729,7 +2729,7 @@
 
   // ---------- Optimiseur de build : équipement qui maximise les dégâts d'un tour ----------
   // Stats d'un build = points de base (fiche perso) + objets (fusion, puis prestige +25 %/niveau hors PA/PM/PO/invoc.)
-  // + bonus de panoplie (dofusdb, palier d'indice = nombre d'objets portés, plafonné ; rien sous 2 objets — calé sur
+  // + bonus de panoplie (dofusdb, palier d'indice = nombre d'objets portés − 1, plafonné ; rien sous 2 objets — calé sur
   // le panneau « Panoplies » de la fiche). Dégâts d'un tour = meilleure combinaison de K sorts tenant dans les PA
   // (formule de la tierlist, cible sans résistances). Recherche locale (emplacement par emplacement + panoplies
   // complètes) avec plusieurs départs.
@@ -2969,7 +2969,9 @@
     return ok ? best : guess;
   }
 
-  const setTier = (fx, count) => (!fx?.length || count < 2 ? null : fx[Math.min(count, fx.length - 1)]);
+  // dofusdb : effects[i] = bonus avec i + 1 objets portés (effects[0] vide) ; vérifié sur la fiche du jeu
+  // (Frimanoplie 2/4 → effects[1], sans le +1 PA de effects[2]).
+  const setTier = (fx, count) => (!fx?.length || count < 2 ? null : fx[Math.min(count - 1, fx.length - 1)]);
 
   // Fiche perso : niveau, prestige, points de base, PV/PA affichés, panoplies actives (texte du jeu).
   async function fetchCharSheet() {
