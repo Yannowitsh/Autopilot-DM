@@ -55,7 +55,7 @@
     quiet(() => queueBox?.remove());
     quiet(() => toastEl?.remove());
     quiet(() => cardStack?.host.remove());
-    quiet(() => document.querySelectorAll('.dm-deck-weights, .dm-fuse-all, .dm-unequip-all, .dm-manual-weights').forEach((el) => el.remove()));
+    quiet(() => document.querySelectorAll('.dm-deck-weights, .dm-fuse-all, .dm-unequip-all, .dm-cancel-all, .dm-manual-weights').forEach((el) => el.remove()));
     document.querySelectorAll('.dm-trade, .dm-lock, .dm-picker, .dm-tip, .dm-tip-style').forEach((el) => el.remove());
     console.info('[Autopilot-DM] Extension rechargée : recharge la page pour la réactiver.');
   }
@@ -2031,6 +2031,7 @@
     if (modOn('wanted')) highlightWanted();
     if (modOn('fusion')) scanFuseButtons(); else document.querySelectorAll('.dm-fuse-all').forEach((el) => el.remove());
     scanUnequipAllButton();
+    scanCancelAllButton();
     scanManualWeightsButton();
     scanDeckButton();
   }
@@ -2165,6 +2166,63 @@
   // Bouton « Tout retirer » à gauche de « Vendre (ou briser) plusieurs objets » (/inventaire) : retire tous les objets
   // portés, emplacement par emplacement (server action « unequipItem(emplacement) »). 2e clic = confirmation.
   const UNEQUIP_ACTION_FALLBACK = '405fdd8f47dcc7595578823c1750c0209b9a25b227';
+  // Bouton « Retirer toutes les ventes » à côté du titre « Mes ventes en cours » (/hdv?onglet=vendre) : retire chaque
+  // annonce une par une (server action « cancelListing(idAnnonce) »), les objets reviennent dans l'inventaire. 2e clic = confirmation.
+  function scanCancelAllButton() {
+    if (!location.pathname.startsWith('/hdv')) return;
+    const h2 = [...document.querySelectorAll('h2')].find((h) => h.textContent.trim() === 'Mes ventes en cours');
+    const head = h2?.parentElement;
+    if (!head || head.querySelector('.dm-cancel-all')) return;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn btn-ghost !py-1 text-sm ml-auto dm-cancel-all';
+    b.textContent = '🧹 Retirer toutes les ventes';
+    b.title = 'Autopilot-DM : retire toutes tes annonces de l’HDV, les objets reviennent dans ton inventaire (2e clic pour confirmer). La page se recharge à la fin.';
+    b.addEventListener('click', onCancelAll);
+    h2.after(b);
+  }
+
+  async function onCancelAll(e) {
+    const btn = e.currentTarget;
+    if (btn.dataset.busy) return;
+    const label = '🧹 Retirer toutes les ventes';
+    if (!btn.dataset.armed) {
+      const n = +(btn.parentElement?.textContent.match(/(\d+)\s*\/\s*\d+\s*offres/) || [])[1];
+      btn.dataset.armed = '1';
+      btn.textContent = `⚠️ Confirmer : retirer ${n ? `${n} vente${n > 1 ? 's' : ''}` : 'tout'}`;
+      setTimeout(() => { if (!btn.dataset.busy) { delete btn.dataset.armed; btn.textContent = label; } }, 6000);
+      return;
+    }
+    delete btn.dataset.armed;
+    btn.dataset.busy = '1';
+    btn.disabled = true;
+    let done = 0, failed = 0;
+    try {
+      btn.textContent = 'Lecture de mes ventes…';
+      const { own } = await fetchSellable();
+      for (const l of own) {
+        btn.textContent = `Retrait ${done + failed + 1}/${own.length}…`;
+        try {
+          await hdvCall('cancelListing', [l.id], '?onglet=vendre');
+          done++;
+        } catch (err) {
+          failed++;
+          DM.log(`retirer toutes les ventes : ${l.name || `annonce ${l.id}`} : ${err.message}`);
+        }
+        await sleep(150 + Math.random() * 150);
+      }
+      DM.log(`retirer toutes les ventes : ${done} retirée(s)${failed ? `, ${failed} échec(s)` : ''}`);
+      tradeToast(own.length ? `🧹 ${done} vente(s) retirée(s)${failed ? ` · ${failed} échec(s) (voir le journal)` : ''}` : '🧹 Aucune vente en cours.', failed ? 'err' : 'ok');
+    } catch (err) {
+      tradeToast(`🧹 Échec : ${err.message}`, 'err');
+    } finally {
+      delete btn.dataset.busy;
+      btn.disabled = false;
+      btn.textContent = label;
+      if (done) setTimeout(() => location.reload(), 1200);
+    }
+  }
+
   function scanUnequipAllButton() {
     if (!location.pathname.startsWith('/inventaire')) return;
     const anchor = [...document.querySelectorAll('button')].find((b) => /^(Vendre ou briser plusieurs objets|Vendre plusieurs objets|Quitter la sélection)$/.test(b.textContent.trim()));
