@@ -940,9 +940,13 @@
   // ---------- Échange entre deux comptes via l'HDV ----------
   // Compte A (onglet normal) et compte B (onglet en navigation privée, extension autorisée en privé) :
   // le service worker est commun aux deux contextes, il relaie la demande à un onglet de l'autre contexte.
-  // « Échanger » : A met l'objet en vente à 1 kamas (listItem), B l'achète aussitôt (buyListing).
+  // « Échanger » : A met l'objet en vente à un petit prix aléatoire (11-49 K, listItem), B l'achète aussitôt (buyListing).
   // Si l'achat échoue, A retire l'annonce (cancelListing) pour qu'un tiers ne l'achète pas.
-  const TRADE_PRICE = 1;
+  // Prix de l'annonce d'échange : tiré au hasard entre 11 et 49 K pour chaque annonce (une annonce à 1 K se fait racheter
+  // par des tiers en une fraction de seconde) ; il est suivi exactement pour retrouver / retirer l'annonce.
+  const TRADE_PRICE_MIN = 11, TRADE_PRICE_MAX = 49;
+  const tradePrice = () => TRADE_PRICE_MIN + Math.floor(Math.random() * (TRADE_PRICE_MAX - TRADE_PRICE_MIN + 1));
+  const tradeListed = new Set();   // annonces d'échange de l'envoi en cours : « id|tier|prix » (filet de sécurité)
   const HDV_ACTION_FALLBACK = {
     listItem: '702736ba6595110a5f795129bb67e1474296b9bbc3',      // (itemId, fusion, prix) → { ok } ou { error }
     buyListing: '4069e01f9c51baeb8173b67961698d890b954c0314',    // (listingId)
@@ -958,7 +962,7 @@
 
   // Server action de l'HDV. Si l'ID est périmé (nouveau déploiement : HTTP 404 ou réponse illisible), on le relit et on
   // réessaie une fois. Jamais sur une erreur serveur (5xx, 508…) ni réseau : relire l'ID prend plusieurs secondes,
-  // pendant lesquelles une annonce à 1 kamas resterait en vente.
+  // pendant lesquelles une annonce d'échange resterait en vente.
   async function hdvCall(name, args, query = '') {
     try {
       return await postAction('hdv', await hdvAction(name), args, query);
@@ -1045,24 +1049,24 @@
     return out;
   }
 
-  // ID de l'annonce à 1 kamas qu'on vient de créer, lu dans la page renvoyée avec le résultat de listItem
+  // ID de l'annonce d'échange qu'on vient de créer, lu dans la page renvoyée avec le résultat de listItem
   // (annonces « mine » résolues ; sinon recherche dans le texte brut).
-  function findMyListing(text, itemId, fusion) {
+  function findMyListing(text, itemId, fusion, price) {
     const { rows, props } = rscProps(text, (x) => Array.isArray(x.mine) && Array.isArray(x.inventory));
-    const own = props ? ownListings(rows, props.mine).filter((l) => l.price === TRADE_PRICE && l.fusion === fusion && l.itemId === itemId) : [];
+    const own = props ? ownListings(rows, props.mine).filter((l) => l.price === price && l.fusion === fusion && l.itemId === itemId) : [];
     if (own.length) return Math.max(...own.map((l) => l.id));
     let best = null;
     for (const m of text.matchAll(/\{"id":(\d+),"price":(\d+),"fusion":(\d+),"mine":true,"seller":"(?:[^"\\]|\\.)*","item":\{"id":(\d+)/g)) {
-      if (+m[2] === TRADE_PRICE && +m[3] === fusion && +m[4] === itemId) best = Math.max(best || 0, +m[1]);
+      if (+m[2] === price && +m[3] === fusion && +m[4] === itemId) best = Math.max(best || 0, +m[1]);
     }
     return best;
   }
 
-  // Côté acheteur, si l'ID n'a pas pu être lu : annonce la plus récente de ce vendeur pour cet objet à 1 kamas.
-  async function findListingOnMarket({ itemId, fusion, seller }) {
+  // Côté acheteur, si l'ID n'a pas pu être lu : annonce la plus récente de ce vendeur pour cet objet à ce prix.
+  async function findListingOnMarket({ itemId, fusion, seller, price }) {
     const { flight } = await fetchFlight('/hdv');
     const who = seller ? JSON.stringify(seller).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '"(?:[^"\\\\]|\\\\.)*"';
-    const re = new RegExp(`\\{"id":(\\d+),"price":${TRADE_PRICE},"fusion":${+fusion},"mine":false,"seller":${who},"item":\\{"id":${+itemId}[,}]`, 'g');
+    const re = new RegExp(`\\{"id":(\\d+),"price":${+price || '\\d+'},"fusion":${+fusion},"mine":false,"seller":${who},"item":\\{"id":${+itemId}[,}]`, 'g');
     let best = null;
     for (const m of flight.matchAll(re)) best = Math.max(best || 0, +m[1]);
     return best;
@@ -1090,7 +1094,7 @@
   }
 
   // ---------- Robustesse de l'échange ----------
-  // Une annonce à 1 kamas ne doit jamais rester en vente si l'autre compte ne l'achète pas aussitôt :
+  // Une annonce d'échange ne doit jamais rester en vente si l'autre compte ne l'achète pas aussitôt :
   // - avant chaque mise en vente, on vérifie que l'autre compte (session + serveur) répond, sinon on attend ;
   // - l'achat doit être confirmé en BUY_WAIT_MS, sinon l'annonce est retirée sans attendre la réponse ;
   // - après un échec technique (HTTP 5xx, onglet en rechargement…), l'objet est retenté une fois l'autre compte revenu.
@@ -1132,12 +1136,12 @@
   // « gone » seulement si le jeu dit que la vente n'existe plus, ou si elle n'est plus dans mes annonces ; tout autre
   // refus (« attends un peu »…) est retenté — avant, il était pris pour « achetée par un autre joueur ».
   const GONE_RE = /n.existe plus|introuvable|plus en vente|déjà (été )?vendu|déjà (été )?achet/i;
-  const myTradeListing = (own, entry) => Math.max(0, ...own.filter((l) => l.price === TRADE_PRICE && l.itemId === entry.id && l.fusion === entry.fusion).map((l) => l.id)) || null;
-  async function cancelTradeListing(listingId, entry) {
+  const myTradeListing = (own, entry, price) => Math.max(0, ...own.filter((l) => l.price === price && l.itemId === entry.id && l.fusion === entry.fusion).map((l) => l.id)) || null;
+  async function cancelTradeListing(listingId, entry, price) {
     let id = listingId, last = null;
     for (let i = 0; i < CANCEL_TRIES; i++) {
       try {
-        if (!id) id = myTradeListing((await fetchSellable()).own, entry);
+        if (!id) id = myTradeListing((await fetchSellable()).own, entry, price);
         if (!id) return { gone: true, error: 'annonce plus en vente' };
         await hdvCall('cancelListing', [id], '?onglet=vendre');
         return { ok: true };
@@ -1146,7 +1150,7 @@
         if (e.game && GONE_RE.test(e.message)) {
           // le jeu dit qu'elle n'existe plus : on vérifie dans mes annonces avant de le croire
           try {
-            const still = myTradeListing((await fetchSellable()).own, entry);
+            const still = myTradeListing((await fetchSellable()).own, entry, price);
             if (!still) return { gone: true, error: e.message };
             id = still;
           } catch { return { gone: true, error: e.message }; }
@@ -1159,13 +1163,14 @@
     return { error: last?.message || 'retrait impossible' };
   }
 
-  // Filet de sécurité en fin d'envoi : retire mes annonces à 1 kamas restées en vente pour les objets de cet envoi.
-  async function sweepTradeListings(items, say) {
-    if (!items.size) return 0;
+  // Filet de sécurité en fin d'envoi : retire mes annonces d'échange de cet envoi restées en vente (objet, tier et prix exacts :
+  // une vraie vente du même objet à un autre prix n'est pas touchée).
+  async function sweepTradeListings(say) {
+    if (!tradeListed.size) return 0;
     let n = 0;
     try {
       const { own } = await fetchSellable();
-      for (const l of own.filter((x) => x.price === TRADE_PRICE && items.has(`${x.itemId}|${x.fusion}`))) {
+      for (const l of own.filter((x) => tradeListed.has(`${x.itemId}|${x.fusion}|${x.price}`))) {
         try {
           await hdvCall('cancelListing', [l.id], '?onglet=vendre');
           n++;
@@ -1177,34 +1182,37 @@
     } catch (e) {
       DM.log(`échange: vérification des annonces restantes impossible (${e.message})`);
     }
-    if (n) say?.(`🧹 ${n} annonce(s) à 1 kamas restée(s) en vente retirée(s).`);
+    tradeListed.clear();
+    if (n) say?.(`🧹 ${n} annonce(s) d’échange restée(s) en vente retirée(s).`);
     return n;
   }
 
-  // Un exemplaire : mise en vente à 1 kamas puis achat par l'autre compte. last = dernier de la série (l'acheteur recharge sa page).
+  // Un exemplaire : mise en vente à 11-49 K puis achat par l'autre compte. last = dernier de la série (l'acheteur recharge sa page).
   // Erreur avec retry = true : rien n'est perdu (annonce retirée ou jamais créée), on peut retenter.
   async function tradeOne(ctx, entry, say, last = true) {
     await peerReady(say);
-    say(`${entry.name} : mise en vente à ${TRADE_PRICE} K…`);
+    const price = tradePrice();
+    tradeListed.add(`${entry.id}|${entry.fusion}|${price}`);
+    say(`${entry.name} : mise en vente à ${price} K…`);
     const t0 = performance.now();
     let text;
     try {
-      ({ text } = await hdvCall('listItem', [entry.id, entry.fusion, TRADE_PRICE], '?onglet=vendre'));
+      ({ text } = await hdvCall('listItem', [entry.id, entry.fusion, price], '?onglet=vendre'));
     } catch (e) {
       if (e.game) throw e;   // refus du jeu (HDV plein…) : inutile de retenter
       // erreur technique : la vente a peut-être été créée quand même → on la retire si elle existe
-      const c = await cancelTradeListing(null, entry);
+      const c = await cancelTradeListing(null, entry, price);
       if (c.error && !c.gone) throw tradeErr(`${entry.name} : mise en vente incertaine (${e.message}) et retrait impossible (${c.error}) — vérifie tes ventes à l’HDV !`, { lost: 'maybe', why: e.message, cancel: c.error });
       throw tradeErr(`${entry.name} : mise en vente impossible (${e.message})`, { retry: true });
     }
-    let listingId = findMyListing(text, entry.id, entry.fusion);
+    let listingId = findMyListing(text, entry.id, entry.fusion, price);
     if (!listingId) {
       // numéro d'annonce absent de la réponse : on relit mes ventes plutôt que de faire chercher l'acheteur à l'HDV (lent)
-      try { listingId = myTradeListing((await fetchSellable()).own, entry); } catch { /* l'acheteur cherchera */ }
+      try { listingId = myTradeListing((await fetchSellable()).own, entry, price); } catch { /* l'acheteur cherchera */ }
       DM.log(`échange: ${entry.name} : n° d'annonce absent de la réponse${listingId ? `, relu dans mes ventes (${listingId})` : ', introuvable dans mes ventes'}`);
     }
     say(`${entry.name} : achat par ${ctx.to}…`);
-    const buyP = send({ type: 'tradeBuy', listingId, itemId: entry.id, fusion: entry.fusion, seller: myName(), last })
+    const buyP = send({ type: 'tradeBuy', listingId, itemId: entry.id, fusion: entry.fusion, price, seller: myName(), last })
       .catch((e) => ({ ok: false, error: e.message, retry: true }));
     let r = await Promise.race([buyP, sleep(listingId ? BUY_WAIT_MS : BUY_WAIT_SEARCH_MS).then(() => null)]);
     const done = (res) => {
@@ -1219,7 +1227,7 @@
     peerOkAt = 0;   // l'autre compte a eu un souci : on le revérifiera avant le prochain objet
     say(`${entry.name} : achat ${r ? 'refusé' : 'trop lent'} — retrait de l’annonce…`);
     const tooSlow = !r;   // retirée avant la réponse : l'achat échouera sur « vente n'existe plus », ce n'est pas un vrai refus
-    const c = await cancelTradeListing(listingId, entry);
+    const c = await cancelTradeListing(listingId, entry, price);
     if (!r) r = await buyP;   // la réponse de l'acheteur finit par arriver
     if (r?.ok) return done(r);
     const why = r?.error || 'sans réponse';
@@ -1271,7 +1279,7 @@
       const ms = await tradeWithRetry(ctx, entry, say, true, Date.now());
       return `✔ ${it.name} → ${ctx.to} (${ms} ms)`;
     } catch (e) {
-      await sweepTradeListings(new Set([`${entry.id}|${entry.fusion}`]));
+      await sweepTradeListings();
       throw e;
     }
   }
@@ -1368,7 +1376,7 @@
       const ctx = await tradePrepare(say);
       await setLastRun({ id: runId, to: ctx.to });
       let ms = 0, fatal = null;
-      const sent = new Set();   // objets mis en vente (id|tier) : filet de sécurité en fin d'envoi
+      tradeListed.clear();   // annonces de cet envoi (filet de sécurité en fin d'envoi)
       // Envoi en parallèle : un objet est mis en vente pendant que l'autre compte achète le précédent.
       // Jamais deux exemplaires du même objet en même temps : l'ID de l'annonce est retrouvé par objet + tier.
       const room = ctx.maxListings ? ctx.maxListings - ctx.listed : TRADE_PARALLEL;
@@ -1390,7 +1398,6 @@
           let entry;
           try {
             entry = tradeResolve(ctx, it);
-            sent.add(`${entry.id}|${entry.fusion}`);
           } catch (e) {
             // Objet introuvable / lié / plus assez d'exemplaires : on le sort de la file et on passe au suivant.
             skipped.push(e.message);
@@ -1419,7 +1426,7 @@
         }
       };
       await Promise.all(Array.from({ length: workers }, (_, w) => worker(w)));
-      await sweepTradeListings(sent, (t) => skipped.push(t));
+      await sweepTradeListings((t) => skipped.push(t));
       if (fatal) throw fatal;
       ok = true;
       const avg = queueRun.done ? Math.round((Date.now() - runId) / queueRun.done) : 0;   // débit réel (envois en parallèle)
@@ -1601,7 +1608,7 @@
           <button data-act="history" style="${btn};padding:2px 7px;background:transparent">Détails</button>
           <button data-act="recapClose" title="Masquer le récap" style="${btn};padding:2px 7px;background:transparent">✕</button></div>
         ${recapHtml(lrRows, esc)}</div>` : '';
-    const head = `<div style="display:flex;align-items:center;gap:6px"><b style="flex:1">🔁 File d’échange (${total})${DM.tip("Objets à envoyer à ton autre compte (connecté en navigation privée ou normale). « Tout échanger » met chaque exemplaire en vente à 1 kamas et le fait acheter aussitôt par l’autre compte. File propre à chaque personnage.")}</b>
+    const head = `<div style="display:flex;align-items:center;gap:6px"><b style="flex:1">🔁 File d’échange (${total})${DM.tip("Objets à envoyer à ton autre compte (connecté en navigation privée ou normale). « Tout échanger » met chaque exemplaire en vente à 11-49 kamas et le fait acheter aussitôt par l’autre compte. File propre à chaque personnage.")}</b>
         <button data-act="pick" data-tip="Ouvre la liste de tous tes objets vendables, avec filtres (nom, rareté, emplacement, niveau) et cases à cocher, pour remplir la file d’un coup." style="${btn};background:#5a4a33" ${tradeBusy ? 'disabled' : ''}>📋 Sélection</button>
         <button data-act="history" data-tip="Historique de tous les échanges : objets envoyés, perdus, non envoyés et pourquoi." style="${btn};padding:4px 7px;background:transparent">🕘</button>
         <button data-act="fold" title="${queueFolded ? 'Déplier' : 'Replier'}" style="${btn};padding:4px 7px;background:transparent">${queueFolded ? '▾' : '▴'}</button></div>`;
@@ -1841,7 +1848,7 @@
         wrap.className = 'dm-trade';
         wrap.style.cssText = 'margin-top:8px';
         wrap.innerHTML = '<div style="display:flex;gap:6px">'
-          + '<button type="button" data-k="go" class="btn !py-1.5 text-sm" style="flex:1;background:#2b5d8a;color:#fff;border-color:#2b5d8a" data-tip="Met cet objet en vente à 1 kamas à l’HDV et le fait acheter immédiatement par ton autre compte (autre fenêtre, normale ↔ privée). Si l’achat échoue, l’annonce est retirée.">🔁 Échanger (1 K → autre compte)</button>'
+          + '<button type="button" data-k="go" class="btn !py-1.5 text-sm" style="flex:1;background:#2b5d8a;color:#fff;border-color:#2b5d8a" data-tip="Met cet objet en vente à 11-49 kamas à l’HDV et le fait acheter immédiatement par ton autre compte (autre fenêtre, normale ↔ privée). Si l’achat échoue, l’annonce est retirée.">🔁 Échanger (1 K → autre compte)</button>'
           + '<button type="button" data-k="add" class="btn !py-1.5 text-sm" style="white-space:nowrap;background:transparent" data-tip="Ajouter à la file d’échange (re-cliquer = un exemplaire de plus)">➕ File</button>'
           + '</div><div class="text-xs" style="margin-top:4px;min-height:1em"></div>';
         const go = wrap.querySelector('[data-k="go"]');

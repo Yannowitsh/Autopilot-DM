@@ -60,7 +60,7 @@ Sur `/inventaire`, le bouton **🧺 Tout retirer** (à gauche de « Vendre ou br
 
 Connecte un compte dans une fenêtre normale et l'autre dans une fenêtre de navigation privée. Sur `/inventaire` ou dans l'onglet *Vendre* de l'HDV :
 
-- **🔁 Échanger** sur un objet : il est mis en vente à 1 kamas et l'autre compte l'achète aussitôt.
+- **🔁 Échanger** sur un objet : il est mis en vente à un petit prix aléatoire (11 à 49 kamas, pour ne pas se faire racheter par des tiers) et l'autre compte l'achète aussitôt.
 - **➕ File** ou **📋 Sélection** (panneau en haut à droite) : prépare plusieurs objets, puis **Tout échanger**. Un récap s'affiche à la fin (envoyés, perdus, non envoyés, sautés) et **🕘** ouvre l'historique de tous les échanges.
 
 **Tout échanger** envoie deux objets à la fois : le suivant est mis en vente pendant que l'autre compte achète le précédent (jamais deux exemplaires du même objet en même temps). L'échange ne fonctionne qu'entre les onglets de ton propre navigateur. Si l'achat échoue, l'annonce est retirée automatiquement.
