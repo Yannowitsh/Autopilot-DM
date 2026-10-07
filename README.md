@@ -42,6 +42,10 @@ Le sélecteur **Off / Semi / Auto** vérifie l'inventaire toutes les 3 minutes (
 - **Auto** équipe directement les meilleurs objets ;
 - **Semi** ouvre une fenêtre qui propose chaque changement avec l'écart de stats (gagnées en vert, perdues en rouge) : **✔ Équiper** ou **✖ Non** (l'objet n'est plus jamais proposé ; **↺ Oublier** efface ces refus). Fermer la fenêtre avec ✕ la repropose 30 minutes plus tard.
 
+## Tout retirer
+
+Sur `/inventaire`, le bouton **🧺 Tout retirer** (à gauche de « Vendre ou briser plusieurs objets ») retire tous les objets portés (2e clic pour confirmer), puis recharge la page.
+
 ## Échange entre deux comptes
 
 Connecte un compte dans une fenêtre normale et l'autre dans une fenêtre de navigation privée. Sur `/inventaire` ou dans l'onglet *Vendre* de l'HDV :

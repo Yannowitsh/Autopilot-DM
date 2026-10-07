@@ -54,7 +54,7 @@
     quiet(() => queueBox?.remove());
     quiet(() => toastEl?.remove());
     quiet(() => cardStack?.host.remove());
-    quiet(() => document.querySelectorAll('.dm-deck-weights, .dm-fuse-all').forEach((el) => el.remove()));
+    quiet(() => document.querySelectorAll('.dm-deck-weights, .dm-fuse-all, .dm-unequip-all').forEach((el) => el.remove()));
     document.querySelectorAll('.dm-trade, .dm-lock, .dm-picker, .dm-tip, .dm-tip-style').forEach((el) => el.remove());
     console.info('[Autopilot-DM] Extension rechargée : recharge la page pour la réactiver.');
   }
@@ -1739,6 +1739,7 @@
     if (modOn('trade')) scanTradeButtons(); else { document.querySelectorAll('.dm-trade').forEach((el) => el.remove()); document.querySelector('.dm-queue')?.remove(); }
     if (modOn('wanted')) highlightWanted();
     if (modOn('fusion')) scanFuseButtons(); else document.querySelectorAll('.dm-fuse-all').forEach((el) => el.remove());
+    scanUnequipAllButton();
     scanDeckButton();
   }
 
@@ -1817,6 +1818,64 @@
   // Bouton « ⚡ Tout fusionner » sous le bouton du jeu « Fusionner 3 → Tiers 2 (130/3) » (fiche d'objet de /inventaire) :
   // enchaîne toutes les fusions possibles à ce tier (130/3 → 43), sans cascade vers les tiers suivants. 2e clic = confirmation.
   // Le jeu désactive son bouton (objet verrouillé, pas assez d'exemplaires) : le nôtre suit.
+  // Bouton « Tout retirer » à gauche de « Vendre (ou briser) plusieurs objets » (/inventaire) : retire tous les objets
+  // portés, emplacement par emplacement (server action « unequipItem(emplacement) »). 2e clic = confirmation.
+  const UNEQUIP_ACTION_FALLBACK = '405fdd8f47dcc7595578823c1750c0209b9a25b227';
+  function scanUnequipAllButton() {
+    if (!location.pathname.startsWith('/inventaire')) return;
+    const anchor = [...document.querySelectorAll('button')].find((b) => /^(Vendre ou briser plusieurs objets|Vendre plusieurs objets|Quitter la sélection)$/.test(b.textContent.trim()));
+    if (!anchor || anchor.previousElementSibling?.classList.contains('dm-unequip-all')) return;
+    document.querySelector('.dm-unequip-all')?.remove();
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn btn-ghost !py-1.5 text-sm ml-auto min-h-9 dm-unequip-all';
+    b.textContent = '🧺 Tout retirer';
+    b.title = 'Autopilot-DM : retire tous les objets portés (2e clic pour confirmer). La page se recharge à la fin.';
+    b.addEventListener('click', onUnequipAll);
+    anchor.before(b);
+  }
+
+  async function onUnequipAll(e) {
+    const btn = e.currentTarget;
+    if (btn.dataset.busy) return;
+    if (!btn.dataset.armed) {
+      btn.dataset.armed = '1';
+      btn.textContent = '⚠️ Confirmer : tout retirer';
+      setTimeout(() => { if (!btn.dataset.busy) { delete btn.dataset.armed; btn.textContent = '🧺 Tout retirer'; } }, 6000);
+      return;
+    }
+    delete btn.dataset.armed;
+    btn.dataset.busy = '1';
+    btn.disabled = true;
+    let done = 0, failed = 0;
+    try {
+      btn.textContent = 'Lecture de l’équipement…';
+      const { slots, chunks } = await fetchEquipState();
+      const worn = slots.filter((s) => s.cur);
+      const id = await findAction(chunks, 'unequipItem', UNEQUIP_ACTION_FALLBACK);
+      for (const s of worn) {
+        btn.textContent = `Retrait ${done + failed + 1}/${worn.length}…`;
+        try {
+          await callAction('inventaire', id, [s.slot]);
+          done++;
+        } catch (err) {
+          failed++;
+          DM.log(`tout retirer : ${s.label || s.slot} (${s.cur.name}) : ${err.message}`);
+        }
+        await sleep(150);
+      }
+      DM.log(`tout retirer : ${done} objet(s) retiré(s)${failed ? `, ${failed} échec(s)` : ''}`);
+      tradeToast(worn.length ? `🧺 ${done} objet(s) retiré(s)${failed ? ` · ${failed} échec(s) (voir le journal)` : ''}` : '🧺 Aucun objet porté.', failed ? 'err' : 'ok');
+    } catch (err) {
+      tradeToast(`🧺 Échec : ${err.message}`, 'err');
+    } finally {
+      delete btn.dataset.busy;
+      btn.disabled = false;
+      btn.textContent = '🧺 Tout retirer';
+      if (done) setTimeout(() => location.reload(), 1200);
+    }
+  }
+
   function scanFuseButtons() {
     if (!location.pathname.startsWith('/inventaire')) return;
     for (const b of document.querySelectorAll('aside button.btn-gold')) {
