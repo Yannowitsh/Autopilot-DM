@@ -2123,7 +2123,7 @@
     };
     const entries = props.entries.map((e) => ({ ...norm(e.item, e.fusion), qty: e.qty })).filter((e) => Number.isInteger(e.id) && e.qty > 0);
     const slots = props.slots.map((s) => ({ slot: s.slot, label: s.label, accepts: s.accepts, cur: s.item ? norm(s.item, s.fusion) : null }));
-    return { entries, slots, level: +props.level || 0, chunks };
+    return { entries, slots, level: +props.level || 0, chunks, scrolls: res(props.scrollValues) || {} };
   }
 
   // Plan d'équipement : pour chaque type d'emplacement activé, les meilleurs objets (distincts) selon les stats choisies.
@@ -2990,7 +2990,11 @@
   let saveDeckId = null;
   // Liste noire de l'optimiseur : objets (par id, toutes fusions) à ne jamais proposer. cfg.buildBlacklist = { id: nom }
   const buildBlacklist = () => cfg.buildBlacklist || {};
-  const buildPaOf = (level) => (S) => Math.min(12, (level >= 100 ? 7 : 6) + (S.pa || 0));
+  // PA de base 6 + PA du Prestige (P1, P4, P7 : +1 chacun) + PA des objets et panoplies (vérifié sur la fiche : P3 → 7, P4 → 8).
+  // Prestige : P1 +1 PA, P2 +2 PO, P3 +2 PM, P4 +1 PA, P5 +3 PO, P6 +3 PM, P7 +1 PA (cumulés).
+  const prestigePa = (p) => [1, 4, 7].filter((n) => (p || 0) >= n).length;
+  const prestigePo = (p) => ((p || 0) >= 2 ? 2 : 0) + ((p || 0) >= 5 ? 3 : 0);
+  const buildPaOf = (level, prestige = 0) => (S) => Math.min(12, 6 + prestigePa(prestige) + (S.pa || 0));
   const buildPvOf = (level) => (S) => 50 + 5 * level + (S.vitalite || 0) + (S.pv || 0);
 
   // Builds enregistrés (💾 dans l'optimiseur, aussi listés dans la bulle ❤️) : cfg.buildSaves = [{ id, name, who, at, data }].
@@ -3016,7 +3020,7 @@
     } catch (e) { DM.log(`optimiseur : dernière recherche non gardée (${e.message})`); }
   }
   function unpackBuild(d) {
-    const r = { ...d, goal: BUILD_GOALS[d.goalKey] || BUILD_GOALS.dps, pvOf: buildPvOf(d.statLevel || d.sheet.level), paOf: buildPaOf(d.statLevel || d.sheet.level) };
+    const r = { ...d, goal: BUILD_GOALS[d.goalKey] || BUILD_GOALS.dps, pvOf: buildPvOf(d.statLevel || d.sheet.level), paOf: buildPaOf(d.statLevel || d.sheet.level, d.sheet.prestige) };
     r.target = r.goal.target || null;
     // même objet des deux côtés (rien à changer sur l'emplacement) : identité rétablie après le passage en JSON
     for (const s of r.slots) if (r.final[s.slot] && r.final[s.slot].uid === r.current[s.slot]?.uid) r.final[s.slot] = r.current[s.slot];
@@ -3224,6 +3228,60 @@
   // (Frimanoplie 2/4 → effects[1], sans le +1 PA de effects[2]).
   const setTier = (fx, count) => (!fx?.length || count < 2 ? null : fx[Math.min(count - 1, fx.length - 1)]);
 
+  // Panoplies de la fiche (/personnage) : le jeu affiche, pour chaque panoplie portée, tous ses paliers (« 2 objets : +1 PA ·
+  // +30 Force… », « 3 objets… »). Ses tables ne suivent pas toujours dofusdb (palier décalé selon la panoplie) : ce qui est
+  // lu ici fait foi et est retenu (cfg.setTiers) pour les recherches suivantes.
+  // → { nom: { count, max, tiers: { n: [{ k, v }] } } } ; libellés inconnus ignorés.
+  const STAT_BY_LABEL = Object.fromEntries(Object.entries(STAT_LABELS).map(([k, l]) => [l.toLowerCase(), k]));
+  function parseBonusText(text) {
+    const out = [];
+    for (const part of String(text).split('·')) {
+      const m = part.trim().match(/^([+-]?\d+)\s*(%?)\s*(.+)$/);
+      if (!m) continue;
+      const k = STAT_BY_LABEL[`${m[2] ? '% ' : ''}${m[3].trim()}`.toLowerCase()];
+      if (k) out.push({ k, v: +m[1] });
+    }
+    return out;
+  }
+  function parseSheetSets(flight) {
+    const rows = {};
+    for (const line of flight.split(/\r?\n/)) {
+      const m = line.match(/^([0-9a-f]+):([[{].*)$/);
+      if (m) { try { rows[m[1]] = JSON.parse(m[2]); } catch { /* ligne partielle */ } }
+    }
+    const res = (v) => { const m = typeof v === 'string' && v.match(/^\$L?([0-9a-f]+)$/); return m && rows[m[1]] !== undefined ? rows[m[1]] : v; };
+    const kids = (el) => { const c = res(Array.isArray(el) && el[0] === '$' ? el[3]?.children : el); return Array.isArray(c) ? c.map(res) : c == null ? [] : [res(c)]; };
+    const text = (el) => { el = res(el); if (el == null || typeof el === 'boolean') return ''; if (typeof el !== 'object') return String(el); if (el[0] === '$') return kids(el).map(text).join(''); return Array.isArray(el) ? el.map(text).join('') : ''; };
+    const out = {};
+    const seen = new Set();
+    const walk = (el, depth = 0) => {
+      el = res(el);
+      if (!el || typeof el !== 'object' || depth > 60 || seen.has(el)) return;
+      seen.add(el);
+      if (el[0] === '$') {
+        const ch = kids(el);
+        // en-tête « Nom (n/max) » suivi de la liste des paliers
+        const head = ch.find((c) => Array.isArray(c) && c[0] === '$' && /\(\d+\/\d+\)$/.test(text(c).trim()));
+        if (head) {
+          const m = text(head).trim().match(/^(.+?)\s*\((\d+)\/(\d+)\)$/);
+          const tiers = {};
+          const lis = [];
+          const collect = (x, d = 0) => { x = res(x); if (!x || typeof x !== 'object' || d > 20) return; if (x[0] === '$' && x[1] === 'li') lis.push(x); for (const c of (x[0] === '$' ? kids(x) : Array.isArray(x) ? x : [])) collect(c, d + 1); };
+          for (const c of ch) if (c !== head) collect(c);
+          for (const li of lis) {
+            const t = text(li).trim().match(/^(\d+)\s*objets?[^:]*:\s*(.+)$/);
+            if (t) tiers[+t[1]] = parseBonusText(t[2]);
+          }
+          if (m && Object.keys(tiers).length) out[m[1].trim()] = { count: +m[2], max: +m[3], tiers };
+        }
+        for (const c of ch) walk(c, depth + 1);
+      } else if (Array.isArray(el)) for (const c of el) walk(c, depth + 1);
+      else for (const k in el) walk(el[k], depth + 1);
+    };
+    for (const id in rows) walk(rows[id]);
+    return out;
+  }
+
   // Fiche perso : niveau, prestige, points de base, PV/PA affichés, panoplies actives (texte du jeu).
   async function fetchCharSheet() {
     const { flight } = await fetchFlight('/personnage');
@@ -3249,6 +3307,15 @@
       ...flight.matchAll(/"children":\["([^"]+)"," \(",(\d+),"\/",(\d+),"\)"\]\}\],\["\$","ul",null,\{[^{]*"children":\[\["\$","li","\d+",\{"className":"text-parchment","children":\[\["\$","span",null,\{"className":"font-bold","children":"\d+ objets[^"]*"\}\]," :"," ","([^"]*)"/g),
     ].map((m) => ({ name: m[1], count: +m[2], max: +m[3], text: m[4] }));
     const forge = await fetchForgeLevel();
+    // paliers des panoplies portées, tels que le jeu les affiche : retenus pour les recherches suivantes
+    try {
+      const game = parseSheetSets(flight);
+      if (Object.keys(game).length) {
+        const known = { ...(cfg.setTiers || {}) };
+        for (const [n, s] of Object.entries(game)) known[n] = { max: s.max, tiers: { ...(known[n]?.tiers || {}), ...s.tiers }, at: Date.now() };
+        save({ setTiers: known });
+      }
+    } catch (e) { DM.log(`fiche : panoplies illisibles (${e.message})`); }
     return { level: +info.level || 1, prestige: +info.prestige || 0, forge, forgePct: forgeBonusPct(forge), base, bonus, tiers, pointsFree, capital,
       pv: tile('PV'), pa: tile('PA'), crit: tile('% Critique'), sets };
   }
@@ -3398,7 +3465,23 @@
     }
     say('Bonus de panoplie (dofusdb)…');
     const setFx = await fetchSetBonuses([...new Set(pool.map((c) => c.setName).filter(Boolean))]);
-    gearMult = fitGearMult(pool.filter((c) => c.src === 'worn'), setFx, sheet, gearMult);
+    // Panoplies déjà vues sur ta fiche : paliers du jeu (exacts ; dofusdb est parfois décalé d'un palier selon la
+    // panoplie). fx[n − 1] = bonus à n objets ; un nombre d'objets sans palier affiché garde le palier inférieur.
+    let setsFromGame = 0;
+    for (const [n, g] of Object.entries(cfg.setTiers || {})) {
+      const counts = Object.keys(g.tiers || {}).map(Number).filter((c) => c >= 2).sort((a, b) => a - b);
+      if (!counts.length) continue;
+      const fx = [[]];
+      for (let c = 2; c <= Math.max(g.max || 0, counts.at(-1)); c++) fx[c - 1] = g.tiers[counts.filter((x) => x <= c).at(-1)] || [];
+      setFx[n] = fx;
+      setsFromGame++;
+    }
+    // parchemins d'arène (stats fixes, sans prestige) et PO du Prestige (Vision spectrale) : ajoutés à chaque build
+    const fixedStats = { ...Object.fromEntries(Object.entries(state.scrolls || {}).filter(([, v]) => +v)) };
+    if (prestigePo(sheet.prestige)) fixedStats.po = (fixedStats.po || 0) + prestigePo(sheet.prestige);
+    const fitSheet = { ...sheet, bonus: Object.fromEntries(Object.entries(sheet.bonus).map(([k, v]) => [k, v - (+state.scrolls?.[k] || 0)])) };
+    gearMult = fitGearMult(pool.filter((c) => c.src === 'worn'), setFx, fitSheet, gearMult);
+    DM.log(`optimiseur : panoplies — ${setsFromGame} connue(s) par la fiche du jeu, le reste via dofusdb ; parchemins ${JSON.stringify(fixedStats)}`);
     pool = pool.map((c, i) => ({ ...c, uid: i, eff: withPrestige(c.eff) }));
     const banned = new Set(Object.keys(buildBlacklist()).map(Number));
     const budget = opts.hdv && +opts.budget > 0 ? +opts.budget : 0;   // 0 = pas de limite
@@ -3430,6 +3513,7 @@
 
     const statsOf = (build, base = sheet.base) => {
       const S = { ...base };
+      for (const k in fixedStats) S[k] = (S[k] || 0) + fixedStats[k];
       const sets = {};
       for (const c of Object.values(build)) {
         if (!c) continue;
@@ -3445,7 +3529,7 @@
       }
       return { S, active };
     };
-    const paOf = buildPaOf(statLevel), pvOf = buildPvOf(statLevel);
+    const paOf = buildPaOf(statLevel, sheet.prestige), pvOf = buildPvOf(statLevel);
     const turnOf = (S) => bestTurnPA(spells, S, paOff ? Math.min(paOff, paOf(S)) : paOf(S));
     // Gain de dégâts d'un point dans chaque stat d'élément, pour les sorts du tour `used` (formule linéaire par stat).
     const pointWeights = (used, S) => {
@@ -3719,7 +3803,7 @@
     const curTurn = cur.turn, nxtTurn = nxt.turn;
     // contrôle du modèle : stats calculées pour l'équipement actuel vs fiche du jeu
     const checks = [
-      ['PV', buildPvOf(level)(cur.S), sheet.pv], ['PA', buildPaOf(level)(cur.S), sheet.pa],   // fiche = niveau actuel
+      ['PV', buildPvOf(level)(cur.S), sheet.pv], ['PA', buildPaOf(level, sheet.prestige)(cur.S), sheet.pa],   // fiche = niveau actuel
       ...Object.keys(sheet.bonus).map((k) => [STAT_LABELS[k] || k, cur.S[k] || 0, (sheet.base[k] || 0) + sheet.bonus[k]]),
     ].filter(([, a, b]) => Number.isFinite(b));
     // deck conseillé : deckN sorts offensifs (ceux du tour d'abord, les plus forts ; complétés par les plus forts du build)
