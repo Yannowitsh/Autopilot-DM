@@ -553,6 +553,8 @@
         if (cfg.botFight) { timeFightEnd(); await save({ botFight: false, wins: (cfg.wins || 0) + 1, lossStreak: 0 }); }
         if (dropOn() && isHunt()) {
           if (cfg.dropRun.tried?.length) await save({ dropRun: { ...cfg.dropRun, tried: [] } });
+          await dropSyncInventory();   // toutes les 5 min : objets arrivés par d'autres moyens (coffres…)
+          if (!dropOn()) return;
           if (!dropTargets(cfg.huntZone).size) return dropGoZone(`${dropZoneName(cfg.huntZone)} : plus rien à y dropper`);
         }
         if (!(await gate())) return progress();
@@ -4609,6 +4611,8 @@
   // Zone suivante : toutes les zones utiles sont scannées (groupes du moment) et on va au groupe le plus intéressant,
   // toutes zones confondues. Refait à chaque changement de zone (les groupes se renouvellent toutes les ~3 min).
   async function dropGoZone(why) {
+    if (!cfg.dropRun?.active) return;
+    await dropSyncInventory(true);   // coffres, achats… depuis la dernière relecture
     const run = cfg.dropRun;
     if (!run?.active) return;
     if (!dropLeft(run).length) return dropFinish();
@@ -4644,6 +4648,35 @@
     setStatus(`Farm de drop : ${dropZoneName(z)}, groupe ${best.g} (${Math.floor(best.s)} monstre(s) utile(s))…`);
     progress();
     if (isOwner()) location.assign(`/chasse?zone=${z}`);
+  }
+
+  // Relecture de l'inventaire pendant le farm (coffres, HDV, échanges… arrivent aussi) : reçus = possédés maintenant −
+  // possédés au lancement (équivalents T1, inventaire + porté). Toutes les DROP_SYNC_MS entre deux combats, et à chaque
+  // changement de zone. Le butin de fin de combat reste compté tout de suite entre deux relectures.
+  const DROP_SYNC_MS = 5 * 60000;
+  async function dropSyncInventory(force = false) {
+    const run = cfg.dropRun;
+    if (!run?.active || (!force && Date.now() - (run.syncAt || 0) < DROP_SYNC_MS)) return;
+    let st;
+    try { st = await fetchEquipState(); } catch (e) { DM.log(`farm de drop : inventaire illisible (${e.message})`); return; }
+    const owned = new Map();
+    for (const e of st.entries) owned.set(e.id, (owned.get(e.id) || 0) + e.qty * 3 ** (e.fusion || 0));
+    for (const s of st.slots) if (s.cur) owned.set(s.cur.id, (owned.get(s.cur.id) || 0) + 3 ** (s.cur.fusion || 0));
+    const cur = cfg.dropRun;
+    if (!cur?.active) return;
+    const items = cur.items.map((it) => {
+      if (it.startOwned == null) return it;   // farm lancé avant cette version : pas de point de départ
+      const got = Math.max(0, Math.min(it.need, (owned.get(it.id) || 0) - it.startOwned));
+      if (got > it.got) DM.log(`farm de drop : ${it.name} ${it.got} → ${got}/${it.need} (inventaire)`);
+      return { ...it, got };
+    });
+    const before = cur.items.filter((it) => it.got < it.need).length;
+    await save({ dropRun: { ...cur, items, syncAt: Date.now() } });
+    for (const it of items) {
+      const old = cur.items.find((x) => x.id === it.id);
+      if (it.got >= it.need && old && old.got < old.need) notify('drop', `🐉 **${it.name}** : ${it.got}/${it.need} ✔ (trouvé dans l’inventaire)`);
+    }
+    if (before && !dropLeft().length) await dropFinish();
   }
 
   // Butin de fin de combat (rewards.items : un exemplaire par ligne, « f » = tier de fusion).
@@ -4687,7 +4720,7 @@
   // Lancement depuis l'optimiseur : items = [{ id, name, icon, tier, srcs }], zoneNames = { id: libellé }.
   async function startDropFarm(items, zoneNames) {
     const run = {
-      active: true, startedAt: Date.now(), zoneNames, tried: [], skipped: [], zone: null,
+      active: true, startedAt: Date.now(), syncAt: Date.now(), zoneNames, tried: [], skipped: [], zone: null,
       items: items.map((it) => ({ ...it, need: it.need ?? 3 ** (it.tier - 1), got: 0 })),
       prev: dropOn() ? cfg.dropRun.prev : { mode: cfg.mode, huntZone: cfg.huntZone, huntZoneName: cfg.huntZoneName, huntGroup: cfg.huntGroup },
     };
@@ -4820,7 +4853,7 @@
       for (const { srcs } of pick) for (const s of srcs) for (const z of s.z) zoneNames[z] = zones[z]?.[0] || `Zone ${z}`;
       try {
         $('[data-k="msg"]').textContent = 'Lancement…';
-        await startDropFarm(pick.map(({ c, srcs, i }) => ({ id: c.id, name: c.name, icon: c.icon, tier: tierOf(i), need: needOf(i), srcs })), zoneNames);
+        await startDropFarm(pick.map(({ c, srcs, have, i }) => ({ id: c.id, name: c.name, icon: c.icon, tier: tierOf(i), need: needOf(i), startOwned: have || 0, srcs })), zoneNames);
         close();
         document.querySelector('.dm-picker')?.remove();
       } catch (err) {
