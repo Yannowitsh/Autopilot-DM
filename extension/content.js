@@ -507,6 +507,8 @@
 
           // Réessai de l'étape / du groupe (Auto de préférence)
           if (!(await gate())) return progress();
+          await autoEquipTick();
+          if (eqAutoBusy) return progress();
           if (++endRetries > 2) { endRetries = 0; return goHome(); }   // bouton sans effet : on repasse par l'accueil du mode
           setStatus(`Défaite — nouvel essai ${cfg.lossStreak}/${maxRetries()}…`);
           await sleep(relaunchDelay());
@@ -530,6 +532,9 @@
           if (!dropTargets(cfg.huntZone).size) return dropGoZone(`${dropZoneName(cfg.huntZone)} : plus rien à y dropper`);
         }
         if (!(await gate())) return progress();
+        // Auto-équipement : entre deux combats (le seul moment où le jeu l'accepte), avant la relance
+        await autoEquipTick();
+        if (eqAutoBusy) return progress();
         // Relance refusée (groupes renouvelés…) : on repasse par la page de la zone.
         if (++endRetries > 2) { endRetries = 0; return goHome(); }
 
