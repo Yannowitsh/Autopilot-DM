@@ -54,7 +54,7 @@
     quiet(() => queueBox?.remove());
     quiet(() => toastEl?.remove());
     quiet(() => cardStack?.host.remove());
-    quiet(() => document.querySelectorAll('.dm-deck-weights, .dm-fuse-all, .dm-unequip-all').forEach((el) => el.remove()));
+    quiet(() => document.querySelectorAll('.dm-deck-weights, .dm-fuse-all, .dm-unequip-all, .dm-manual-weights').forEach((el) => el.remove()));
     document.querySelectorAll('.dm-trade, .dm-lock, .dm-picker, .dm-tip, .dm-tip-style').forEach((el) => el.remove());
     console.info('[Autopilot-DM] Extension rechargée : recharge la page pour la réactiver.');
   }
@@ -1835,6 +1835,7 @@
     if (modOn('wanted')) highlightWanted();
     if (modOn('fusion')) scanFuseButtons(); else document.querySelectorAll('.dm-fuse-all').forEach((el) => el.remove());
     scanUnequipAllButton();
+    scanManualWeightsButton();
     scanDeckButton();
   }
 
@@ -4458,14 +4459,20 @@
     try { sessionStorage.setItem(FIGHT_ID_KEY, id); } catch { /* rien */ }
     return id;
   }
-  async function weightedFight() {
+  // manual = { stop, status(texte) } : combat lancé à la main (Kralamoure…), joué par poids à la demande, sans le pilote.
+  async function weightedFight(manual = null) {
     if (weightedBusy) return;
     weightedBusy = true;
     let reload = true;
-    const fallback = (why) => { DM.log(`auto par poids : ${why} → Auto du jeu`); useGameAuto = true; reload = false; };
+    const fallback = (why) => {
+      if (manual) { DM.log(`auto par poids (manuel) : ${why}`); manual.status(`⚠️ ${why}`); reload = false; return; }
+      DM.log(`auto par poids : ${why} → Auto du jeu`); useGameAuto = true; reload = false;
+    };
+    const status = (t) => (manual ? manual.status(t) : setStatus(t));
     try {
-      // état de départ : celui capté au lancement (récent), sinon la page /combat
-      let st = fightInit && Date.now() - fightInit.at < 60000 && fightInit.st?.status === 'ongoing' ? fightInit.st : null;
+      // état de départ : celui capté au lancement (récent), sinon la page /combat (toujours la page à la main :
+      // des cartes ont pu être jouées depuis le lancement)
+      let st = !manual && fightInit && Date.now() - fightInit.at < 60000 && fightInit.st?.status === 'ongoing' ? fightInit.st : null;
       fightInit = null;
       if (!st) {
         const { flight } = await fetchFlight('/combat');
@@ -4484,12 +4491,13 @@
       const keepCasts = () => { try { sessionStorage.setItem('dmAutoCasts', JSON.stringify({ key: fightKey, casts })); } catch { /* rien */ } };
       let blocked = new Set(), blockedTurn = null, errors = 0;
       for (let i = 0; i < 400 && st.status === 'ongoing'; i++) {
-        if (!isOwner() || !cfg.botFight || !weightsOn() || presenceDialog()) { reload = false; return; }
+        if (manual ? manual.stop : !isOwner() || !cfg.botFight || !weightsOn()) { reload = false; return; }
+        if (presenceDialog()) { reload = false; return; }
         if (st.currentId !== 'p') return fallback(`pas notre tour (${st.currentId})`);
         const p = st.fighters.p;
         if (blockedTurn !== p.turnNo) { blocked = new Set(); blockedTurn = p.turnNo; }
         const { action, pick, label } = chooseFightAction(st, casts, blocked);
-        setStatus(`Auto par poids : tour ${p.turnNo}, ${p.ap} PA — ${label}`);
+        status(`Auto par poids : tour ${p.turnNo}, ${p.ap} PA — ${label}`);
         const lo = Math.max(0, +cfg.autoActMin || 0), hi = Math.max(lo, +cfg.autoActMax || 0);
         await sleep((lo + Math.random() * (hi - lo)) * 1000);
         let res;
@@ -4521,8 +4529,37 @@
     } finally {
       weightedBusy = false;
       // la page n'a rien vu de nos actions : on la recharge, elle affiche l'écran de fin (ou l'état à jour)
-      if (reload && isOwner()) location.reload();
+      if (reload && (manual || isOwner())) location.reload();
     }
+  }
+
+  // Bouton « 🎯 Jouer par poids » sur un combat lancé à la main (Kralamoure, faille, boss…) : le combat en cours est
+  // joué avec les poids des cartes, comme l'Auto par poids du pilote, mais sans relance à la fin.
+  let manualRun = null;
+  function scanManualWeightsButton() {
+    let b = document.querySelector('.dm-manual-weights');
+    const show = location.pathname.startsWith('/combat') && modOn('weights') && !endTitle() && !(isOwner() && cfg.botFight)
+      && !!document.querySelector('button') && !presenceDialog();
+    if (!show && !manualRun) { b?.remove(); return; }
+    if (b) return;
+    b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'dm-manual-weights';
+    b.style.cssText = 'position:fixed;right:16px;bottom:80px;z-index:2147483000;max-width:min(360px,calc(100vw - 32px));padding:9px 14px;border-radius:10px;border:1px solid #c9a24a;background:#2a231a;color:#f0d78c;font:700 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 4px 16px #000a;text-align:left';
+    b.textContent = '🎯 Jouer ce combat par poids';
+    b.title = 'Autopilot-DM : joue ce combat avec les poids des cartes (🎯 Poids des cartes), sans animation. Recliquer pour arrêter. La page se recharge à la fin.';
+    b.addEventListener('click', () => {
+      if (manualRun) { manualRun.stop = true; b.textContent = 'Arrêt…'; return; }
+      if (weightedBusy) return;
+      manualRun = { stop: false, status: (t) => { b.textContent = `■ ${t}`; } };
+      b.textContent = '■ Lecture du combat…';
+      weightedFight(manualRun).finally(() => {
+        manualRun = null;
+        if (b.isConnected && !b.textContent.startsWith('■ ⚠️')) b.textContent = '🎯 Jouer ce combat par poids';
+        else if (b.isConnected) setTimeout(() => { if (!manualRun) b.textContent = '🎯 Jouer ce combat par poids'; }, 6000);
+      });
+    });
+    document.body.appendChild(b);
   }
 
   // Écran de réglage : poids des cartes du deck actif (+ arme), soins et rythme.
