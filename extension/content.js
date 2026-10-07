@@ -460,6 +460,7 @@
       // Son dernier combat est compté maintenant : l'onglet sera rechargé sur sa page d'accueil au retour.
       const end = path.startsWith('/combat') && endTitle();
       if (end && cfg.botFight) {
+        timeFightEnd();
         await save(/^Victoire/.test(end)
           ? { botFight: false, wins: (cfg.wins || 0) + 1, lossStreak: 0 }
           : { botFight: false, losses: (cfg.losses || 0) + 1 });
@@ -486,6 +487,7 @@
             // On réessaie jusqu'à N défaites d'affilée : MAX_PATH_RETRIES (aventure, ascension), cfg.huntRetries (chasse).
             const streak = (cfg.lossStreak || 0) + 1;
             const stop = streak > maxRetries();
+            timeFightEnd();
             await save({ botFight: false, losses: (cfg.losses || 0) + 1, lossStreak: stop ? 0 : streak });
             if (stop) {
               await save({ enabled: false, paused: false, status: 'Arrêté : combat perdu' });
@@ -516,7 +518,7 @@
           return;
         }
 
-        if (cfg.botFight) await save({ botFight: false, wins: (cfg.wins || 0) + 1, lossStreak: 0 });
+        if (cfg.botFight) { timeFightEnd(); await save({ botFight: false, wins: (cfg.wins || 0) + 1, lossStreak: 0 }); }
         if (!(await gate())) return progress();
         // Relance refusée (groupes renouvelés…) : on repasse par la page de la zone.
         if (++endRetries > 2) { endRetries = 0; return goHome(); }
@@ -2057,8 +2059,40 @@
   const pageLoadedAt = Date.now();
   const markLaunch = () => {
     if (!launchAt) launchAt = Date.now();
-    save({ lastLaunchAt: Date.now() });   // combat rapide : écart minimal entre deux lancements
+    const now = Date.now(), key = timeKey();
+    // boucle = écart entre deux lancements du même mode / moteur (pauses de plus de 5 min ignorées)
+    if (cfg.lastLaunchAt && cfg.lastLaunchKey === key && now - cfg.lastLaunchAt < TIME_GAP_MAX) addTime(key, 'loop', now - cfg.lastLaunchAt);
+    save({ lastLaunchAt: now, lastLaunchKey: key, lastFightTimed: false });
   };
+
+  // ---------- Chronomètre des combats (comparer l'Auto du jeu et l'Auto par poids) ----------
+  // cfg.fightTimes[« mode|moteur »] = { n, fight (ms cumulées, lancement → écran de fin), loopN, loop (ms entre deux lancements) }
+  const TIME_GAP_MAX = 5 * 60000;
+  const timeKey = () => `${cfg.mode || 'aventure'}|${weightsOn() ? 'weights' : 'game'}`;
+  function addTime(key, kind, ms) {
+    const all = { ...(cfg.fightTimes || {}) };
+    const t = { n: 0, fight: 0, loopN: 0, loop: 0, ...all[key] };
+    if (kind === 'loop') { t.loopN++; t.loop += ms; } else { t.n++; t.fight += ms; }
+    all[key] = t;
+    save({ fightTimes: all });
+  }
+  // Fin d'un combat du pilote : durée depuis son lancement (une seule fois par combat).
+  function timeFightEnd() {
+    const d = Date.now() - (cfg.lastLaunchAt || 0);
+    if (cfg.lastFightTimed || !cfg.lastLaunchAt || cfg.lastLaunchKey !== timeKey() || d > TIME_GAP_MAX) return;
+    cfg.lastFightTimed = true;
+    addTime(cfg.lastLaunchKey, 'fight', d);
+    save({ lastFightTimed: true });
+  }
+  const TIME_LABELS = { aventure: 'Aventure', chasse: 'Chasse', ascension: 'Ascension', game: 'Auto du jeu', weights: 'Auto par poids' };
+  const fmtSec = (ms) => `${(ms / 1000).toFixed(1).replace('.', ',')} s`;
+  function timeLines() {
+    return Object.entries(cfg.fightTimes || {}).filter(([, t]) => t.n || t.loopN).map(([k, t]) => {
+      const [mode, eng] = k.split('|');
+      const loop = t.loopN ? t.loop / t.loopN : 0;
+      return `<div><b>${TIME_LABELS[mode] || mode} · ${TIME_LABELS[eng] || eng}</b> : ${t.n} combat(s)${t.n ? `, ${fmtSec(t.fight / t.n)} / combat` : ''}${loop ? `, boucle ${fmtSec(loop)} (≈ ${Math.round(3600000 / loop)} / h)` : ''}</div>`;
+    }).join('');
+  }
 
   // Page vide ou page d'erreur (vérifié toutes les 2 s : innerText force un calcul de mise en page)
   function oddPage(now) {
@@ -4450,6 +4484,11 @@
           <div class="head"><span>🤖 Pilote auto${DM.tip("Démarre ou arrête le pilote sur cet onglet. Il enchaîne les combats en Auto selon l’activité choisie ci-dessous. Compteur : victoires / défaites du pilote.")}</span><span class="muted" data-k="stats"></span></div>
           <div class="status" data-k="status"></div>
           <button data-k="toggle"></button>
+          <details data-k="timesBox">
+            <summary class="muted">⏱ Chronomètre des combats${DM.tip("Durée moyenne d’un combat du pilote (du lancement à l’écran de fin) et de la boucle complète (d’un lancement au suivant, pauses de plus de 5 min exclues), par activité et par mode de combat. Pour comparer l’Auto du jeu et l’Auto par poids sur la durée.")}</summary>
+            <div class="muted" data-k="times" style="display:flex;flex-direction:column;gap:3px;margin-top:4px"></div>
+            <button data-k="timesReset" style="padding:2px 7px;font-size:12px;margin-top:4px" data-tip="Remet le chronomètre à zéro.">↺ Remettre à zéro</button>
+          </details>
         </div>
         <div class="sec">
           <div class="head"><span>🗺️ Activité${DM.tip("Aventure : étapes du Chemin.\nChasse : refait en boucle un groupe d’une zone.\nAscension : étages de boss (niveau 200).\nÀ droite : ta dernière énergie connue.")}</span><span class="muted" data-k="energy"></span></div>
@@ -4593,6 +4632,7 @@
     }));
     $('fuseScan').addEventListener('click', () => scanFusions());
     $('spells').addEventListener('click', () => { setOpen(false); openSpellList(); });
+    $('timesReset').addEventListener('click', () => save({ fightTimes: {} }));
     $('weights').addEventListener('click', () => { setOpen(false); openCardWeights(); });
     for (const b of root.querySelectorAll('[data-engine]')) {
       b.addEventListener('click', async () => { await save({ fightEngine: b.dataset.engine }); renderUi(); });
@@ -5046,6 +5086,7 @@
     const $ = ui.$;
     const hunt = cfg.mode === 'chasse';
     $('stats').textContent = `${cfg.wins || 0} V / ${cfg.losses || 0} D`;
+    { const h = timeLines() || 'Pas encore de mesure : lance le pilote.'; if ($('times').innerHTML !== h) $('times').innerHTML = h; }
     $('status').textContent = on ? (cfg.status || '—') : cfg.enabled ? 'Actif dans un autre onglet' : 'Arrêté';
     const tg = $('toggle');
     tg.textContent = cfg.enabled ? '■ Arrêter' : `▶ Démarrer (${DM.modeLabel(cfg)})`;
