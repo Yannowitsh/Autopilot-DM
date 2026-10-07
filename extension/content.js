@@ -4485,7 +4485,9 @@
     await dropGoZone('départ');
   }
 
-  // Fenêtre « 🐉 Aller dropper » : objets à looter du build, tier voulu pour chacun.
+  // Fenêtre « 🐉 Aller dropper » : objets à looter du build (à cocher, rien par défaut) → liste de courses en dessous,
+  // avec le tier voulu pour chacun (retenu d'une fois sur l'autre).
+  const DROP_TIERS_KEY = 'dmDropTiers';
   function openDropFarm(r) {
     document.querySelector('.dm-drop-farm')?.remove();
     const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -4494,44 +4496,70 @@
       const srcs = (c.sources || []).filter(([, , , p, zs]) => p > 0 && zs?.length).map(([m, , , p, z]) => ({ m, p, z }));
       return { c, srcs, best: Math.max(0, ...srcs.map((s) => s.p)) };
     });
+    let tiers = {};
+    try { tiers = JSON.parse(localStorage.getItem(DROP_TIERS_KEY) || '{}'); } catch { /* stockage indisponible */ }
+    const cart = new Set();   // indices des objets dans la liste de courses
     const ov = document.createElement('div');
     ov.className = 'dm-drop-farm';
     ov.style.cssText = 'position:fixed;inset:0;z-index:2147483601;background:#000c;display:grid;justify-items:center;align-items:start;padding:4vh 16px 16px;font:13px system-ui,sans-serif;color:#eee';
     const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:5px 10px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
     const inp = 'background:#2a231a;border:1px solid #5a4a33;border-radius:8px;color:#eee;padding:3px 6px;font:13px system-ui,sans-serif';
+    const row = 'display:flex;align-items:center;gap:8px;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:5px 8px';
     const pct = (x) => `${(x >= 1 ? x.toFixed(1) : x.toFixed(2)).replace('.', ',')} %`;
+    const icon = (c) => (c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain">` : '');
+    const tierOf = (i) => tiers[items[i].c.id] || 1;
     ov.innerHTML = `<div style="width:min(680px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
-      <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🐉 Aller dropper${DM.tip('Le pilote passe en mode Chasse : il va dans la zone la plus rentable, n’attaque que les groupes qui contiennent un monstre qui lâche un objet voulu, compte les objets reçus en fin de combat et change de zone quand celle-ci n’a plus rien à donner (ou aucun groupe utile). 5 défaites d’affilée dans une zone : elle est abandonnée (notification) et on passe à la suivante. Plus aucune zone possible : arrêt + notification. Tout est droppé : arrêt + notification. Le mode de combat (Auto du jeu / par poids) est celui du menu 🤖. Tier : T1 = 1 exemplaire, T2 = 3, T3 = 9, T4 = 27, T5 (Rayonnant) = 81 (fusion 3 → 1).')}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
-      <div style="overflow-y:auto;display:flex;flex-direction:column;gap:4px">${items.map(({ c, srcs, best }, i) => `<div style="display:flex;align-items:center;gap:8px;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:5px 8px;${srcs.length ? '' : 'opacity:.55'}">
-        <input type="checkbox" data-i="${i}" ${srcs.length ? 'checked' : 'disabled'}>
-        ${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain">` : ''}
-        <span style="flex:1;min-width:0"><b>${esc(c.name)}</b><br><span style="color:#8a7d66;font-size:12px">${srcs.length ? `meilleure chance ${pct(best)} · ${new Set(srcs.flatMap((s) => s.z)).size} zone(s) · ${esc(srcs.slice().sort((a, b) => b.p - a.p).slice(0, 2).map((s) => `${s.m} (${pct(s.p)})`).join(', '))}` : 'pas de drop de monstre connu (bonus de victoire, boss…) : ignoré'}</span></span>
-        <select data-t="${i}" style="${inp}" ${srcs.length ? '' : 'disabled'}>${[1, 2, 3, 4, 5].map((t) => `<option value="${t}">T${t}${t === 5 ? ' (Rayonnant)' : ''}</option>`).join('')}</select>
-        <span data-est="${i}" style="color:#b9a98c;font-size:12px;width:92px;text-align:right"></span>
-      </div>`).join('') || '<div style="color:#b9a98c">Aucun objet à looter dans ce build.</div>'}</div>
+      <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🐉 Aller dropper${DM.tip('Coche les objets à aller chercher : ils passent dans la liste de courses, où tu choisis le tier voulu. Le pilote passe ensuite en mode Chasse : il va dans la zone la plus rentable, n’attaque que les groupes qui contiennent un monstre qui lâche un objet de la liste, compte les objets reçus en fin de combat et change de zone quand celle-ci n’a plus rien à donner (ou aucun groupe utile). 5 défaites d’affilée dans une zone : elle est abandonnée (notification) et on passe à la suivante. Plus aucune zone possible : arrêt + notification. Tout est droppé : arrêt + notification. Le mode de combat (Auto du jeu / par poids) est celui du menu 🤖. Tier : T1 = 1 exemplaire, T2 = 3, T3 = 9, T4 = 27, T5 (Rayonnant) = 81 (fusion 3 → 1).')}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
+      <div style="font-size:12px;color:#b9a98c">Objets à looter du build — coche ceux à farmer :</div>
+      <div style="overflow-y:auto;max-height:38vh;display:flex;flex-direction:column;gap:4px">${items.map(({ c, srcs, best }, i) => `<label style="${row};cursor:${srcs.length ? 'pointer' : 'default'};${srcs.length ? '' : 'opacity:.55'}">
+        <input type="checkbox" data-i="${i}" ${srcs.length ? '' : 'disabled'}>
+        ${icon(c)}
+        <span style="flex:1;min-width:0"><b>${esc(c.name)}</b><br><span style="color:#8a7d66;font-size:12px">${srcs.length ? `meilleure chance ${pct(best)} · ${new Set(srcs.flatMap((s) => s.z)).size} zone(s) · ${esc(srcs.slice().sort((a, b) => b.p - a.p).slice(0, 2).map((s) => `${s.m} (${pct(s.p)})`).join(', '))}` : 'pas de drop de monstre connu (bonus de victoire, boss…)'}</span></span>
+      </label>`).join('') || '<div style="color:#b9a98c">Aucun objet à looter dans ce build.</div>'}</div>
+      <div style="border-top:1px solid #3a3024;padding-top:8px;display:flex;flex-direction:column;gap:4px">
+        <b style="font-size:13px">🛒 Liste de courses</b>
+        <div data-k="cart" style="overflow-y:auto;max-height:30vh;display:flex;flex-direction:column;gap:4px"></div>
+      </div>
       <div style="display:flex;gap:8px;align-items:center"><span data-k="msg" style="flex:1;font-size:12px;color:#b9a98c"></span><button data-a="go" style="${btn};background:#8a5a1a">🐉 Lancer le farm</button></div></div>`;
     document.body.appendChild(ov);
     DM.installTips(ov);
     const $ = (q) => ov.querySelector(q);
-    const est = () => items.forEach(({ best }, i) => {
-      const el = $(`[data-est="${i}"]`);
-      if (!el || !best) return;
-      const need = 3 ** (+$(`[data-t="${i}"]`).value - 1);
-      el.textContent = `${need} ex. · ~${Math.ceil(need / (best / 100)).toLocaleString('fr-FR')} combats`;
-    });
-    est();
+    const renderCart = () => {
+      const list = [...cart].sort((a, b) => a - b);
+      $('[data-k="cart"]').innerHTML = list.map((i) => {
+        const { c, best } = items[i], t = tierOf(i), need = 3 ** (t - 1);
+        return `<div style="${row}">${icon(c)}<b style="flex:1;min-width:0">${esc(c.name)}</b>
+          <select data-t="${i}" style="${inp}">${[1, 2, 3, 4, 5].map((n) => `<option value="${n}"${n === t ? ' selected' : ''}>T${n}${n === 5 ? ' (Rayonnant)' : ''}</option>`).join('')}</select>
+          <span style="color:#b9a98c;font-size:12px;width:120px;text-align:right">${need} ex. · ~${Math.ceil(need / (best / 100)).toLocaleString('fr-FR')} combats</span>
+          <button data-rm="${i}" style="${btn};padding:2px 7px" title="Retirer de la liste">✕</button></div>`;
+      }).join('') || '<div style="color:#8a7d66;font-size:12px">Vide : coche des objets au-dessus.</div>';
+      const total = list.reduce((n, i) => n + Math.ceil(3 ** (tierOf(i) - 1) / (items[i].best / 100)), 0);
+      $('[data-a="go"]').disabled = !list.length;
+      $('[data-a="go"]').style.opacity = list.length ? '' : '.5';
+      $('[data-a="go"]').textContent = list.length ? `🐉 Lancer le farm (${list.length} objet(s), ~${total.toLocaleString('fr-FR')} combats)` : '🐉 Lancer le farm';
+    };
+    renderCart();
     const close = () => ov.remove();
-    ov.addEventListener('change', est);
+    ov.addEventListener('change', (e) => {
+      const t = e.target;
+      if (t.dataset.i != null) { if (t.checked) cart.add(+t.dataset.i); else cart.delete(+t.dataset.i); renderCart(); }
+      if (t.dataset.t != null) {
+        tiers[items[+t.dataset.t].c.id] = +t.value;
+        try { localStorage.setItem(DROP_TIERS_KEY, JSON.stringify(tiers)); } catch { /* idem */ }
+        renderCart();
+      }
+    });
     ov.addEventListener('click', async (e) => {
       if (e.target === ov || e.target.closest('[data-a="x"]')) return close();
-      if (!e.target.closest('[data-a="go"]')) return;
-      const pick = items.map((x, i) => ({ ...x, i })).filter(({ srcs, i }) => srcs.length && $(`[data-i="${i}"]`).checked);
-      if (!pick.length) { $('[data-k="msg"]').textContent = 'Coche au moins un objet.'; return; }
+      const rm = e.target.closest('[data-rm]');
+      if (rm) { cart.delete(+rm.dataset.rm); const cb = $(`[data-i="${rm.dataset.rm}"]`); if (cb) cb.checked = false; renderCart(); return; }
+      if (!e.target.closest('[data-a="go"]') || !cart.size) return;
+      const pick = [...cart].map((i) => ({ ...items[i], i }));
       const zoneNames = {};
       for (const { srcs } of pick) for (const s of srcs) for (const z of s.z) zoneNames[z] = zones[z]?.[0] || `Zone ${z}`;
       try {
         $('[data-k="msg"]').textContent = 'Lancement…';
-        await startDropFarm(pick.map(({ c, srcs, i }) => ({ id: c.id, name: c.name, icon: c.icon, tier: +$(`[data-t="${i}"]`).value, srcs })), zoneNames);
+        await startDropFarm(pick.map(({ c, srcs, i }) => ({ id: c.id, name: c.name, icon: c.icon, tier: tierOf(i), srcs })), zoneNames);
         close();
         document.querySelector('.dm-picker')?.remove();
       } catch (err) {
