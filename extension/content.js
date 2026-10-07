@@ -1013,7 +1013,7 @@
     const sell = await fetchSellable({ tradable: true });
     if (sell.maxListings && sell.mine.length >= sell.maxListings) throw new Error(`HDV plein (${sell.mine.length}/${sell.maxListings} ventes en cours)`);
     await Promise.all([hdvAction('listItem', sell.chunks), hdvAction('cancelListing', sell.chunks)]);
-    return { to: peer.name || 'l’autre compte', entries: sell.entries };
+    return { to: peer.name || 'l’autre compte', entries: sell.entries, maxListings: sell.maxListings || 0, listed: sell.mine.length };
   }
 
   // Objet vendable correspondant à { name, lvl, fusion } (non lié, quantité restante > 0).
@@ -1023,7 +1023,7 @@
     if (new Set(matches.map((e) => e.id)).size > 1) throw new Error(`Plusieurs objets s’appellent ${it.name} : échange annulé`);
     const free = matches.filter((e) => !e.boundUntil || new Date(e.boundUntil) <= Date.now());
     if (!free.length) throw new Error(`${it.name} est lié jusqu’au ${new Date(matches[0].boundUntil).toLocaleString('fr-FR')}`);
-    const entry = free.find((e) => e.qty > 0);
+    const entry = free.find((e) => e.qty - (e.reserved || 0) > 0);
     if (!entry) throw new Error(`Plus d’exemplaire de ${it.name} à échanger`);
     return entry;
   }
@@ -1039,16 +1039,23 @@
   const PEER_WAIT_MS = 3 * 60000;                // attente max que l'autre compte redevienne joignable
   const PEER_RETRY_GAPS = [2000, 4000, 8000, 15000, 30000];
   const CANCEL_TRIES = 6;
+  const TRADE_PARALLEL = 2;                      // « Tout échanger » : objets envoyés en même temps
   const tradeErr = (message, extra) => Object.assign(new Error(message), extra);
   const tradeStopped = () => !!queueRun?.stop;
 
   // Attend que l'autre compte réponde (onglet joignable, session valide, serveur du jeu disponible).
+  // Un achat réussi il y a moins de PEER_FRESH_MS suffit : pas de nouvelle vérification avant chaque objet.
+  const PEER_FRESH_MS = 15000;
+  let peerOkAt = 0, peerInfo = null;
   async function peerReady(say) {
+    if (peerInfo && Date.now() - peerOkAt < PEER_FRESH_MS) return peerInfo;
     const t0 = Date.now();
     for (let i = 0; ; i++) {
       const p = await send({ type: 'tradePeer' }).catch((e) => ({ ok: false, error: e.message, retry: true }));
       if (p?.ok) {
         if (p.name && p.name === myName()) throw tradeErr('L’autre onglet est connecté au même personnage');
+        peerInfo = p;
+        peerOkAt = Date.now();
         return p;
       }
       if (p?.retry === false || Date.now() - t0 > PEER_WAIT_MS) throw tradeErr(p?.error || 'Autre compte injoignable');
@@ -1105,9 +1112,10 @@
       DM.log(`échange: ${entry.name} → ${ctx.to} (annonce ${res.listingId || listingId}, ${ms} ms)`);
       return ms;
     };
-    if (r?.ok) return done(r);
+    if (r?.ok) { peerOkAt = Date.now(); return done(r); }
 
     // Échec, ou pas de confirmation à temps : on retire l'annonce tout de suite, sans attendre la réponse.
+    peerOkAt = 0;   // l'autre compte a eu un souci : on le revérifiera avant le prochain objet
     say(`${entry.name} : achat ${r ? 'refusé' : 'trop lent'} — retrait de l’annonce…`);
     const tooSlow = !r;   // retirée avant la réponse : l'achat échouera sur « vente n'existe plus », ce n'est pas un vrai refus
     const c = await cancelTradeListing(listingId, entry);
@@ -1252,30 +1260,59 @@
     try {
       const ctx = await tradePrepare(say);
       await setLastRun({ id: runId, to: ctx.to });
-      let ms = 0;
-      while (!queueRun.stop) {
-        const it = tradeQueue()[0];
-        if (!it) break;
-        let entry;
-        try {
-          entry = tradeResolve(ctx, it);
-        } catch (e) {
-          // Objet introuvable / lié / plus assez d'exemplaires : on le sort de la file et on passe au suivant.
-          skipped.push(e.message);
-          await recordTrade(runId, ctx, it, 'skipped', e.message.replace(`${it.name} `, ''), null, it.qty);
-          queueRun.total -= it.qty;
-          await setTradeQueue(tradeQueue().filter((x) => !sameItem(x, it)));
-          continue;
+      let ms = 0, fatal = null;
+      // Envoi en parallèle : un objet est mis en vente pendant que l'autre compte achète le précédent.
+      // Jamais deux exemplaires du même objet en même temps : l'ID de l'annonce est retrouvé par objet + tier.
+      const room = ctx.maxListings ? ctx.maxListings - ctx.listed : TRADE_PARALLEL;
+      const workers = Math.max(1, Math.min(TRADE_PARALLEL, room));
+      const inFlight = new Map();   // clé d'objet → exemplaires en cours
+      const keyOf = (it) => `${it.name}|${it.lvl}|${it.fusion}`;
+      const nextJob = () => tradeQueue().find((it) => !inFlight.has(keyOf(it)) && it.qty - (inFlight.get(keyOf(it)) || 0) > 0);
+      const worker = async (w) => {
+        if (w) await sleep(150 + Math.random() * 200);   // décalage du 2e envoi
+        while (!queueRun.stop && !fatal) {
+          const it = nextJob();
+          if (!it) {
+            if (!inFlight.size) return;
+            await sleep(100);   // un autre objet est en cours : on attend qu'il libère sa place
+            continue;
+          }
+          const k = keyOf(it);
+          inFlight.set(k, (inFlight.get(k) || 0) + 1);   // réservé avant toute attente : l'autre envoi ne le prend pas
+          let entry;
+          try {
+            entry = tradeResolve(ctx, it);
+          } catch (e) {
+            // Objet introuvable / lié / plus assez d'exemplaires : on le sort de la file et on passe au suivant.
+            skipped.push(e.message);
+            await recordTrade(runId, ctx, it, 'skipped', e.message.replace(`${it.name} `, ''), null, it.qty);
+            queueRun.total -= it.qty;
+            await setTradeQueue(tradeQueue().filter((x) => !sameItem(x, it)));
+            inFlight.delete(k);
+            continue;
+          }
+          entry.reserved = (entry.reserved || 0) + 1;
+          const n = queueRun.done + inFlight.size;
+          try {
+            // last = false : l'acheteur rafraîchit sa page après 5 s sans achat (un autre envoi peut être en cours)
+            ms += await tradeWithRetry(ctx, entry, (t) => say(`${Math.min(n, queueRun.total)}/${queueRun.total} · ${t}`), workers === 1 && queueRun.done + 1 >= queueRun.total, runId);
+            queueRun.done++;
+            await setTradeQueue(tradeQueue().map((x) => (sameItem(x, it) ? { ...x, qty: x.qty - 1 } : x)));
+            renderQueue();
+          } catch (e) {
+            fatal ||= e;   // l'autre envoi termine son objet, puis on s'arrête
+          } finally {
+            entry.reserved--;
+            const left = inFlight.get(k) - 1;
+            if (left > 0) inFlight.set(k, left); else inFlight.delete(k);
+          }
+          await sleep(80 + Math.random() * 170);
         }
-        const last = queueRun.done + 1 >= queueRun.total;
-        ms += await tradeWithRetry(ctx, entry, (t) => say(`${queueRun.done + 1}/${queueRun.total} · ${t}`), last, runId);
-        queueRun.done++;
-        await setTradeQueue(tradeQueue().map((x) => (sameItem(x, it) ? { ...x, qty: x.qty - 1 } : x)));
-        renderQueue();
-        if (!last) await sleep(250 + Math.random() * 350);
-      }
+      };
+      await Promise.all(Array.from({ length: workers }, (_, w) => worker(w)));
+      if (fatal) throw fatal;
       ok = true;
-      const avg = queueRun.done ? Math.round(ms / queueRun.done) : 0;
+      const avg = queueRun.done ? Math.round((Date.now() - runId) / queueRun.done) : 0;   // débit réel (envois en parallèle)
       say(queueRun.stop && tradeQueue().length
         ? `⏸ Arrêté : ${queueRun.done} objet(s) envoyé(s) à ${ctx.to} — le reste est toujours dans la file.`
         : `✔ Terminé${queueRun.done ? ` (~${avg} ms par objet)` : ''}.`, skipped.length ? '' : 'ok');
