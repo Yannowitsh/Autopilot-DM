@@ -3198,12 +3198,20 @@
     const v = 200 ** ((Math.min(FORGE.maxLevel, lvl) - 1) / (FORGE.maxLevel - 1));
     return v < 10 ? Math.round(100 * v) / 100 : Math.round(10 * v) / 10;
   };
-  // Niveau du Bouclier de forge (/forgemagie, props du ForgeView) ; 0 si illisible ou pas encore de bouclier.
+  // Niveau du Bouclier de forge (/forgemagie, props du ForgeView), relu à chaque recherche ; 0 = pas encore de bouclier.
+  // Page illisible (site saturé…) : dernier niveau connu (cfg.forgeLevel), signalé dans le journal.
   async function fetchForgeLevel() {
     try {
       const { flight } = await fetchFlight('/forgemagie');
-      return +rscProps(flight, (x) => 'orbs' in x && 'leftToday' in x && 'level' in x).props?.level || 0;
-    } catch { return 0; }
+      const props = rscProps(flight, (x) => 'orbs' in x && 'leftToday' in x && 'level' in x).props;
+      if (!props) throw new Error('niveau introuvable sur /forgemagie');
+      const lvl = +props.level || 0;
+      if (lvl !== cfg.forgeLevel) save({ forgeLevel: lvl });
+      return lvl;
+    } catch (e) {
+      DM.log(`forgemagie : ${e.message} — dernier niveau connu utilisé (${cfg.forgeLevel ?? 0})`);
+      return +cfg.forgeLevel || 0;
+    }
   }
   function fitGearMult(worn, setFx, sheet, guess) {
     const vals = Object.fromEntries(POINT_STATS.map((k) => [k, []]));
