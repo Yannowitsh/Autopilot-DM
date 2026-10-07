@@ -2728,7 +2728,7 @@
   }
 
   // ---------- Optimiseur de build : équipement qui maximise les dégâts d'un tour ----------
-  // Stats d'un build = points de base (fiche perso) + objets (fusion, puis prestige +25 %/niveau hors PA/PM/PO/invoc.)
+  // Stats d'un build = points de base (fiche perso) + objets (fusion, puis prestige +25 %/niveau + Bouclier de forge, hors PA/PM/PO/invoc.)
   // + bonus de panoplie (dofusdb, palier d'indice = nombre d'objets portés − 1, plafonné ; rien sous 2 objets — calé sur
   // le panneau « Panoplies » de la fiche). Dégâts d'un tour = meilleure combinaison de K sorts tenant dans les PA
   // (formule de la tierlist, cible sans résistances). Recherche locale (emplacement par emplacement + panoplies
@@ -2949,9 +2949,23 @@
     return out;
   }
 
-  // Multiplicateur réel de l'équipement : au Prestige 3, le jeu affiche « +75 % » mais applique ×1,8825 aux objets ET
-  // aux bonus de panoplie, arrondi objet par objet (relevé au point près sur la fiche, 2026-10-07). On le recale sur la
-  // fiche : bonus des points de caractéristiques = Σ arrondi(stat × m) des objets portés et des panoplies actives.
+  // Multiplicateur de l'équipement = 1 + Prestige (+25 % par niveau) + Bouclier de forge (forgeBonusPct du jeu), appliqué
+  // aux objets ET aux bonus de panoplie, arrondi objet par objet, hors PA/PM/PO/invocations (ex. P3 + forge niv. 98 :
+  // 1 + 0,75 + 0,132 = ×1,882, relevé au point près sur la fiche). Contrôlé sur la fiche (bonus des points de
+  // caractéristiques = Σ arrondi(stat × m) des objets portés et des panoplies actives) ; recalé seulement s'il ne colle pas.
+  const FORGE = { maxLevel: 200 };
+  const forgeBonusPct = (lvl) => {   // même calcul que le site : 200^((niv − 1) / 199) %, arrondi
+    if (!(lvl > 0)) return 0;
+    const v = 200 ** ((Math.min(FORGE.maxLevel, lvl) - 1) / (FORGE.maxLevel - 1));
+    return v < 10 ? Math.round(100 * v) / 100 : Math.round(10 * v) / 10;
+  };
+  // Niveau du Bouclier de forge (/forgemagie, props du ForgeView) ; 0 si illisible ou pas encore de bouclier.
+  async function fetchForgeLevel() {
+    try {
+      const { flight } = await fetchFlight('/forgemagie');
+      return +rscProps(flight, (x) => 'orbs' in x && 'leftToday' in x && 'level' in x).props?.level || 0;
+    } catch { return 0; }
+  }
   function fitGearMult(worn, setFx, sheet, guess) {
     const vals = Object.fromEntries(POINT_STATS.map((k) => [k, []]));
     const sets = {};
@@ -2962,10 +2976,12 @@
     for (const [n, cnt] of Object.entries(sets)) for (const { k, v } of setTier(setFx[n], cnt) || []) if (vals[k] && v > 0) vals[k].push(v);
     const err = (m) => POINT_STATS.reduce((e, k) => e + Math.abs(vals[k].reduce((n, v) => n + Math.round(v * m), 0) - (sheet.bonus[k] || 0)), 0);
     let best = guess, bestErr = err(guess);
-    for (let m = 1; m <= 1 + sheet.prestige * 0.5 + 1e-9; m += 0.0005) { const e = err(m); if (e < bestErr) { best = m; bestErr = e; } }
-    // écart restant important (parchemins d'arène, objet illisible…) : on garde la valeur affichée par le jeu
-    const ok = bestErr <= POINT_STATS.length * 2;
-    DM.log(`optimiseur : multiplicateur d'équipement ${best.toFixed(4)} (écart ${bestErr}${ok ? '' : ', rejeté'})`);
+    const tol = POINT_STATS.length * 2;
+    // la valeur du jeu (prestige + forge) colle : on la garde ; sinon on cherche autour
+    if (bestErr > tol) for (let m = 1; m <= guess + 0.5 + 1e-9; m += 0.0005) { const e = err(m); if (e < bestErr) { best = m; bestErr = e; } }
+    // écart restant important (parchemins d'arène, objet illisible…) : on garde la valeur du jeu
+    const ok = bestErr <= tol;
+    DM.log(`optimiseur : multiplicateur d'équipement ${best.toFixed(4)} (jeu ${guess.toFixed(4)}, écart ${bestErr}${ok ? '' : ', rejeté'})`);
     return ok ? best : guess;
   }
 
@@ -2989,10 +3005,16 @@
     }
     const pointsFree = +alloc.pointsFree || 0;
     const capital = pointsFree + Object.keys(base).reduce((n, k) => n + spentPoints(tiers[k], base[k]), 0);
-    const tile = (label) => +(flight.match(new RegExp(`"children":(-?\\d+)\\}\\],\\["\\$","div",null,\\{"className":"text-\\[11px\\][^"]*","children":"${label}"`))?.[1] ?? NaN);
-    const sets = [...flight.matchAll(/"children":\["([^"]+)"," \(",(\d+),"\/",(\d+),"\)"\]\}\],\["\$","div",null,\{"className":"text-muted","children":"([^"]*)"\}/g)]
-      .map((m) => ({ name: m[1], count: +m[2], max: +m[3], text: m[4] }));
-    return { level: +info.level || 1, prestige: +info.prestige || 0, base, bonus, tiers, pointsFree, capital,
+    // tuiles de la fiche : valeur, puis libellé (« PV », « PA », « % Critique »…)
+    const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const tile = (label) => +(flight.match(new RegExp(`"children":"?(-?[\\d.,]+)"?\\}\\],\\["\\$","div",null,\\{"className":"[^"]*","children":"${esc(label)}"\\}`))?.[1]?.replace(',', '.') ?? NaN);
+    // panoplies portées : « Nom (n/max) » puis le palier actif (v2 : liste « N objets : … » ; avant : une ligne de texte)
+    const sets = [
+      ...flight.matchAll(/"children":\["([^"]+)"," \(",(\d+),"\/",(\d+),"\)"\]\}\],\["\$","div",null,\{"className":"text-muted","children":"([^"]*)"\}/g),
+      ...flight.matchAll(/"children":\["([^"]+)"," \(",(\d+),"\/",(\d+),"\)"\]\}\],\["\$","ul",null,\{[^{]*"children":\[\["\$","li","\d+",\{"className":"text-parchment","children":\[\["\$","span",null,\{"className":"font-bold","children":"\d+ objets[^"]*"\}\]," :"," ","([^"]*)"/g),
+    ].map((m) => ({ name: m[1], count: +m[2], max: +m[3], text: m[4] }));
+    const forge = await fetchForgeLevel();
+    return { level: +info.level || 1, prestige: +info.prestige || 0, forge, forgePct: forgeBonusPct(forge), base, bonus, tiers, pointsFree, capital,
       pv: tile('PV'), pa: tile('PA'), crit: tile('% Critique'), sets };
   }
 
@@ -3101,7 +3123,7 @@
     const planLevel = lvlOpt > 0 ? Math.min(200, lvlOpt) : level;
     const statLevel = Math.max(level, planLevel);
     const planCapital = sheet.capital + 5 * (statLevel - level);
-    let gearMult = 1 + sheet.prestige * PRESTIGE_GEAR_PCT / 100;   // recalé plus bas sur la fiche (fitGearMult)
+    let gearMult = 1 + sheet.prestige * PRESTIGE_GEAR_PCT / 100 + (sheet.forgePct || 0) / 100;   // contrôlé plus bas sur la fiche (fitGearMult)
     const withPrestige = (eff) => {
       if (gearMult === 1) return eff;
       const o = {};
@@ -3431,7 +3453,7 @@
     // cartes non offensives déjà dans le deck 3 (buffs, soins…) : conservées, c'est toi qui les choisis
     const dmgIds = new Set(sp.spells.map((x) => x.id));
     const keepCards = sp.deckIds(DECK_TARGET).filter((id) => !dmgIds.has(id) && !deck.some((x) => x.id === id)).slice(0, DECK_CARDS - deck.length);
-    return { sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, paOff, deckN, planLevel, statLevel, planCapital, setFx, hdv: opts.hdv, target, goal, bestiary,
+    return { gearMult, sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, paOff, deckN, planLevel, statLevel, planCapital, setFx, hdv: opts.hdv, target, goal, bestiary,
       pvMin, pvShort: pvMin && pvOf(nxt.S) < pvMin, paMin, paShort: paMin && paOf(nxt.S) < paMin, bank, budget, hdvFailed, realloc: opts.realloc !== false, cost: costOf(final), deck: deck.map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })),
       deckChunks: sp.chunks, keepCards };
   }
@@ -3455,7 +3477,7 @@
     const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:6px 12px;color:#fff;cursor:pointer;font:600 13px system-ui,sans-serif;background:#2a231a';
     ov.innerHTML = `
       <div style="width:min(900px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
-        <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🧬 Optimiseur de build${DM.tip("Cherche l’équipement qui maximise l’objectif choisi. Par défaut, tes dégâts sur un tour : le meilleur enchaînement de sorts de dégâts qui tient dans tes PA offensifs (tous tes PA si tu n’en fixes pas), sur une cible sans résistances. Prend en compte fusion, prestige, bonus de panoplie (dofusdb) et PA gagnés par l’équipement. Les PV minimum évitent un build trop fragile.")}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
+        <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🧬 Optimiseur de build${DM.tip("Cherche l’équipement qui maximise l’objectif choisi. Par défaut, tes dégâts sur un tour : le meilleur enchaînement de sorts de dégâts qui tient dans tes PA offensifs (tous tes PA si tu n’en fixes pas), sur une cible sans résistances. Prend en compte fusion, prestige, Bouclier de forge, bonus de panoplie (dofusdb) et PA gagnés par l’équipement. Les PV minimum évitent un build trop fragile.")}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
         <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
           <label data-tip="Ce que l’optimiseur maximise.&#10;Dégâts par tour : sur une cible sans résistances.&#10;Kralamoure : contre le boss de guilde, ses résistances (20 % Neutre, Terre, Feu et Air, 30 % Eau) appliquées à chaque coup ; le combat dure 10 tours, seul le total de dégâts compte.&#10;Prospection : celle de l’équipement et des panoplies + 1 par 10 de Chance ; avec « Redistribuer mes points », tous tes points vont en Chance.&#10;Sagesse : idem, points en Sagesse.&#10;Seule cette stat compte (les dégâts et PV n’entrent pas en jeu, utilise PV / PA minimum pour un plancher) ; à égalité, l’objet que tu portes déjà est gardé.">Objectif <select data-o="goal" style="${inp}">${Object.entries(BUILD_GOALS).map(([k, g]) => `<option value="${k}">${g.label}</option>`).join('')}</select></label>
           <label data-tip="Ne propose que des objets jusqu’à ce niveau. Au-dessus de ton niveau actuel, c’est une prévision : PV, PA de base et points de caractéristiques (5 par niveau) de ce niveau-là ; les objets trop hauts pour toi aujourd’hui ne sont pas équipés et les points ne sont pas appliqués. Vide = ton niveau actuel.">Niveau max <input data-o="lvlMax" type="number" min="1" max="200" placeholder="le mien" style="${inp};width:70px"></label>
@@ -3831,7 +3853,7 @@
         <details style="font-size:11px;color:#b9a98c"><summary style="cursor:pointer">Contrôle du modèle (${badChecks.length ? `<span style="color:#f0a040">${badChecks.length} écart(s)</span>` : '<span style="color:#6fcf7a">OK</span>'})</summary>
           Stats calculées pour ton équipement actuel / affichées sur ta fiche : ${r.checks.map(([l, a, b]) => `<span style="color:${Math.abs(a - b) > Math.max(2, Math.abs(b) * 0.02) ? '#f0a040' : 'inherit'}">${esc(l)} ${fmt(a)} / ${fmt(b)}</span>`).join(' · ')}.
           Panoplies de la fiche : ${r.sheet.sets.map((x) => `${esc(x.name)} (${x.count}/${x.max}) ${esc(x.text)}`).join(' ; ') || 'aucune'}.
-          Prestige ${r.sheet.prestige}, niveau ${r.sheet.level}.</details>`;
+          Prestige ${r.sheet.prestige} (+${r.sheet.prestige * PRESTIGE_GEAR_PCT} %)${r.sheet.forge ? `, Bouclier de forge niv. ${r.sheet.forge} (+${String(r.sheet.forgePct).replace('.', ',')} %)` : ''}${r.gearMult ? ` → équipement ×${r.gearMult.toFixed(4).replace('.', ',')}` : ''}, niveau ${r.sheet.level}.</details>`;
     }
     if (load) openSave(load);
   }
