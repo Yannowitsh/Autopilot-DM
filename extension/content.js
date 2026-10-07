@@ -5066,8 +5066,8 @@
           <div class="head"><span>🛡️ Auto-équipement${DM.tip("Équipe automatiquement les meilleurs objets de ton inventaire selon jusqu’à 5 caractéristiques par ordre de priorité. La 1re compte pleinement, la 2e pour 35 %, la 3e pour 15 %, puis les 4e et 5e (facultatives) pour 8 % et 4 % : elles départagent les objets proches. Un emplacement vide est toujours rempli, même par un objet sans ces stats. Chaque stat est comparée au meilleur objet du même type (ex. meilleur chapeau). Les bonus de panoplie ne sont pas pris en compte.")}</span></div>
           <div class="seg eqmode">
             <button data-eqmode="off" data-tip="Pas de vérification automatique : utilise Aperçu / Équiper ci-dessous.">Off</button>
-            <button data-eqmode="semi" data-tip="Toutes les 3 min, vérifie l’inventaire. Si un objet ferait mieux, une fenêtre le propose avec l’écart de stats : ✔ pour l’équiper, ✖ pour ne plus jamais le proposer.">Semi</button>
-            <button data-eqmode="auto" data-tip="Toutes les 3 min, équipe directement les meilleurs objets (hors objets refusés en mode Semi).">Auto</button>
+            <button data-eqmode="semi" data-tip="Régulièrement (toutes les 3 min par défaut, réglable dans la popup de l’extension → Réglages), vérifie l’inventaire. Si un objet ferait mieux, une fenêtre le propose avec l’écart de stats : ✔ pour l’équiper, ✖ pour ne plus jamais le proposer.">Semi</button>
+            <button data-eqmode="auto" data-tip="Régulièrement (toutes les 3 min par défaut, réglable dans la popup → Réglages), équipe directement les meilleurs objets (hors objets refusés en mode Semi).">Auto</button>
           </div>
           <div class="row" style="align-items:center;justify-content:space-between" data-k="eqDeclBox">
             <span class="muted" data-k="eqDecl"></span>
@@ -5334,10 +5334,10 @@
   }
 
   // ---------- Auto-équipement automatique (Off / Semi / Auto) ----------
-  // Toutes les EQUIP_CHECK_MS, on recalcule le meilleur équipement (mêmes stats et emplacements que le menu).
+  // Toutes les cfg.equipCheckMin minutes (popup → Réglages, 3 par défaut), on recalcule le meilleur équipement (mêmes stats et emplacements que le menu).
   // Auto : équipe directement. Semi : fenêtre de proposition, avec l'écart de stats ; « Non » = objet jamais reproposé
   // (cfg.equipDeclined, par personnage : le stockage est commun aux deux comptes). Jamais pendant un combat ni sur /inventaire.
-  const EQUIP_CHECK_MS = 3 * 60000;
+  const equipCheckMs = () => Math.max(0.5, +cfg.equipCheckMin || 3) * 60000;
   const EQUIP_SNOOZE_MS = 30 * 60000;   // proposition fermée (✕) : pas reproposée avant 30 min
   let eqTimer = null, eqAutoBusy = false, eqAsk = null;
   const eqSnooze = new Map();           // changement (emplacement > objet) → fermé à
@@ -5364,7 +5364,7 @@
     if (/^\/(inventaire|connexion)/.test(path) || (path.startsWith('/combat') && !endTitle())) return;
     if (!isOwner() && document.visibilityState !== 'visible') return;   // onglet du pilote, ou onglet affiché
     const acct = eqAcct(), now = Date.now();
-    if (!force && now - (cfg.equipCheckAt?.[acct] || 0) < EQUIP_CHECK_MS) return;
+    if (!force && now - (cfg.equipCheckAt?.[acct] || 0) < equipCheckMs()) return;
     eqAutoBusy = true;
     try {
       await save({ equipCheckAt: { ...(cfg.equipCheckAt || {}), [acct]: now } });

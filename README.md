@@ -44,7 +44,7 @@ Menu 🤖 → Activité → **Combat** : **Auto du jeu** (le bouton Auto du site
 
 Dans le menu 🤖 en jeu, section **🛡️ Auto-équipement** : choisis jusqu'à 5 caractéristiques par ordre de priorité (la 1re compte pleinement, la 2e pour 35 %, la 3e pour 15 %, les 4e et 5e, facultatives, pour 8 % et 4 %) ; un emplacement vide est toujours rempli, même par un objet qui n'a aucune de ces stats et les emplacements à optimiser (clic sur un emplacement pour l'activer ou le désactiver). **🔍 Aperçu** montre les objets qui seraient équipés et l'écart de stats, **✅ Équiper** les équipe. Les bonus de panoplie ne sont pas pris en compte.
 
-Le sélecteur **Off / Semi / Auto** vérifie l'inventaire toutes les 3 minutes (jamais pendant un combat) :
+Le sélecteur **Off / Semi / Auto** vérifie l'inventaire toutes les 3 minutes par défaut (réglable dans la popup → Réglages, « Auto-équipement : vérif. » ; jamais pendant un combat) :
 - **Auto** équipe directement les meilleurs objets ;
 - **Semi** ouvre une fenêtre qui propose chaque changement avec l'écart de stats (gagnées en vert, perdues en rouge) : **✔ Équiper** ou **✖ Non** (l'objet n'est plus jamais proposé ; **↺ Oublier** efface ces refus). Fermer la fenêtre avec ✕ la repropose 30 minutes plus tard.
 

@@ -35,6 +35,7 @@ const DM = {
     autoHealBelow: 70,   // auto par poids : cartes de soin jouées seulement sous ce % de PV
     autoActMin: 0.8,     // auto par poids : pause entre deux actions (s)
     autoActMax: 1.5,
+    equipCheckMin: 3,    // auto-équipement (Semi / Auto) : vérification de l'inventaire toutes les N minutes
     modules: {},         // modules désactivés dans la popup : { clé: false } (absent = activé)
     huntRetries: 3,      // chasse (avis de recherche…) : nouveaux essais après une défaite avant arrêt
     errorReloadSec: 5,   // page d'erreur du site (508 « Resource Limit Is Reached », 5xx…) : rechargée après N s
