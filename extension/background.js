@@ -293,6 +293,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return true;
       }
       case 'reloadExtension': setTimeout(() => chrome.runtime.reload(), 100); return true;
+      case 'openSettings': await chrome.tabs.create({ url: chrome.runtime.getURL('popup.html') }); return true;   // menu 🤖 (téléphone)
       case 'openUpdate': await chrome.tabs.create({ url: DM.IS_FIREFOX ? DM.RELEASES_URL : chrome.runtime.getURL('update.html') }); return true;
       case 'bossGo': return bossGo(sender.tab?.id);
       case 'bossDone': return bossFinish(msg.result);

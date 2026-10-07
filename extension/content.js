@@ -5424,6 +5424,7 @@
             <div class="muted" data-k="times" style="display:flex;flex-direction:column;gap:3px;margin-top:4px"></div>
             <button data-k="timesReset" style="padding:2px 7px;font-size:12px;margin-top:4px" data-tip="Remet le chronomètre à zéro.">↺ Remettre à zéro</button>
           </details>
+          <button data-k="settings" style="padding:2px 7px;font-size:12px" data-tip="Ouvre les réglages de l’extension dans un onglet (notifications Discord, délais, rechargements, modules…), comme la popup de l’icône de l’extension. Utile sur téléphone.">⚙️ Réglages de l’extension</button>
         </div>
         <div class="sec">
           <div class="head"><span>🗺️ Activité${DM.tip("Aventure : étapes du Chemin.\nChasse : refait en boucle un groupe d’une zone.\nAscension : étages de boss (niveau 200).\nÀ droite : ta dernière énergie connue.")}</span><span class="muted" data-k="energy"></span></div>
@@ -5546,6 +5547,7 @@
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setOpen(false); });
 
     $('toggle').addEventListener('click', () => send({ type: 'toggle', fromPage: true }).catch(() => {}));
+    $('settings').addEventListener('click', () => send({ type: 'openSettings' }).catch(() => {}));
     for (const b of root.querySelectorAll('[data-mode]')) {
       b.addEventListener('click', async () => {
         await save({ mode: b.dataset.mode });

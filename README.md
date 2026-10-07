@@ -31,6 +31,8 @@ La même extension tourne sur **Firefox** (ordinateur et Android, version 142 ou
 3. Firefox → **Paramètres** → **À propos de Firefox** → touche 5 fois le logo Firefox (menu de débogage), reviens dans **Paramètres** → **Installer le module depuis un fichier** → choisis le `.xpi`.
 4. Sur le site du jeu, menu **⋮** → **Extensions** → **Autopilot-DM** ouvre la popup. Si elle affiche « ⚠️ L'extension n'a pas encore accès au site du jeu », touche **🔓 Autoriser l'accès**.
 
+Les réglages de l'extension (notifications Discord, délais, rechargements, modules…) s'ouvrent aussi dans un onglet depuis le menu 🤖 en jeu, bouton **⚙️ Réglages de l'extension**, ou depuis **Modules complémentaires** → **Autopilot-DM** → **Paramètres** (Firefox) / clic droit sur l'icône → **Options** (Chrome).
+
 Firefox installe ensuite les nouvelles versions tout seul (le bouton **⬇️ Installer** ouvre la page de la dernière version).
 
 Sur téléphone, garde Firefox au premier plan et le téléphone branché : tant que le pilote tourne, l'extension garde l'écran allumé ; en veille ou en arrière-plan, Android gèle la page et le farm s'arrête. L'échange entre deux comptes n'est pas disponible sur Firefox.
