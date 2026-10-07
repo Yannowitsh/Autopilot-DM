@@ -586,17 +586,28 @@ async function openSpellList() {
     return;
   }
   const { spells, favs, variableOnly, chunks } = data;
-  const NO_FILTERS = { q: '', target: '', el: '', sort: 'avg', dir: -1, favOnly: false, real: false };
-  const baseOf = new Map(spells.map((sp) => [sp, { ...sp }]));   // valeurs de base de chaque sort
+  const NO_TGT = { key: '', pv: 0, rp: [0, 0, 0, 0, 0], rf: [0, 0, 0, 0, 0] };
+  const NO_FILTERS = { q: '', target: '', el: '', sort: 'avg', dir: -1, favOnly: false, real: false, tgt: NO_TGT };
   let charStats = null, statsMsg = '';
   let f = { ...NO_FILTERS };
   try { f = { ...f, ...JSON.parse(localStorage.getItem(SPELL_FILTERS_KEY) || '{}'), q: '' }; } catch { /* stockage indisponible */ }
+  f.tgt = { ...NO_TGT, ...f.tgt };
+  // Cibles proposées : ennemis du dernier combat capturé (résistances et PV relevés), boss connus ; sinon saisie libre
+  const fight = lastFight();
+  const presets = new Map(Object.entries(BUILD_TARGETS).map(([k, t]) => [k, { name: t.name, rp: t.resPct, rf: [0, 0, 0, 0, 0], pv: 0 }]));
+  for (const fr of Object.values(fight?.fighters || {})) {
+    if (fr.id === 'p' || fr.team === fight.fighters.p?.team) continue;
+    presets.set(`f:${fr.name}`, { ...fighterTarget(fr), name: `${fr.name}${fr.level ? ` (niv. ${fr.level})` : ''} — combat de ${DM.hhmm(fight.at)}` });
+  }
+  if (f.tgt.key && f.tgt.key !== 'custom' && !presets.has(f.tgt.key)) f.tgt.key = 'custom';   // ennemi d'un ancien combat : valeurs gardées
+  const tgtOn = () => !!f.tgt.key;
   const saveFilters = () => { try { localStorage.setItem(SPELL_FILTERS_KEY, JSON.stringify(f)); } catch { /* idem */ } };
   let msg = '';
 
   const inp = 'background:#2a231a;border:1px solid #5a4a33;border-radius:8px;color:#eee;padding:5px 8px;font:13px system-ui,sans-serif';
   const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:5px 10px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
   const SORTS = [['avg', 'Dégâts totaux'], ['perAp', 'Dégâts / PA'], ['ap', 'Coût en PA'], ['name', 'Nom']];
+  const tgtLabel = () => (f.tgt.key === 'custom' ? 'la cible personnalisée' : presets.get(f.tgt.key)?.name || 'la cible');
   ov.innerHTML = `
     <div style="width:min(860px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
       <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📚 Tierlist de mes sorts${DM.tip("Tous les sorts à dégâts de ta collection, avec les dégâts de base de la carte (sans tes caractéristiques). Un sort à plusieurs lignes de dégâts affiche leur total, même sur des éléments différents : toutes les lignes sont appliquées, sauf celles à x % de chance (comptées en moyenne, 🎲). Bombes, pièges et poisons comptent leurs dégâts (le poison, sur toute sa durée). Le cadenas met le sort en favori sur le site (toujours en haut de la liste de /deck).")}</b><button data-a="test" style="${btn}" data-tip="Compare mon calcul aux vrais coups de ton dernier combat (capturé automatiquement) : coup observé, estimation sans résistance et estimation avec les résistances de la cible. « Copier » pour me l’envoyer.">🧪 Tester le calcul</button><button data-a="x" style="${btn};background:transparent">✕</button></div>
@@ -608,6 +619,15 @@ async function openSpellList() {
         <label data-tip="Calcule les dégâts avec tes caractéristiques (lues sur ton dernier combat) : stat de l’élément + Puissance (+1 % par point), Dommages fixes à chaque ligne, % Dommages aux sorts, critique (chance de la carte + ton % Critique, coup ×1,25 estimé) et vision spectrale. Un sort multi-éléments ne profite que de tes éléments forts." style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-left:auto">
           <span class="dm-sw" style="position:relative;width:34px;height:18px;border-radius:9px;background:#5a4a33;transition:.15s;flex:none"><span style="position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#eee;transition:.15s"></span></span>
           <input type="checkbox" data-f="real" style="display:none"> Avec mes stats</label>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+        <span data-tip="Applique les résistances de la cible à chaque coup : (dégât − rés. fixe de l’élément) × (1 − % rés. de l’élément), jamais sous 0 (formule vérifiée par 🧪 Tester le calcul). Avec des PV, chaque sort affiche le nombre de lancers moyens pour tuer la cible et les PA que ça coûte.&#10;Les ennemis de ton dernier combat capturé sont proposés avec leurs vraies résistances et PV ; modifier une valeur passe en « Personnalisée ».">🎯 Cible</span>
+        <select data-t="key" style="${inp}"><option value="">Aucune (dégâts bruts)</option><option value="custom">Personnalisée</option>${[...presets].map(([k, t]) => `<option value="${esc(k)}">${esc(t.name)}</option>`).join('')}</select>
+        <span data-k="tgtFields" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+          ${ELEMENTS.map((E, i) => `<span style="display:flex;align-items:center;gap:3px;color:${E.color};font-size:12px;font-weight:700" title="${esc(E.name)} : % de résistance, puis résistance fixe">${esc(E.name.slice(0, 3))}
+            <input data-t="rp" data-i="${i}" type="number" step="1" style="${inp};width:46px;padding:3px 4px">%<input data-t="rf" data-i="${i}" type="number" step="1" style="${inp};width:46px;padding:3px 4px"></span>`).join('')}
+          <label style="display:flex;align-items:center;gap:3px;font-size:12px">PV <input data-t="pv" type="number" min="0" step="1" style="${inp};width:76px;padding:3px 4px"></label>
+        </span>
       </div>
       <div data-k="stats" style="font-size:11px;color:#b9a98c;display:none"></div>
       <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><span style="color:#b9a98c">Trier :</span>
@@ -628,7 +648,28 @@ async function openSpellList() {
       render();
     });
   }
-  // Interrupteur « Avec mes stats » : recalcul de tous les sorts avec les caractéristiques (ou retour aux valeurs de base)
+  // Cible : valeurs du préréglage dans les champs ; une saisie passe en « Personnalisée »
+  const fillTgt = () => {
+    $('[data-t="key"]').value = f.tgt.key;
+    $('[data-k="tgtFields"]').style.display = tgtOn() ? 'flex' : 'none';
+    for (const el of ov.querySelectorAll('[data-t="rp"],[data-t="rf"]')) el.value = f.tgt[el.dataset.t][+el.dataset.i] || 0;
+    $('[data-t="pv"]').value = f.tgt.pv || '';
+  };
+  $('[data-t="key"]').addEventListener('change', (e) => {
+    const k = e.target.value, p = presets.get(k);
+    f.tgt = p ? { key: k, pv: p.pv || 0, rp: [...p.rp], rf: [...p.rf] } : { ...f.tgt, key: k };
+    fillTgt(); saveFilters(); applyStats();
+  });
+  for (const el of ov.querySelectorAll('[data-t="rp"],[data-t="rf"],[data-t="pv"]')) {
+    el.addEventListener('input', () => {
+      const t = el.dataset.t, v = +el.value || 0;
+      if (t === 'pv') f.tgt.pv = Math.max(0, v);
+      else f.tgt[t] = f.tgt[t].map((x, i) => (i === +el.dataset.i ? (t === 'rp' ? Math.min(100, v) : v) : x));
+      if (f.tgt.key !== 'custom') { f.tgt.key = 'custom'; $('[data-t="key"]').value = 'custom'; }
+      saveFilters(); applyStats();
+    });
+  }
+  // Recalcul de tous les sorts : caractéristiques (interrupteur « Avec mes stats ») et résistances de la cible
   async function applyStats() {
     if (f.real && !charStats) {
       statsMsg = 'Lecture de tes caractéristiques…';
@@ -637,9 +678,11 @@ async function openSpellList() {
       statsMsg = charStats ? '' : 'Caractéristiques introuvables : lance un combat puis rouvre la tierlist.';
     }
     for (const sp of spells) {
-      const d = f.real && charStats ? spellDamage(sp.card, charStats.stats) : baseOf.get(sp);
+      const d = spellDamage(sp.card, f.real && charStats ? charStats.stats : null, tgtOn() ? f.tgt : null);
       Object.assign(sp, { min: d.min, max: d.max, avg: d.avg, byEl: d.byEl, critP: d.critP || 0 });
       sp.perAp = sp.ap ? sp.avg / sp.ap : Infinity;
+      // lancers moyens pour tuer la cible (lignes dépendant des PV : non comptées)
+      sp.kill = tgtOn() && f.tgt.pv > 0 && sp.avg > 0 ? Math.ceil(f.tgt.pv / sp.avg) : null;
     }
     render();
   }
@@ -680,7 +723,7 @@ async function openSpellList() {
     sw.firstElementChild.style.left = f.real ? '18px' : '2px';
     const sb = $('[data-k="stats"]');
     sb.style.display = f.real ? '' : 'none';
-    sb.textContent = statsMsg || (charStats ? `Tes stats (combat de ${DM.hhmm(charStats.at)}) : ${STAT_SHOW.filter(([k]) => +charStats.stats[k]).map(([k, l]) => `${l} ${charStats.stats[k]}`).join(' · ') || 'aucun bonus'} — dégâts avant résistances du monstre.` : '');
+    sb.textContent = statsMsg || (charStats ? `Tes stats (combat de ${DM.hhmm(charStats.at)}) : ${STAT_SHOW.filter(([k]) => +charStats.stats[k]).map(([k, l]) => `${l} ${charStats.stats[k]}`).join(' · ') || 'aucun bonus'} — ${tgtOn() ? `après résistances de ${tgtLabel()}` : 'dégâts avant résistances du monstre'}.` : '');
     const q = normName(f.q || '');
     const list = spells.filter((sp) => {
       if (q && !normName(sp.name).includes(q)) return false;
@@ -710,7 +753,8 @@ async function openSpellList() {
         return `<span title="${esc(E.name)} : ${fmt(v)} en moyenne" style="display:inline-block;padding:1px 6px;border-radius:6px;font-size:11px;font-weight:700;color:${E.color};border:1px solid ${E.color}66;background:${E.color}1f">${esc(E.name)}</span>`;
       }).join(' ');
       const tags = [sp.zone ? '🌀 Zone' : '🎯 Cible unique', sp.delayed ? '⏳ différé' : '', sp.random ? '🎲 % de chance' : '', sp.variable ? '+ variable' : ''].filter(Boolean).join(' · ');
-      return `<div style="display:grid;grid-template-columns:28px 40px 1fr auto auto auto 30px;gap:8px;align-items:center;background:${fav ? '#3a2e14' : '#241e16'};border:1px solid ${fav ? '#e0b040' : '#3a3024'};border-radius:8px;padding:5px 8px">
+      const killCol = tgtOn() && f.tgt.pv > 0;
+      return `<div style="display:grid;grid-template-columns:28px 40px 1fr auto auto auto${killCol ? ' auto' : ''} 30px;gap:8px;align-items:center;background:${fav ? '#3a2e14' : '#241e16'};border:1px solid ${fav ? '#e0b040' : '#3a3024'};border-radius:8px;padding:5px 8px">
         <b style="color:#b9a98c;text-align:right">${i + 1}</b>
         <img src="/img/spells/sort_${+sp.icon}.png" alt="" style="width:36px;height:36px;object-fit:contain">
         <div style="min-width:0"><div style="font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(sp.desc)}">${esc(sp.name)}</div>
@@ -718,9 +762,11 @@ async function openSpellList() {
         <div style="text-align:center" title="Coût en PA"><b style="font-size:15px;color:#5aa9e6">${sp.ap}</b><div style="font-size:10px;color:#8a7d66">PA</div></div>
         <div style="text-align:right;min-width:86px" title="${f.real ? `Dégâts moyens avec tes stats (critique ${Math.round((sp.critP || 0) * 100)} % compris) — min sans critique, max en critique` : 'Dégâts totaux (min – max)'}"><b style="font-size:15px">${fmt(sp.avg)}</b><div style="font-size:10px;color:#8a7d66">${sp.min} – ${sp.max}</div></div>
         <div style="text-align:right;min-width:56px" title="Dégâts moyens par PA"><b style="font-size:14px;color:#f0c04a">${sp.ap ? fmt(sp.perAp) : '—'}</b><div style="font-size:10px;color:#8a7d66">/ PA</div></div>
+        ${killCol ? `<div style="text-align:right;min-width:58px" title="${sp.kill ? `≈ ${sp.kill} lancer(s) en moyenne pour tuer ${esc(tgtLabel())} (${f.tgt.pv} PV), soit ${sp.kill * sp.ap} PA${sp.zone ? ' — sur la cible visée (les autres cibles de la zone prennent ~60 %)' : ''}` : 'Aucun dégât sur cette cible'}"><b style="font-size:14px;color:${sp.kill ? '#6fcf7a' : '#8a7d66'}">${sp.kill ? `${sp.kill}×` : '—'}</b><div style="font-size:10px;color:#8a7d66">${sp.kill ? `${sp.kill * sp.ap} PA` : 'pour tuer'}</div></div>` : ''}
         <button data-fav="${sp.id}" title="${fav ? 'Favori sur le site : cliquer pour le retirer' : 'Mettre en favori sur le site (toujours en haut de /deck)'}" style="width:28px;height:28px;border-radius:50%;cursor:pointer;border:1px solid ${fav ? '#e0b040' : '#5a4a33'};background:${fav ? '#e0b040' : 'transparent'};color:${fav ? '#1d1812' : '#b9a98c'};font-size:13px">${fav ? '🔒' : '🔓'}</button>
       </div>`;
     }).join('') || '<div style="color:#b9a98c;padding:12px">Aucun sort ne correspond aux filtres.</div>';
   }
-  if (f.real) applyStats(); else render();
+  fillTgt();
+  if (f.real || tgtOn()) applyStats(); else render();
 }

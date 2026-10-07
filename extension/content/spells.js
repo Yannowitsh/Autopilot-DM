@@ -22,7 +22,8 @@ const SPELL_FILTERS_KEY = 'dmSpellFilters';
 // Neutre et Terre = Force, Feu = Intelligence, Eau = Chance, Air = Agilité. Critique : chance de la carte + % Critique
 // (seulement si la carte peut critiquer), coup ×1,25 (estimé sur les journaux) + Dommages Critiques.
 // Vision spectrale : 0,4 % par point de PO qu'un sort de dégâts frappe deux fois (compté en moyenne).
-// Les résistances / le niveau du monstre réduisent ensuite tous les sorts pareil : le classement n'en dépend pas.
+// Cible (option) : chaque coup devient (x − rés. fixe de l'élément) × (1 − % rés. de l'élément), plancher 0 — même
+// formule que le test du calcul ; la rés. fixe pèse plus sur les sorts à petites lignes multiples.
 const EL_STAT = ['force', 'force', 'intelligence', 'chance', 'agilite'];
 const EL_DMG = ['dommagesNeutre', 'dommagesTerre', 'dommagesFeu', 'dommagesEau', 'dommagesAir'];
 const CRIT_MULT = 1.25;
@@ -40,26 +41,34 @@ window.addEventListener('message', (e) => {
     if (obj.rewards && st?.status && st.status !== 'ongoing') { dropOnRewards(obj.rewards, `${st.kind}|${st.logCount}`); farmOnRewards(st, obj.rewards); }
     if (!st?.fighters?.p?.stats || !st.log?.some((L) => L.t === 'play' && L.who === 'p')) return;
     const fighters = Object.fromEntries(Object.entries(st.fighters).map(([id, f]) => [id,
-      { id, name: f.name, kind: f.kind, team: f.team, level: f.level, stats: f.stats, resCap: f.resCap, buffs: f.buffs }]));
+      { id, name: f.name, kind: f.kind, team: f.team, level: f.level, maxHp: f.maxHp, stats: f.stats, resCap: f.resCap, buffs: f.buffs }]));
     const all = JSON.parse(localStorage.getItem(LAST_FIGHT_KEY) || '{}');
     all[fightAcct()] = { at: Date.now(), kind: st.kind, status: st.status, fighters, log: st.log };
     localStorage.setItem(LAST_FIGHT_KEY, JSON.stringify(all));
   } catch { /* état illisible ou stockage plein */ }
 });
+// Résistances d'un combattant (état de combat) au format `tg` de spellDamage, % plafonnés par son resCap.
+function fighterTarget(f) {
+  const st = f.stats || {};
+  return { name: f.name, pv: +f.maxHp || 0,
+    rp: EL_RES_PCT.map((k) => Math.min(+f.resCap || 100, (+st[k] || 0) + (+st.resPctAll || 0))), rf: EL_RES.map((k) => +st[k] || 0) };
+}
 const lastFight = () => { try { return JSON.parse(localStorage.getItem(LAST_FIGHT_KEY) || '{}')[fightAcct()] || null; } catch { return null; } };
 let favActionId = null;
 
 // Dégâts d'une carte : total min / max / moyen, détail par élément, zone ou cible unique.
 // `stats` (caractéristiques du personnage) : dégâts estimés avec ses bonus, critique et vision spectrale compris.
-function spellDamage(card, stats = null) {
+// `tg` (cible) : { rp: % rés. [Neutre, Terre, Feu, Eau, Air], rf: rés. fixes [idem] }, appliquées à chaque coup.
+function spellDamage(card, stats = null, tg = null) {
   const S = (k) => +stats?.[k] || 0;
   const pct = (1 + S('dmgPctSorts') / 100);
   const critP = stats && +card.cc > 0 ? Math.min(1, Math.max(0, (+card.cc + S('critique')) / 100)) : 0;
   // valeur d'un coup de base `v` dans l'élément `el` : [normal, critique]
+  const vsTg = (x, el) => (tg ? Math.max(0, (x - (+tg.rf?.[el] || 0)) * (1 - (+tg.rp?.[el] || 0) / 100)) : x);
   const hitVal = (v, el) => {
-    if (!stats) return [v, v];
+    if (!stats) return [vsTg(v, el), vsTg(v, el)];
     const mult = 1 + (S(EL_STAT[el]) + S('puissance')) / 100, fixed = S('dommages') + S(EL_DMG[el]);
-    return [(v * mult + fixed) * pct, (v * CRIT_MULT * mult + fixed + S('dommagesCritiques')) * pct];
+    return [vsTg((v * mult + fixed) * pct, el), vsTg((v * CRIT_MULT * mult + fixed + S('dommagesCritiques')) * pct, el)];
   };
   let min = 0, max = 0, zone = false, variable = false, delayed = false, fixed = false, random = false;
   let rndAvg = 0, rndMax = 0, sure = 0;
