@@ -1848,7 +1848,7 @@
         wrap.className = 'dm-trade';
         wrap.style.cssText = 'margin-top:8px';
         wrap.innerHTML = '<div style="display:flex;gap:6px">'
-          + '<button type="button" data-k="go" class="btn !py-1.5 text-sm" style="flex:1;background:#2b5d8a;color:#fff;border-color:#2b5d8a" data-tip="Met cet objet en vente à 11-49 kamas à l’HDV et le fait acheter immédiatement par ton autre compte (autre fenêtre, normale ↔ privée). Si l’achat échoue, l’annonce est retirée.">🔁 Échanger (1 K → autre compte)</button>'
+          + '<button type="button" data-k="go" class="btn !py-1.5 text-sm" style="flex:1;background:#2b5d8a;color:#fff;border-color:#2b5d8a" data-tip="Met cet objet en vente à 11-49 kamas à l’HDV et le fait acheter immédiatement par ton autre compte (autre fenêtre, normale ↔ privée). Si l’achat échoue, l’annonce est retirée.">🔁 Échanger (→ autre compte)</button>'
           + '<button type="button" data-k="add" class="btn !py-1.5 text-sm" style="white-space:nowrap;background:transparent" data-tip="Ajouter à la file d’échange (re-cliquer = un exemplaire de plus)">➕ File</button>'
           + '</div><div class="text-xs" style="margin-top:4px;min-height:1em"></div>';
         const go = wrap.querySelector('[data-k="go"]');
