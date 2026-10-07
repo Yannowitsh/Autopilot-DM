@@ -4277,10 +4277,12 @@
     ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
     const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:4px 9px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
     ov.innerHTML = `<div style="width:min(720px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
-      <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">❤️ Favoris${DM.tip('Builds enregistrés avec 💾 dans l’optimiseur : « Ouvrir » les réaffiche sans relancer la recherche. Objets ajoutés avec le cœur ♡ de l’optimiseur de build. Clique sur un objet pour voir les boss et monstres qui le lâchent, avec tes chances ; clique sur une zone pour ouvrir ses groupes de chasse.')}</b><button data-a="drop" style="${btn};background:#6a3fa0" title="Farmer des objets favoris : liste de courses, puis combats de chasse automatiques dans les zones où ils tombent">🐉 Aller dropper</button><button data-a="clear" style="${btn}" title="Retirer tous les objets favoris (les builds enregistrés sont gardés) — 2e clic pour confirmer">🗑️ Vider tout</button><button data-a="x" style="${btn};background:transparent">✕</button></div>
+      <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">❤️ Favoris${DM.tip('Builds enregistrés avec 💾 dans l’optimiseur : « Ouvrir » les réaffiche sans relancer la recherche. Objets ajoutés avec le cœur ♡ de l’optimiseur de build. Clique sur un objet pour voir les boss et monstres qui le lâchent, avec tes chances ; clique sur une zone pour ouvrir ses groupes de chasse.')}</b><button data-a="clear" style="${btn}" title="Retirer tous les objets favoris (les builds enregistrés sont gardés) — 2e clic pour confirmer">🗑️ Vider tout</button><button data-a="x" style="${btn};background:transparent">✕</button></div>
       <div data-k="msg" style="font-size:12px;color:#b9a98c"></div>
       <div style="overflow-y:auto;display:flex;flex-direction:column;gap:10px">
         <div data-k="saves" style="display:flex;flex-direction:column;gap:4px"></div>
+        <div data-k="cart" style="display:flex;flex-direction:column;gap:4px"></div>
+        <b style="font-size:13px">❤️ Objets favoris</b>
         <div data-k="list" style="display:flex;flex-direction:column;gap:6px"></div></div></div>`;
     document.body.appendChild(ov);
     const $ = (q) => ov.querySelector(q);
@@ -4309,13 +4311,26 @@
       const saves = buildSaves();
       $('[data-k="saves"]').innerHTML = saves.length ? `<b style="font-size:13px">💾 Builds enregistrés</b>${saves.map((x) => `<div style="display:flex;gap:8px;align-items:center;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:4px 8px">
         <span style="flex:1">${esc(x.name)} <span style="color:#8a7d66;font-size:12px">— ${esc(x.who || '?')}, ${new Date(x.at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}</span></span>
-        <button data-open-save="${esc(x.id)}" style="${btn};background:#2e6fbf">📂 Ouvrir</button></div>`).join('')}<b style="font-size:13px;margin-top:6px">❤️ Objets</b>` : '';
+        <button data-open-save="${esc(x.id)}" style="${btn};background:#2e6fbf">📂 Ouvrir</button></div>`).join('')}` : '';
+      // liste de courses du farm de drop (même liste que la fenêtre 🐉 Aller dropper)
+      const cart = cfg.dropCart || [];
+      let tiers = {};
+      try { tiers = JSON.parse(localStorage.getItem(DROP_TIERS_KEY) || '{}'); } catch { /* stockage indisponible */ }
+      const inCart = new Set(cart.map((c) => c.id));
+      $('[data-k="cart"]').innerHTML = `<div style="display:flex;align-items:center;gap:8px"><b style="font-size:13px;flex:1">🛒 Liste de courses${cart.length ? ` (${cart.length})` : ''}</b>
+          <button data-a="drop" style="${btn};background:#6a3fa0" title="Ouvre la liste de courses complète : objets du build et favoris, tiers voulus, exemplaires déjà possédés, puis lancer le farm">🐉 ${cart.length ? 'Modifier / lancer le farm' : 'Composer la liste'}</button></div>`
+        + (cart.length ? cart.map((c) => `<div style="display:flex;gap:8px;align-items:center;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:4px 8px">
+          ${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:24px;height:24px;object-fit:contain">` : ''}
+          <span style="flex:1">${esc(c.name)}</span><span style="color:#f0c04a;font-size:12px">T${tiers[c.id] || 1}${(tiers[c.id] || 1) === 5 ? ' (Rayonnant)' : ''}</span>
+          <button data-uncart="${+c.id}" style="${btn}" title="Retirer de la liste de courses">✕</button></div>`).join('')
+          : '<div style="color:#8a7d66;font-size:12px">Vide : ajoute des objets avec 🛒 sur un favori, ou depuis 🐉 Aller dropper.</div>');
       const favs = Object.entries(buildFavs()).sort((x, y) => (y[1].lvl || 0) - (x[1].lvl || 0));
       $('[data-a="clear"]').style.display = favs.length ? '' : 'none';
       $('[data-k="list"]').innerHTML = favs.length ? favs.map(([id, f]) => `<details style="background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:6px 8px">
         <summary style="cursor:pointer;display:flex;align-items:center;gap:6px">${f.icon ? `<img src="/img/items/${+f.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain">` : ''}
           <b style="flex:1">${esc(f.name)}</b><span style="color:#8a7d66;font-size:12px">${esc(SLOT_NAMES[f.type] || f.type || '')}${f.lvl ? ` · niv. ${f.lvl}` : ''}${f.setName ? ` · ${esc(f.setName)}` : ''}</span>
-          ${f.type ? `<a href="/hdv?emplacement=${encodeURIComponent(f.type)}" target="_blank" style="${btn};text-decoration:none" title="Ouvrir l’HDV sur cet emplacement (nouvel onglet)">🛒 HDV</a>` : ''}
+          ${f.type ? `<a href="/hdv?emplacement=${encodeURIComponent(f.type)}" target="_blank" style="${btn};text-decoration:none" title="Ouvrir l’HDV sur cet emplacement (nouvel onglet)">HDV</a>` : ''}
+          <button data-tocart="${esc(id)}" style="${btn};${inCart.has(+id) ? 'background:#6a5a1a' : ''}" title="${inCart.has(+id) ? 'Dans la liste de courses (cliquer pour retirer)' : 'Ajouter à la liste de courses (farm de drop)'}">${inCart.has(+id) ? '🛒 ✔' : '🛒 +'}</button>
           <button data-unfav="${esc(id)}" style="${btn}" title="Retirer des favoris">✕</button></summary>
         <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;font-size:12px">${sources(+id)}</div></details>`).join('')
         : '<div style="color:#b9a98c">Aucun objet favori : dans l’optimiseur de build, clique sur le cœur ♡ à côté d’un objet.</div>';
@@ -4323,7 +4338,24 @@
     render();
     ov.addEventListener('click', async (e) => {
       if (e.target.closest('[data-a="x"]')) return close();
-      if (e.target.closest('[data-a="drop"]')) { close(); openDropFarm(); return; }
+      if (e.target.closest('[data-a="drop"]')) {
+        close();
+        let r = null;
+        try { const last = lastBuild(); if (last) r = unpackBuild(last.data); } catch { /* pas de dernière recherche */ }
+        openDropFarm(r);
+        return;
+      }
+      const unc = e.target.closest('[data-uncart]');
+      if (unc) { await save({ dropCart: (cfg.dropCart || []).filter((c) => c.id !== +unc.dataset.uncart) }); render(); return; }
+      const toc = e.target.closest('[data-tocart]');
+      if (toc) {
+        e.preventDefault();
+        const id = +toc.dataset.tocart, f = buildFavs()[id];
+        const cart = cfg.dropCart || [];
+        await save({ dropCart: cart.some((c) => c.id === id) ? cart.filter((c) => c.id !== id) : [...cart, { id, name: f?.name || `Objet ${id}`, icon: f?.icon }] });
+        render();
+        return;
+      }
       const clr = e.target.closest('[data-a="clear"]');
       if (clr) {
         if (!clr.dataset.armed) {   // 2e clic dans les 5 s pour confirmer
@@ -5269,7 +5301,7 @@
           <div data-k="dropBox" class="muted" style="display:none;flex-direction:column;gap:3px;border:1px solid #6a3fa0;border-radius:6px;padding:6px">
             <div data-k="dropInfo"></div>
             <div class="row" style="gap:4px">
-              <button data-k="dropOpen" style="padding:2px 7px;font-size:12px;flex:1" data-tip="Ouvre la liste de courses (gardée) : objets, tiers, puis lancer ou relancer le farm.">🛒 Liste de courses</button>
+              <button data-k="dropOpen" style="padding:2px 7px;font-size:12px;flex:1" data-tip="Ouvre la bulle ❤️ Favoris, où se trouve la liste de courses (gardée) : objets, tiers, puis lancer ou relancer le farm.">🛒 Liste de courses</button>
               <button data-k="dropStop" style="padding:2px 7px;font-size:12px" data-tip="Arrête le farm de drop (le pilote s’arrête aussi). La liste de courses est gardée.">■ Arrêter</button>
             </div>
           </div>
@@ -5425,12 +5457,7 @@
     $('spells').addEventListener('click', () => { setOpen(false); openSpellList(); });
     $('timesReset').addEventListener('click', () => save({ fightTimes: {} }));
     $('dropStop').addEventListener('click', () => dropStop('arrêté à la main'));
-    $('dropOpen').addEventListener('click', () => {
-      setOpen(false);
-      let r = null;
-      try { const last = lastBuild(); if (last) r = unpackBuild(last.data); } catch { /* pas de dernière recherche */ }
-      openDropFarm(r);
-    });
+    $('dropOpen').addEventListener('click', () => { setOpen(false); openFavorites(); });   // liste de courses : avec les favoris
     $('weights').addEventListener('click', () => { setOpen(false); openCardWeights(); });
     for (const b of root.querySelectorAll('[data-engine]')) {
       b.addEventListener('click', async () => { await save({ fightEngine: b.dataset.engine }); renderUi(); });
