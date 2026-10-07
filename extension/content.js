@@ -4601,7 +4601,7 @@
   async function startDropFarm(items, zoneNames) {
     const run = {
       active: true, startedAt: Date.now(), zoneNames, tried: [], skipped: [], zone: null,
-      items: items.map((it) => ({ ...it, need: 3 ** (it.tier - 1), got: 0 })),
+      items: items.map((it) => ({ ...it, need: it.need ?? 3 ** (it.tier - 1), got: 0 })),
       prev: dropOn() ? cfg.dropRun.prev : { mode: cfg.mode, huntZone: cfg.huntZone, huntZoneName: cfg.huntZoneName, huntGroup: cfg.huntGroup },
     };
     if (!dropZones(run).length) throw new Error('aucune zone de chasse connue pour ces objets');
@@ -4620,15 +4620,26 @@
     let b;
     try { b = await fetchBestiary(); } catch (e) { tradeToast(`🐉 Bestiaire illisible : ${e.message}`, 'err'); return; }
     const zones = b.zones || {};
+    // exemplaires possédés (inventaire + porté), en équivalents T1 : un objet en tier n vaut 3^(n−1) exemplaires
+    const owned = new Map();
+    try {
+      const st = await fetchEquipState();
+      for (const e of st.entries) owned.set(e.id, (owned.get(e.id) || 0) + e.qty * 3 ** (e.fusion || 0));
+      for (const s of st.slots) if (s.cur) owned.set(s.cur.id, (owned.get(s.cur.id) || 0) + 3 ** (s.cur.fusion || 0));
+    } catch (e) { DM.log(`aller dropper : inventaire illisible (${e.message}) — objets possédés non déduits`); }
     const cands = [
-      ...Object.values(r?.final || {}).filter((c) => c?.src === 'drop').map((c) => ({ id: c.id, name: c.name, icon: c.icon, from: 'build' })),
+      // tous les objets du build proposé (à looter ou déjà possédés : farmer un objet qu'on a fait monter son tier)
+      ...Object.values(r?.final || {}).filter(Boolean).map((c) => ({ id: c.id, name: c.name, icon: c.icon, from: 'build' })),
       ...Object.entries(buildFavs()).map(([id, f]) => ({ id: +id, name: f.name, icon: f.icon, from: 'fav' })),
     ].filter((c, i, a) => a.findIndex((x) => x.id === c.id) === i);
     const items = cands.map((c) => {
       // p = 0 : « objet bonus de victoire » de la zone (le jeu ne publie pas la chance)
       const srcs = (b.drops[c.id] || []).filter(([, , , , zs]) => zs?.length).map(([m, , , p, z]) => ({ m, p: +p || 0, z }));
-      return { c, srcs, best: Math.max(0, ...srcs.map((s) => s.p)) };
+      return { c, srcs, best: Math.max(0, ...srcs.map((s) => s.p)), have: owned.get(c.id) || 0 };
     });
+    // exemplaires encore à farmer pour le tier voulu (T1 = 1, T2 = 3, T3 = 9… moins ceux qu'on a déjà)
+    const needOf = (i) => Math.max(0, 3 ** (tierOf(i) - 1) - items[i].have);
+    const haveTxt = (n) => (n ? `possédé : ${n} ex.${n >= 3 ? ` (≈ T${Math.floor(Math.log(n) / Math.log(3) + 1e-9) + 1})` : ''}` : '');
     let tiers = {};
     try { tiers = JSON.parse(localStorage.getItem(DROP_TIERS_KEY) || '{}'); } catch { /* stockage indisponible */ }
     const cart = new Set();   // indices des objets dans la liste de courses
@@ -4643,12 +4654,12 @@
     const tierOf = (i) => tiers[items[i].c.id] || 1;
     ov.innerHTML = `<div style="width:min(680px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
       <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🐉 Aller dropper${DM.tip('Coche les objets à aller chercher : ils passent dans la liste de courses, où tu choisis le tier voulu. Le pilote passe ensuite en mode Chasse : il va dans la zone la plus rentable, n’attaque que les groupes qui contiennent un monstre qui lâche un objet de la liste, compte les objets reçus en fin de combat et change de zone quand celle-ci n’a plus rien à donner (ou aucun groupe utile). 5 défaites d’affilée dans une zone : elle est abandonnée (notification) et on passe à la suivante. Plus aucune zone possible : arrêt + notification. Tout est droppé : arrêt + notification. Le mode de combat (Auto du jeu / par poids) est celui du menu 🤖. Tier : T1 = 1 exemplaire, T2 = 3, T3 = 9, T4 = 27, T5 (Rayonnant) = 81 (fusion 3 → 1).')}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
-      <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#b9a98c"><span style="flex:1">Objets à looter du build et objets favoris ❤️ — coche ceux à farmer :</span>
+      <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#b9a98c"><span style="flex:1">Objets du build et objets favoris ❤️ — coche ceux à farmer (les exemplaires que tu as déjà sont déduits) :</span>
         <button data-a="all" style="${btn};padding:2px 8px">☑ Tout sélectionner</button><button data-a="none" style="${btn};padding:2px 8px">☐ Tout désélectionner</button></div>
-      <div style="overflow-y:auto;max-height:38vh;display:flex;flex-direction:column;gap:4px">${items.map(({ c, srcs, best }, i) => `<label style="${row};cursor:${srcs.length ? 'pointer' : 'default'};${srcs.length ? '' : 'opacity:.55'}">
+      <div style="overflow-y:auto;max-height:38vh;display:flex;flex-direction:column;gap:4px">${items.map(({ c, srcs, best, have }, i) => `<label style="${row};cursor:${srcs.length ? 'pointer' : 'default'};${srcs.length ? '' : 'opacity:.55'}">
         <input type="checkbox" data-i="${i}" ${srcs.length ? '' : 'disabled'}>
         ${icon(c)}
-        <span style="flex:1;min-width:0"><b>${esc(c.name)}</b> <span style="font-size:11px;color:${c.from === 'fav' ? '#ff5c7a' : '#c99bff'}">${c.from === 'fav' ? '❤️ favori' : '🧬 build'}</span><br><span style="color:#8a7d66;font-size:12px">${!srcs.length ? 'pas obtenable en chasse (boss du Chemin ou de chasse…)'
+        <span style="flex:1;min-width:0"><b>${esc(c.name)}</b> <span style="font-size:11px;color:${c.from === 'fav' ? '#ff5c7a' : '#c99bff'}">${c.from === 'fav' ? '❤️ favori' : '🧬 build'}</span>${have ? ` <span style="font-size:11px;color:#6fcf7a">🎒 ${haveTxt(have)}</span>` : ''}<br><span style="color:#8a7d66;font-size:12px">${!srcs.length ? 'pas obtenable en chasse (boss du Chemin ou de chasse…)'
           : best > 0 ? `meilleure chance ${pct(best)} · ${new Set(srcs.flatMap((s) => s.z)).size} zone(s) · ${esc(srcs.slice().sort((a, b) => b.p - a.p).slice(0, 2).map((s) => `${s.m} (${pct(s.p)})`).join(', '))}`
           : `objet bonus de victoire (chance non publiée) · ${esc([...new Set(srcs.flatMap((s) => s.z))].map((z) => zones[z]?.[0] || `zone ${z}`).slice(0, 3).join(', '))}`}</span></span>
       </label>`).join('') || '<div style="color:#b9a98c">Aucun objet : ce build n’a pas d’objet à looter (🐉), et tu n’as pas de favori ❤️. Ajoute des objets en favori avec le cœur ♡ de l’optimiseur.</div>'}</div>
@@ -4664,17 +4675,19 @@
     const renderCart = () => {
       const list = [...cart].sort((a, b) => a - b);
       $('[data-k="cart"]').innerHTML = list.map((i) => {
-        const { c, best } = items[i], t = tierOf(i), need = 3 ** (t - 1);
-        return `<div style="${row}">${icon(c)}<b style="flex:1;min-width:0">${esc(c.name)}</b>
+        const { c, best, have } = items[i], t = tierOf(i), need = needOf(i);
+        return `<div style="${row};${need ? '' : 'opacity:.6'}">${icon(c)}<b style="flex:1;min-width:0">${esc(c.name)}${have ? `<br><span style="font-weight:400;font-size:11px;color:#6fcf7a">🎒 ${haveTxt(have)}</span>` : ''}</b>
           <select data-t="${i}" style="${inp}">${[1, 2, 3, 4, 5].map((n) => `<option value="${n}"${n === t ? ' selected' : ''}>T${n}${n === 5 ? ' (Rayonnant)' : ''}</option>`).join('')}</select>
-          <span style="color:#b9a98c;font-size:12px;width:120px;text-align:right">${need} ex. · ${best > 0 ? `~${Math.ceil(need / (best / 100)).toLocaleString('fr-FR')} combats` : 'chance inconnue'}</span>
+          <span style="color:#b9a98c;font-size:12px;width:140px;text-align:right">${!need ? '✔ déjà atteint' : `${need} ex. à farmer · ${best > 0 ? `~${Math.ceil(need / (best / 100)).toLocaleString('fr-FR')} combats` : 'chance inconnue'}`}</span>
           <button data-rm="${i}" style="${btn};padding:2px 7px" title="Retirer de la liste">✕</button></div>`;
       }).join('') || '<div style="color:#8a7d66;font-size:12px">Vide : coche des objets au-dessus.</div>';
-      const total = list.reduce((n, i) => n + (items[i].best > 0 ? Math.ceil(3 ** (tierOf(i) - 1) / (items[i].best / 100)) : 0), 0);
-      const unknown = list.some((i) => !(items[i].best > 0));
-      $('[data-a="go"]').disabled = !list.length;
-      $('[data-a="go"]').style.opacity = list.length ? '' : '.5';
-      $('[data-a="go"]').textContent = list.length ? `🐉 Lancer le farm (${list.length} objet(s)${total ? `, ~${total.toLocaleString('fr-FR')} combats${unknown ? ' + chances inconnues' : ''}` : ''})` : '🐉 Lancer le farm';
+      const todo = list.filter((i) => needOf(i) > 0);
+      const total = todo.reduce((n, i) => n + (items[i].best > 0 ? Math.ceil(needOf(i) / (items[i].best / 100)) : 0), 0);
+      const unknown = todo.some((i) => !(items[i].best > 0));
+      $('[data-a="go"]').disabled = !todo.length;
+      $('[data-a="go"]').style.opacity = todo.length ? '' : '.5';
+      $('[data-a="go"]').textContent = todo.length ? `🐉 Lancer le farm (${todo.length} objet(s)${total ? `, ~${total.toLocaleString('fr-FR')} combats${unknown ? ' + chances inconnues' : ''}` : ''})`
+        : list.length ? '✔ Tout est déjà atteint' : '🐉 Lancer le farm';
     };
     renderCart();
     const close = () => ov.remove();
@@ -4709,12 +4722,13 @@
       const rm = e.target.closest('[data-rm]');
       if (rm) { cart.delete(+rm.dataset.rm); const cb = $(`[data-i="${rm.dataset.rm}"]`); if (cb) cb.checked = false; renderCart(); return; }
       if (!e.target.closest('[data-a="go"]') || !cart.size) return;
-      const pick = [...cart].map((i) => ({ ...items[i], i }));
+      const pick = [...cart].filter((i) => needOf(i) > 0).map((i) => ({ ...items[i], i }));
+      if (!pick.length) { $('[data-k="msg"]').textContent = 'Tous les tiers voulus sont déjà atteints avec tes objets.'; return; }
       const zoneNames = {};
       for (const { srcs } of pick) for (const s of srcs) for (const z of s.z) zoneNames[z] = zones[z]?.[0] || `Zone ${z}`;
       try {
         $('[data-k="msg"]').textContent = 'Lancement…';
-        await startDropFarm(pick.map(({ c, srcs, i }) => ({ id: c.id, name: c.name, icon: c.icon, tier: tierOf(i), srcs })), zoneNames);
+        await startDropFarm(pick.map(({ c, srcs, i }) => ({ id: c.id, name: c.name, icon: c.icon, tier: tierOf(i), need: needOf(i), srcs })), zoneNames);
         close();
         document.querySelector('.dm-picker')?.remove();
       } catch (err) {
