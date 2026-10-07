@@ -4930,6 +4930,49 @@
     document.body.appendChild(b);
   }
 
+  // ---------- Bouton ▶ / ⏸ (au-dessus de la bulle 🤖) ----------
+  // ▶ : le pilote démarre sur cet onglet et relance en boucle le combat de la page : zone de chasse (/chasse?zone=…),
+  // aventure, ascension ; sur /combat, le type du combat est lu dans la page (onPath, onAscension, huntZone). Un combat
+  // qui ne se relance pas (boss de chasse, Kralamoure…) : rien ne démarre. Autre page : l'activité choisie dans le menu.
+  // ⏸ : arrêt du pilote.
+  async function playContext() {
+    const p = location.pathname, zone = +new URLSearchParams(location.search).get('zone');
+    const zoneName = (z) => (cfg.huntZones || []).find((x) => x.id === z)?.name || (location.pathname.startsWith('/chasse') && document.querySelector('h1')?.textContent.trim()) || `Zone ${z}`;
+    if (p.startsWith('/chasse')) return zone ? { mode: 'chasse', huntZone: zone, huntZoneName: zoneName(zone), huntGroup: null, huntTarget: null } : { error: 'choisis d’abord une zone de chasse' };
+    if (p.startsWith('/aventure')) return { mode: 'aventure' };
+    if (p.startsWith('/ascension')) return { mode: 'ascension' };
+    if (p.startsWith('/combat')) {
+      const { flight } = await fetchFlight('/combat');
+      const props = rscProps(flight, (x) => 'charId' in x && 'onPath' in x).props;
+      if (!props) return { error: 'combat illisible' };
+      if (+props.huntZone) return { mode: 'chasse', huntZone: +props.huntZone, huntZoneName: zoneName(+props.huntZone), huntGroup: null, huntTarget: null };
+      if (props.onAscension) return { mode: 'ascension' };
+      if (props.onPath) return { mode: 'aventure' };
+      return { error: 'ce combat (boss de chasse, Kralamoure…) ne se relance pas — pour le jouer : 🎯 Jouer ce combat par poids' };
+    }
+    return {};
+  }
+  let playBusy = false;
+  async function onPlayPause() {
+    if (playBusy) return;
+    if (cfg.enabled && isOwner()) { send({ type: 'toggle', fromPage: true }).catch(() => {}); return; }   // ⏸
+    playBusy = true;
+    try {
+      const ctx = await playContext();
+      if (ctx.error) { tradeToast(`▶ ${ctx.error}`, 'err'); return; }
+      if (dropOn() && ctx.mode) await dropStop('remplacé par ▶ sur une autre activité');
+      await save({ ...ctx, pauseReason: null, lossStreak: 0 });
+      await send({ type: 'claim', start: true, status: 'Démarrage…' }).catch(() => {});
+      // combat en cours sur la page : le pilote le prend en main (Auto du jeu ou par poids), puis relance en boucle
+      if (location.pathname.startsWith('/combat') && !endTitle()) { lastAutoClick = 0; await save({ botFight: true }); markLaunch(); }
+      tradeToast(`▶ Pilote : ${DM.modeLabel(cfg)}`, 'ok');
+    } catch (e) {
+      tradeToast(`▶ ${e.message}`, 'err');
+    } finally {
+      playBusy = false;
+    }
+  }
+
   // ---------- Bulle en bas à gauche + menu (pilote, chasse, autosell) ----------
   // Shadow DOM : le CSS du site (Tailwind) ne déteint pas sur le menu, et inversement.
   const MENU_CSS = `
@@ -4939,6 +4982,8 @@
       display: grid; place-items: center; font-size: 22px; cursor: pointer; user-select: none;
       background: #262a31; border: 3px solid var(--st, #666); box-shadow: 0 2px 10px rgba(0,0,0,.5); transition: transform .15s; }
     .bubble:hover { transform: scale(1.08); }
+    .bubble.play { bottom: 64px; left: 16px; width: 36px; height: 36px; font-size: 15px; border-width: 2px; color: #fff; }
+    .panel:not([hidden]) ~ .bubble.play { display: none; }
     .bubble.fav { left: 64px; width: 36px; height: 36px; bottom: 16px; font-size: 16px; border-width: 2px; border-color: #c0485a; }
     .panel { position: fixed; left: 12px; bottom: 64px; z-index: 2147483647; width: 290px; max-width: calc(100vw - 24px);
       max-height: calc(100vh - 80px); overflow-y: auto; background: #1b1d22; color: #e8e6e1;
@@ -5119,12 +5164,14 @@
         </div>
       </div>
       <div class="bubble" title="Autopilot-DM">🤖</div>
-      <div class="bubble fav" data-mod="build" title="Favoris : builds enregistrés et objets à looter">❤️</div>`;
+      <div class="bubble fav" data-mod="build" title="Favoris : builds enregistrés et objets à looter">❤️</div>
+      <div class="bubble play" data-k="play"></div>`;
     DM.installTips(root);
     const $ = (k) => root.querySelector(`[data-k="${k}"]`);
     const panel = root.querySelector('.panel');
     const bubble = root.querySelector('.bubble');
     root.querySelector('.bubble.fav').addEventListener('click', () => { setOpen(false); openFavorites(); });
+    root.querySelector('.bubble.play').addEventListener('click', onPlayPause);
 
     // Ouverture du panneau mémorisée pour l'onglet : il reste ouvert après les rechargements de l'avance rapide.
     const setOpen = (open) => {
@@ -5612,6 +5659,13 @@
     const state = !cfg.enabled ? 'off' : !mine ? 'other' : cfg.paused ? 'pause' : 'on';
     ui.bubble.style.setProperty('--st', ST_COLOR[state]);
     ui.bubble.title = on ? `Pilote ON — ${cfg.status || ''}` : cfg.enabled ? 'Pilote actif dans un autre onglet' : 'Pilote OFF';
+    {
+      const pb = ui.root.querySelector('.bubble.play');
+      pb.textContent = on ? '⏸' : '▶';
+      pb.style.background = on ? '#a33' : '#2e7d32';
+      pb.style.borderColor = on ? '#d66' : '#5c5';
+      pb.title = on ? 'Pause : arrêter le pilote' : 'Lecture : enchaîner les combats de cette page en boucle (chasse, aventure, ascension)';
+    }
     if (ui.panel.hidden) return;
 
     const $ = ui.$;
