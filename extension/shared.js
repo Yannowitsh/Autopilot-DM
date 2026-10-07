@@ -30,6 +30,11 @@ const DM = {
     delayMax: 8,
     fastFight: false,    // combat rapide : dès que le serveur a renvoyé le résultat, rechargement (pas d'animation)
     fastFightMinSec: 5,  // combat rapide : au moins N s entre deux lancements de combat
+    fightEngine: 'game', // 'game' (bouton Auto du site) ou 'weights' (le pilote joue les cartes selon cfg.cardWeights)
+    cardWeights: {},     // auto par poids : { idCarte | 'w' (arme) : { w: 0-100, every: N tours } }
+    autoHealBelow: 70,   // auto par poids : cartes de soin jouées seulement sous ce % de PV
+    autoActMin: 0.8,     // auto par poids : pause entre deux actions (s)
+    autoActMax: 1.5,
     huntRetries: 3,      // chasse (avis de recherche…) : nouveaux essais après une défaite avant arrêt
     errorReloadSec: 5,   // page d'erreur du site (508 « Resource Limit Is Reached », 5xx…) : rechargée après N s
     reloadGapSec: 30,    // anti-blocage : au plus un rechargement toutes les N s

@@ -500,7 +500,7 @@
           setStatus(`Défaite — nouvel essai ${cfg.lossStreak}/${maxRetries()}…`);
           await sleep(relaunchDelay());
           if (!isOwner()) return;
-          const autoRetry = findBtn(/^Réessayer en auto$/i);
+          const autoRetry = cfg.fightEngine === 'weights' ? null : findBtn(/^Réessayer en auto$/i);
           const retry = autoRetry || findBtn(isHunt() ? HUNT_RETRY : isAsc() ? /^Réessayer l.étage$/i : /^Réessayer l.étape$/i);
           if (!retry) return;
           await save({ botFight: true });
@@ -522,7 +522,7 @@
         await sleep(relaunchDelay());
         if (!isOwner()) return;
         // Bouton « en auto » de préférence ; sinon relance simple, le mode Auto sera activé dans le combat.
-        const autoNext = findBtn(AUTO_NEXT);
+        const autoNext = cfg.fightEngine === 'weights' ? null : findBtn(AUTO_NEXT);
         const next = autoNext || findBtn(isHunt() ? HUNT_RETRY : isAsc() ? /^Étage suivant$/ : /^Étape suivante$/);
         if (!next) return;
         await save({ botFight: true });
@@ -547,6 +547,11 @@
       }
       if (!cfg.botFight) {   // combat lancé à la main : on n'y touche pas
         setStatus('Combat manuel en cours — le pilote attend', true);
+        return progress();
+      }
+      // Auto par poids : le pilote joue lui-même les cartes (sauf repli sur l'Auto du jeu pour cette page)
+      if (cfg.fightEngine === 'weights' && !useGameAuto) {
+        if (isOwner() && !weightedBusy) weightedFight();
         return progress();
       }
       // combat déjà lancé en Auto (« Suivant en auto »…), animation en cours
@@ -4054,6 +4059,247 @@
     if (f.real) applyStats(); else render();
   }
 
+  // ---------- Auto par poids : notre propre mode auto (cfg.fightEngine === 'weights') ----------
+  // L'Auto du jeu joue à la vitesse ×1 ; ici le pilote joue lui-même, comme à la main, par la server action du combat
+  // « fightAction(action, idOnglet, seq) » : { type:'play', card: uid, target } ou { type:'end' }. Chaque réponse
+  // contient le nouvel état ({ state, rewards }, ou { wait: ms } si le serveur veut qu'on patiente).
+  // Choix : chaque carte a un poids (cfg.cardWeights[idCarte] = { w, every }, arme = clé 'w'). À chaque action, parmi
+  // les cartes jouables, on retient la combinaison qui tient dans les PA avec le plus gros total de poids, et on joue
+  // sa carte la plus lourde. Poids 0 = jamais jouée ; every = au plus une fois tous les N tours (buffs qui durent) ;
+  // soins seulement sous cfg.autoHealBelow % de PV. Cible : l'ennemi vivant qui a le moins de PV.
+  const FIGHT_ACTION_FALLBACK = '70ef177923eabb2dd53cecdb33f2fa0fe42313c618';
+  // needsTarget du jeu : une ligne visant un ennemi avec un de ces effets demande une cible
+  const TARGET_EFFECTS = new Set(['dmg', 'steal', 'dmgCasterHp', 'debuff', 'stealStat', 'apRemove', 'apSteal', 'summon', 'bomb', 'trap', 'stun', 'dmgLostHp', 'poison']);
+  const needsTarget = (card) => (card.eff || []).some((e) => e?.tgt === 'enemy' && TARGET_EFFECTS.has(e.k));
+  const WEAPON_KEY = 'w';
+  // Nature d'une carte : 'ap' (gain de PA), 'heal' (soin), 'buff' (sans cible : bouclier, buff…) ou 'dmg'.
+  function cardKind(card) {
+    const eff = card.eff || [];
+    if (eff.some((e) => e?.k === 'apGain')) return 'ap';
+    if (eff.some((e) => /heal/i.test(e?.k || '') && e.tgt !== 'enemy') && !eff.some((e) => e?.k === 'dmg')) return 'heal';
+    if (!needsTarget(card)) return 'buff';
+    return 'dmg';
+  }
+  const KIND_LABEL = { ap: '⚡ PA', heal: '💚 soin', buff: '🛡️ buff', dmg: '⚔️ dégâts' };
+  // Réglage par défaut : gain de PA d'abord (100), buffs (90, relancés à la fin de leur durée), soins (80),
+  // puis les dégâts selon leurs dégâts de base par PA (plafonnés à 79), l'arme à 30.
+  function defaultWeight(card, weapon = false) {
+    if (weapon) return { w: 30, every: 0 };
+    const kind = cardKind(card);
+    if (kind === 'ap') return { w: 100, every: 0 };
+    if (kind === 'buff') return { w: 90, every: Math.max(0, ...(card.eff || []).map((e) => +e?.dur || 0)) };
+    if (kind === 'heal') return { w: 80, every: 0 };
+    const dmg = spellDamage(card);
+    const ap = +card.ap || 0;
+    return { w: Math.max(1, Math.min(79, Math.round(dmg && ap ? dmg.avg / ap : dmg?.avg || 10))), every: 0 };
+  }
+  const weightOf = (card, weapon = false) => {
+    const own = cfg.cardWeights?.[weapon ? WEAPON_KEY : card.id];
+    const def = defaultWeight(card, weapon);
+    return { w: own?.w ?? def.w, every: own?.every ?? def.every, own: !!own };
+  };
+
+  // Identifiant d'onglet du jeu (sessionStorage « dofusmasters:onglet ») : le serveur refuse les actions d'un autre onglet.
+  function gameTabId() {
+    const k = 'dofusmasters:onglet';
+    try {
+      let id = sessionStorage.getItem(k);
+      if (!id) { id = crypto.randomUUID(); sessionStorage.setItem(k, id); }
+      return id;
+    } catch { return null; }
+  }
+
+  // Valeur RSC entièrement résolue (références « $id:chemin » remplacées), pour l'état initial du combat.
+  function rscDeep(rows, v, depth = 0) {
+    if (depth > 40) return v;
+    v = rscResolve(rows, v);
+    if (Array.isArray(v)) return v.map((x) => rscDeep(rows, x, depth + 1));
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, rscDeep(rows, x, depth + 1)]));
+    return v === '$undefined' ? undefined : v;
+  }
+
+  // Prochaine action : la carte la plus lourde de la meilleure combinaison jouable, sinon fin du tour.
+  function chooseFightAction(st, casts, blocked) {
+    const p = st.fighters.p;
+    const target = Object.values(st.fighters).filter((f) => f.team !== p.team && f.alive && f.id !== 'p')
+      .sort((a, b) => a.hp - b.hp)[0];
+    const lowHp = p.maxHp > 0 && (p.hp * 100) / p.maxHp < (+cfg.autoHealBelow || 0);
+    const cards = (p.hand || []).map((uid) => p.cards?.[uid]).filter(Boolean).map((c) => ({ c, key: c.id, weapon: false }));
+    if (p.weaponCard && !p.weaponUsed) cards.push({ c: p.weaponCard, key: WEAPON_KEY, weapon: true });
+    const cand = [];
+    for (const x of cards) {
+      const { w, every } = weightOf(x.c, x.weapon);
+      const ap = +x.c.ap || 0;
+      if (!(w > 0) || ap > p.ap || p.sealed?.includes(x.c.uid) || blocked.has(x.c.uid)) continue;
+      if (needsTarget(x.c) && !target) continue;
+      if (cardKind(x.c) === 'heal' && !lowHp) continue;
+      if (every > 0 && casts[x.key] != null && p.turnNo - casts[x.key] < every) continue;
+      cand.push({ ...x, w, ap });
+    }
+    if (!cand.length) return { action: { type: 'end' }, label: 'fin du tour' };
+    // meilleure combinaison (main de quelques cartes : on les essaie toutes) ; à égalité, la moins chère en PA
+    let best = null;
+    const n = Math.min(cand.length, 12);
+    for (let m = 1; m < 1 << n; m++) {
+      let w = 0, ap = 0;
+      for (let i = 0; i < n; i++) if (m & (1 << i)) { w += cand[i].w; ap += cand[i].ap; }
+      if (ap > p.ap) continue;
+      if (!best || w > best.w || (w === best.w && ap < best.ap)) best = { m, w, ap };
+    }
+    const pick = cand.filter((_, i) => best.m & (1 << i)).sort((a, b) => b.w - a.w || b.ap - a.ap)[0];
+    const tgt = needsTarget(pick.c) ? target.id : undefined;
+    return { action: { type: 'play', card: pick.c.uid, target: tgt }, pick, label: `${pick.c.name}${tgt ? ` → ${target.name}` : ''}` };
+  }
+
+  // useGameAuto : sur cette page, on laisse l'Auto du jeu (état illisible, combat déjà en Auto, erreur…).
+  let weightedBusy = false, useGameAuto = false;
+  async function weightedFight() {
+    if (weightedBusy) return;
+    weightedBusy = true;
+    let reload = true;
+    const fallback = (why) => { DM.log(`auto par poids : ${why} → Auto du jeu`); useGameAuto = true; reload = false; };
+    try {
+      const { flight, chunks } = await fetchFlight('/combat');
+      const { rows, props } = rscProps(flight, (x) => 'initial' in x && 'charId' in x);
+      let st = props && rscDeep(rows, props.initial);
+      if (!st?.fighters?.p) return fallback('état du combat introuvable');
+      if (st.status !== 'ongoing') return;   // déjà fini : le rechargement affiche l'écran de fin
+      if (st.auto) return fallback('combat déjà lancé en Auto');
+      const actionId = await findAction(chunks, 'fightAction', FIGHT_ACTION_FALLBACK);
+      const tabId = gameTabId();
+      // dernier tour où chaque carte a été jouée (règle « tous les X tours »), conservé pour ce combat
+      const fightKey = `${st.kind}|${Object.values(st.fighters).filter((f) => f.id !== 'p').map((f) => `${f.name}:${f.maxHp}`).join(',')}`;
+      let casts = {};
+      try { const s = JSON.parse(sessionStorage.getItem('dmAutoCasts') || '{}'); if (s.key === fightKey) casts = s.casts || {}; } catch { /* rien */ }
+      const keepCasts = () => { try { sessionStorage.setItem('dmAutoCasts', JSON.stringify({ key: fightKey, casts })); } catch { /* rien */ } };
+      let blocked = new Set(), blockedTurn = null, errors = 0;
+      for (let i = 0; i < 400 && st.status === 'ongoing'; i++) {
+        if (!isOwner() || !cfg.botFight || cfg.fightEngine !== 'weights' || presenceDialog()) { reload = false; return; }
+        if (st.currentId !== 'p') return fallback(`pas notre tour (${st.currentId})`);
+        const p = st.fighters.p;
+        if (blockedTurn !== p.turnNo) { blocked = new Set(); blockedTurn = p.turnNo; }
+        const { action, pick, label } = chooseFightAction(st, casts, blocked);
+        setStatus(`Auto par poids : tour ${p.turnNo}, ${p.ap} PA — ${label}`);
+        const lo = Math.max(0, +cfg.autoActMin || 0), hi = Math.max(lo, +cfg.autoActMax || 0);
+        await sleep((lo + Math.random() * (hi - lo)) * 1000);
+        let res;
+        try {
+          res = await callAction('combat', actionId, [action, tabId, st.seq]);
+        } catch (e) {
+          if (!e.game || ++errors > 5) throw e;
+          if (/aucun combat en cours/i.test(e.message)) return;
+          DM.log(`auto par poids : « ${label} » refusé (${e.message})`);
+          if (action.type === 'play') { blocked.add(action.card); continue; }
+          return fallback(`fin de tour refusée (${e.message})`);
+        }
+        progress();
+        if (res.wait) { await sleep(+res.wait + 100); continue; }
+        if (res.presence) return;   // vérification de présence : la page rechargée l'affiche, le pilote la résout
+        if (res.otherTab || !res.state) return fallback(`réponse inattendue (${Object.keys(res).join(', ')})`);
+        if (pick) { casts[pick.key] = p.turnNo; keepCasts(); }
+        st = res.state;
+      }
+      if (st.status !== 'ongoing') DM.log(`auto par poids : combat ${st.status === 'won' ? 'gagné' : 'perdu'}`);
+    } catch (e) {
+      fallback(e.message);
+    } finally {
+      weightedBusy = false;
+      // la page n'a rien vu de nos actions : on la recharge, elle affiche l'écran de fin (ou l'état à jour)
+      if (reload && isOwner()) location.reload();
+    }
+  }
+
+  // Écran de réglage : poids des cartes du deck actif (+ arme), soins et rythme.
+  async function openCardWeights() {
+    document.querySelector('.dm-picker')?.remove();
+    const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+    const ov = document.createElement('div');
+    ov.className = 'dm-picker';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:#000a;display:grid;place-items:center;padding:16px;font:13px system-ui,sans-serif;color:#eee';
+    ov.innerHTML = '<div style="background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:16px">Lecture de ton deck…</div>';
+    document.body.appendChild(ov);
+    const close = () => { ov.remove(); document.removeEventListener('keydown', onKey, true); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+    document.addEventListener('keydown', onKey, true);
+    ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
+    ov.addEventListener('keydown', (e) => e.stopPropagation());
+
+    let cards, deckNo;
+    try {
+      const { flight } = await fetchFlight('/deck');
+      const { rows, props } = rscProps(flight, (x) => Array.isArray(x.collection) && 'initialDecks' in x);
+      if (!props) throw new Error('Deck introuvable sur /deck');
+      const res = (v) => rscResolve(rows, v);
+      deckNo = +res(props.initialActive) || 0;
+      const ids = new Set((res(res(props.initialDecks)?.[deckNo]) || []).map((k) => +String(k).split(':')[0]));
+      const byId = new Map();
+      for (const raw of props.collection) {
+        const card = rscDeep(rows, res(raw)?.card);
+        if (card?.id && ids.has(card.id) && !byId.has(card.id)) byId.set(card.id, { ...card, name: card.n });
+      }
+      cards = [...byId.values()];
+    } catch (e) {
+      ov.firstElementChild.textContent = `❌ ${e.message}`;
+      return;
+    }
+    const WEAPON = { id: WEAPON_KEY, name: 'Arme équipée', ap: '—', eff: [] };
+    const inp = 'background:#2a231a;border:1px solid #5a4a33;border-radius:8px;color:#eee;padding:4px 6px;font:13px system-ui,sans-serif;width:64px';
+    const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:5px 10px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
+    ov.innerHTML = `
+      <div style="width:min(640px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
+        <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🎯 Poids des cartes — deck ${deckNo + 1}${DM.tip('Utilisé par le mode de combat « Auto par poids ». À chaque action, le pilote garde la combinaison de cartes jouables qui tient dans tes PA avec le plus gros total de poids, et joue la plus lourde en premier. 0 = jamais jouée. « Tous les » : au plus une fois tous les N tours (buffs qui durent) ; vide ou 0 = dès que possible. Les réglages sont par carte : ils suivent la carte si tu changes de deck.')}</b><button data-a="reset" style="${btn}" data-tip="Remet toutes les cartes aux valeurs par défaut : gain de PA 100, buffs 90 (relancés à la fin de leur durée), soins 80, dégâts selon leurs dégâts de base par PA, arme 30.">↺ Par défaut</button><button data-a="x" style="${btn};background:transparent">✕</button></div>
+        <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:12px;color:#b9a98c">
+          <label data-tip="Les cartes de soin ne sont jouées que si tes PV sont sous ce pourcentage.">Soigner sous <input data-o="autoHealBelow" type="number" min="0" max="100" style="${inp}"> % PV</label>
+          <label data-tip="Pause aléatoire entre deux actions (carte ou fin de tour), en secondes.">Entre deux actions <input data-o="autoActMin" type="number" min="0" step="0.1" style="${inp}"> à <input data-o="autoActMax" type="number" min="0" step="0.1" style="${inp}"> s</label>
+        </div>
+        <div style="overflow-y:auto;display:flex;flex-direction:column;gap:4px" data-k="list"></div>
+        <div style="font-size:12px;color:#b9a98c">Mode de combat actuel : <b data-k="engine"></b> (menu 🤖 → Activité → Combat).</div>
+      </div>`;
+    const $ = (q) => ov.querySelector(q);
+    const render = () => {
+      $('[data-k="engine"]').textContent = cfg.fightEngine === 'weights' ? 'Auto par poids' : 'Auto du jeu';
+      for (const el of ov.querySelectorAll('[data-o]')) el.value = cfg[el.dataset.o] ?? '';
+      $('[data-k="list"]').innerHTML = [...cards, WEAPON].map((c) => {
+        const weapon = c === WEAPON;
+        const { w, every, own } = weightOf(c, weapon);
+        const kind = weapon ? '🗡️ arme' : KIND_LABEL[cardKind(c)];
+        return `<div style="display:flex;align-items:center;gap:8px;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:5px 8px">
+          <span style="flex:1;min-width:0"><b>${esc(c.name)}</b> <span style="color:#b9a98c;font-size:12px">· ${esc(c.ap)} PA · ${kind}${own ? '' : ' · défaut'}</span></span>
+          <label style="font-size:12px;color:#b9a98c">Poids <input data-w="${esc(c.id)}" type="number" min="0" max="100" value="${w}" style="${inp}"></label>
+          <label style="font-size:12px;color:#b9a98c">tous les <input data-e="${esc(c.id)}" type="number" min="0" max="20" value="${every || ''}" placeholder="—" style="${inp};width:52px"> tours</label>
+        </div>`;
+      }).join('');
+    };
+    render();
+    DM.installTips(ov);
+    const setCard = (id, patch) => {
+      const all = { ...(cfg.cardWeights || {}) };
+      const card = id === WEAPON_KEY ? WEAPON : cards.find((c) => String(c.id) === id);
+      const cur = weightOf(card, id === WEAPON_KEY);
+      all[id] = { w: cur.w, every: cur.every, ...patch };
+      save({ cardWeights: all });
+    };
+    ov.addEventListener('change', (e) => {
+      const t = e.target;
+      if (t.dataset.w) setCard(t.dataset.w, { w: Math.max(0, Math.min(100, Math.round(+t.value || 0))) });
+      else if (t.dataset.e) setCard(t.dataset.e, { every: Math.max(0, Math.min(20, Math.round(+t.value || 0))) });
+      else if (t.dataset.o) save({ [t.dataset.o]: Math.max(0, +t.value || 0) });
+      else return;
+      render();
+    });
+    ov.addEventListener('click', (e) => {
+      const a = e.target.closest('[data-a]')?.dataset.a;
+      if (a === 'x') close();
+      if (a === 'reset') {
+        const all = { ...(cfg.cardWeights || {}) };
+        for (const c of cards) delete all[c.id];
+        delete all[WEAPON_KEY];
+        save({ cardWeights: all });
+        render();
+      }
+    });
+  }
+
   // ---------- Bulle en bas à gauche + menu (pilote, chasse, autosell) ----------
   // Shadow DOM : le CSS du site (Tailwind) ne déteint pas sur le menu, et inversement.
   const MENU_CSS = `
@@ -4151,6 +4397,12 @@
             </div>
             <div class="muted" style="margin-top:4px">Astuce : clique toi-même sur « Attaquer » dans n’importe quelle zone, le pilote relancera ce groupe en Auto.</div>
           </div>
+          <div class="muted" style="margin:6px 0 4px">Combat${DM.tip("Auto du jeu : le bouton Auto du site (animations à vitesse ×1).\nAuto par poids : le pilote joue lui-même les cartes selon tes poids (🎯), sans animation, avec une courte pause entre deux actions. Récompenses entières, comme l’Auto du jeu.")}</div>
+          <div class="seg" style="grid-template-columns:1fr 1fr">
+            <button data-engine="game">Auto du jeu</button>
+            <button data-engine="weights">Auto par poids</button>
+          </div>
+          <button data-k="weights" style="margin-top:4px" data-tip="Régler la priorité de chaque carte de ton deck actif pour l’Auto par poids.">🎯 Poids des cartes</button>
         </div>
         <div class="sec">
           <div class="head"><span>🧹 Autosell${DM.tip("Vend au marchand, en un clic, tous les objets non équipés sauf ceux que tu conserves. 1er clic : aperçu ; 2e clic dans les 8 s : vente.")}</span></div>
@@ -4269,6 +4521,10 @@
     }));
     $('fuseScan').addEventListener('click', () => scanFusions());
     $('spells').addEventListener('click', () => { setOpen(false); openSpellList(); });
+    $('weights').addEventListener('click', () => { setOpen(false); openCardWeights(); });
+    for (const b of root.querySelectorAll('[data-engine]')) {
+      b.addEventListener('click', async () => { await save({ fightEngine: b.dataset.engine }); renderUi(); });
+    }
     $('build').addEventListener('click', () => { setOpen(false); openBuildOptimizer(); });
     $('fuseAll').addEventListener('click', () => runFusions(fuseList || []));
     $('fuseList').addEventListener('click', (e) => {
@@ -4725,6 +4981,7 @@
     $('energy').textContent = cfg.energy != null ? `⚡ ${cfg.energy}/${cfg.energyMax}` : '';
 
     for (const b of ui.root.querySelectorAll('[data-mode]')) b.classList.toggle('on', b.dataset.mode === cfg.mode);
+    for (const b of ui.root.querySelectorAll('[data-engine]')) b.classList.toggle('on', b.dataset.engine === (cfg.fightEngine || 'game'));
     $('zoneBox').style.display = hunt ? '' : 'none';
     $('groupInfo').textContent = cfg.huntGroup ? `Groupe ${cfg.huntGroup} (choisi en jeu)` : 'Groupe le plus dur';
     $('groupReset').style.display = cfg.huntGroup ? '' : 'none';

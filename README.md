@@ -22,6 +22,12 @@ En secours, tu peux aussi double-cliquer **`mettre-a-jour.bat`** dans le dossier
 
 Tes réglages (webhook Discord, objets verrouillés, file d'échange…) sont conservés : ils sont stockés dans Chrome, pas dans le dossier.
 
+## Auto par poids
+
+Menu 🤖 → Activité → **Combat** : **Auto du jeu** (le bouton Auto du site) ou **Auto par poids** : le pilote joue lui-même les cartes, sans animation, avec une courte pause aléatoire entre deux actions (réglable).
+
+**🎯 Poids des cartes** règle chaque carte du deck actif (et l'arme) : à chaque action, le pilote garde la combinaison de cartes jouables qui tient dans tes PA avec le plus gros total de poids, et joue la plus lourde en premier. Poids **0** = jamais jouée ; **tous les N tours** = au plus une fois tous les N tours (pour les buffs qui durent). Les soins ne sont joués que sous un seuil de PV. Cible : l'ennemi qui a le moins de PV. Par défaut : gain de PA 100, buffs 90 (relancés à la fin de leur durée), soins 80, dégâts selon leurs dégâts de base par PA, arme 30. En cas de souci (état illisible, réponse inattendue), le combat repasse sur l'Auto du jeu.
+
 ## Auto-équipement
 
 Dans le menu 🤖 en jeu, section **🛡️ Auto-équipement** : choisis jusqu'à 5 caractéristiques par ordre de priorité (la 1re compte pleinement, la 2e pour 35 %, la 3e pour 15 %, les 4e et 5e, facultatives, pour 8 % et 4 %) ; un emplacement vide est toujours rempli, même par un objet qui n'a aucune de ces stats et les emplacements à optimiser (clic sur un emplacement pour l'activer ou le désactiver). **🔍 Aperçu** montre les objets qui seraient équipés et l'écart de stats, **✅ Équiper** les équipe. Les bonus de panoplie ne sont pas pris en compte.
