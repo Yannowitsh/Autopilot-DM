@@ -96,11 +96,15 @@ async function optimizeBuild(opts, say) {
   // cible à résistances : chaque élément pèse (1 − % rés.) — les dégâts d'un élément étant linéaires en B et N,
   // réduire le profil du sort revient à appliquer la résistance à chaque coup
   const goal = BUILD_GOALS[opts.goal] || (opts.krala ? BUILD_GOALS.krala : BUILD_GOALS.dps);   // opts.krala : ancienne case à cocher
-  const target = goal.target || null;
+  // objectif « cible » : % rés. (plafonnés à 100), rés. fixes par élément et PV saisis dans l'optimiseur
+  const tg = opts.tgt || {};
+  const target = goal.custom ? { name: tg.name || 'la cible', resPct: [0, 1, 2, 3, 4].map((i) => Math.min(100, +tg.rp?.[i] || 0)),
+    rf: [0, 1, 2, 3, 4].map((i) => +tg.rf?.[i] || 0), pv: Math.max(0, +tg.pv || 0) } : goal.target || null;
   const goalStat = goal.stat || null;
   const goalKeys = goalStat ? [goalStat, ...(goal.also || [])] : [];
   const vsTarget = (pf) => (!pf || !target ? pf
-    : { ...pf, B: pf.B.map((b, el) => b * (1 - target.resPct[el] / 100)), N: pf.N.map((n, el) => n * (1 - target.resPct[el] / 100)) });
+    : { ...pf, B: pf.B.map((b, el) => b * (1 - target.resPct[el] / 100)), N: pf.N.map((n, el) => n * (1 - target.resPct[el] / 100)),
+      R: target.rf?.some(Boolean) ? target.rf : null });
   const spells = sp.spells.filter((x) => !opts.deckOnly || sp.activeDeck.has(x.id))
     .map((x) => ({ ...x, pf: vsTarget(spellProfile(x.card)) })).filter((x) => x.pf);
   if (!spells.length) throw new Error(opts.deckOnly ? 'Aucun sort de dégâts dans ton deck actif' : 'Aucun sort de dégâts');

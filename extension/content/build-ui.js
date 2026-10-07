@@ -22,7 +22,7 @@ async function openBuildOptimizer({ load = null } = {}) {
     <div style="width:min(900px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
       <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🧬 Optimiseur de build${DM.tip("Cherche l’équipement qui maximise l’objectif choisi. Par défaut, tes dégâts sur un tour : le meilleur enchaînement de sorts de dégâts qui tient dans tes PA offensifs (tous tes PA si tu n’en fixes pas), sur une cible sans résistances. Prend en compte la fusion (réelle, ou le tier simulé choisi), prestige, Bouclier de forge, bonus de panoplie (dofusdb) et PA gagnés par l’équipement. Les PV minimum évitent un build trop fragile.")}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
       <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
-        <label data-tip="Ce que l’optimiseur maximise.&#10;Dégâts par tour : sur une cible sans résistances.&#10;Kralamoure : contre le boss de guilde, ses résistances (20 % Neutre, Terre, Feu et Air, 30 % Eau) appliquées à chaque coup ; le combat dure 10 tours, seul le total de dégâts compte.&#10;Prospection : celle de l’équipement et des panoplies + 1 par 10 de Chance ; avec « Redistribuer mes points », tous tes points vont en Chance.&#10;Sagesse : idem, points en Sagesse.&#10;Seule cette stat compte (les dégâts et PV n’entrent pas en jeu, utilise PV / PA minimum pour un plancher) ; à égalité, l’objet que tu portes déjà est gardé.">Objectif <select data-o="goal" style="${inp}">${Object.entries(BUILD_GOALS).map(([k, g]) => `<option value="${k}">${g.label}</option>`).join('')}</select></label>
+        <label data-tip="Ce que l’optimiseur maximise.&#10;Dégâts par tour : sur une cible sans résistances.&#10;Kralamoure : contre le boss de guilde, ses résistances (20 % Neutre, Terre, Feu et Air, 30 % Eau) appliquées à chaque coup ; le combat dure 10 tours, seul le total de dégâts compte.&#10;Cible : contre les résistances que tu saisis (ou celles d’un ennemi de ton dernier combat) — chaque coup devient (dégât − rés. fixe) × (1 − % rés.), jamais sous 0 ; avec des PV, nombre de tours pour la tuer.&#10;Prospection : celle de l’équipement et des panoplies + 1 par 10 de Chance ; avec « Redistribuer mes points », tous tes points vont en Chance.&#10;Sagesse : idem, points en Sagesse.&#10;Seule cette stat compte (les dégâts et PV n’entrent pas en jeu, utilise PV / PA minimum pour un plancher) ; à égalité, l’objet que tu portes déjà est gardé.">Objectif <select data-o="goal" style="${inp}">${Object.entries(BUILD_GOALS).map(([k, g]) => `<option value="${k}">${g.label}</option>`).join('')}</select></label>
         <label data-tip="Ne propose que des objets jusqu’à ce niveau. Au-dessus de ton niveau actuel, c’est une prévision : PV, PA de base et points de caractéristiques (5 par niveau) de ce niveau-là ; les objets trop hauts pour toi aujourd’hui ne sont pas équipés et les points ne sont pas appliqués. Vide = ton niveau actuel.">Niveau max <input data-o="lvlMax" type="number" min="1" max="200" placeholder="le mien" style="${inp};width:70px"></label>
         <label data-tip="Tier de fusion auquel tous les objets sont comptés, ceux que tu portes compris : sinon un objet moyen déjà fusionné en T4 bat un meilleur objet encore en T1, qui pourrait lui aussi être fusionné. T1 = stats de base. Chaque tier ajoute +10 % aux stats (sauf PA, PM, PO et invocations ; Dofus Rayonnant : +100 %), puis le prestige et le Bouclier de forge s’appliquent par-dessus — % critique compris. « Réel » = les fusions que les objets ont vraiment.">Tier simulé <select data-o="simTier" style="${inp}"><option value="">réel</option>${[1, 2, 3, 4, 5].map((t) => `<option value="${t}">T${t}${t === 5 ? ' (Rayonnant)' : ''}</option>`).join('')}</select></label>
         <label data-tip="PA de ton tour qui servent à taper ; le reste va à tes buffs, shields, soins… Les dégâts comptés sont ceux du meilleur enchaînement de sorts offensifs (autant de sorts que ces PA le permettent). Les PA au-delà gardent leur valeur (+3 % chacun). Vide = tous tes PA servent à taper.">PA offensifs <input data-o="paOff" type="number" min="1" max="12" placeholder="tous" style="${inp};width:70px"></label>
@@ -39,6 +39,13 @@ async function openBuildOptimizer({ load = null } = {}) {
         <label data-k="budgetBox" data-tip="Total maximum des achats HDV du build proposé. Vide = pas de limite.">Budget <input data-o="budget" type="number" min="0" placeholder="illimité" style="${inp};width:110px"> K</label>
         <button data-a="go" style="${btn};background:#8a5a1a;margin-left:auto">Lancer</button>
       </div>
+      <div data-k="tgtBox" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:12px">
+        <span data-tip="Résistances de la cible, appliquées à chaque coup : (dégât − rés. fixe de l’élément) × (1 − % rés. de l’élément), jamais sous 0 — même formule que 🧪 Tester le calcul (tierlist). La rés. fixe pèse surtout sur les sorts à plusieurs petites lignes. Avec des PV : nombre de tours pour tuer la cible.&#10;Ennemis de ton dernier combat capturé : résistances et PV relevés (PV : combats capturés depuis la 1.85.0). Modifier une valeur passe en « Personnalisée ».">🎯 Cible</span>
+        <select data-t="key" style="${inp};padding:3px 6px"></select>
+        ${ELEMENTS.map((E, i) => `<span style="display:flex;align-items:center;gap:3px;color:${E.color};font-weight:700" title="${esc(E.name)} : % de résistance, puis résistance fixe">${esc(E.name.slice(0, 3))}
+          <input data-t="rp" data-i="${i}" type="number" step="1" max="100" style="${inp};width:48px;padding:3px 4px">%<input data-t="rf" data-i="${i}" type="number" step="1" style="${inp};width:48px;padding:3px 4px"></span>`).join('')}
+        <label style="display:flex;align-items:center;gap:3px">PV <input data-t="pv" type="number" min="0" step="1" placeholder="—" style="${inp};width:80px;padding:3px 4px"></label>
+      </div>
       <div data-k="saves" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:12px"></div>
       <div data-k="msg" style="font-size:12px;color:#b9a98c;min-height:1em"></div>
       <details data-k="bl" style="font-size:12px"><summary style="cursor:pointer;color:#b9a98c"></summary><div data-k="blList" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px"></div></details>
@@ -54,7 +61,36 @@ async function openBuildOptimizer({ load = null } = {}) {
       syncOpts();
     });
   }
-  const syncOpts = () => { $('[data-k="budgetBox"]').style.display = o.hdv ? '' : 'none'; $('[data-k="dropsOnlyBox"]').style.display = o.bestiary ? '' : 'none'; };
+  const syncOpts = () => {
+    $('[data-k="budgetBox"]').style.display = o.hdv ? '' : 'none';
+    $('[data-k="dropsOnlyBox"]').style.display = o.bestiary ? '' : 'none';
+    $('[data-k="tgtBox"]').style.display = BUILD_GOALS[o.goal]?.custom ? 'flex' : 'none';
+  };
+  // Cible (objectif « 🎯 ») : o.tgt = { key, name, rp[5], rf[5], pv } ; un préréglage remplit les champs, une saisie passe en « Personnalisée »
+  const presets = targetPresets();
+  o.tgt = { key: 'custom', name: '', rp: [0, 0, 0, 0, 0], rf: [0, 0, 0, 0, 0], pv: 0, ...o.tgt };
+  if (o.tgt.key !== 'custom' && !presets[o.tgt.key]) o.tgt.key = 'custom';   // ennemi d'un ancien combat : valeurs gardées
+  const saveOpts = () => { try { localStorage.setItem(BUILD_OPTS_KEY, JSON.stringify(o)); } catch { /* idem */ } };
+  $('[data-t="key"]').innerHTML = `<option value="custom">Personnalisée</option>${Object.entries(presets).map(([k, t]) => `<option value="${esc(k)}">${esc(t.name)}</option>`).join('')}`;
+  const fillTgt = () => {
+    $('[data-t="key"]').value = o.tgt.key;
+    for (const el of ov.querySelectorAll('[data-t="rp"],[data-t="rf"]')) el.value = o.tgt[el.dataset.t][+el.dataset.i] || 0;
+    $('[data-t="pv"]').value = o.tgt.pv || '';
+  };
+  $('[data-t="key"]').addEventListener('change', (e) => {
+    const k = e.target.value, p = presets[k];
+    o.tgt = p ? { key: k, name: p.name.replace(/ — combat de .*$/, ''), rp: [...p.rp], rf: [...p.rf], pv: p.pv || 0 } : { ...o.tgt, key: 'custom', name: '' };
+    fillTgt(); saveOpts();
+  });
+  for (const el of ov.querySelectorAll('[data-t="rp"],[data-t="rf"],[data-t="pv"]')) {
+    el.addEventListener('input', () => {
+      const t = el.dataset.t, v = +el.value || 0;
+      if (t === 'pv') o.tgt.pv = Math.max(0, v); else o.tgt[t] = o.tgt[t].map((x, i) => (i === +el.dataset.i ? v : x));
+      if (o.tgt.key !== 'custom') { o.tgt.key = 'custom'; o.tgt.name = ''; $('[data-t="key"]').value = 'custom'; }
+      saveOpts();
+    });
+  }
+  fillTgt();
   syncOpts();
   // liste noire : visible et modifiable ici
   const renderBl = () => {
@@ -319,6 +355,7 @@ async function openBuildOptimizer({ load = null } = {}) {
   function render() {
     const r = result;
     const gain = r.nxtTurn.dmg - r.curTurn.dmg;
+    const killTurns = (dmg) => (dmg > 0 ? Math.ceil(r.target.pv / dmg) : '∞');
     const gs = r.goal.stat, gA = gs ? r.goal.value(r.cur.S) : 0, gB = gs ? r.goal.value(r.nxt.S) : 0;
     const heart = (c, slot, side) => `<button data-fav="${esc(slot)}|${side}" title="${buildFavs()[c.id] ? 'Retirer des favoris' : 'Ajouter aux favoris (bulle ❤️ en bas à gauche)'}" style="background:none;border:0;cursor:pointer;padding:0 2px;font-size:13px;color:${buildFavs()[c.id] ? '#ff5c7a' : '#8a7d66'}">${buildFavs()[c.id] ? '❤' : '♡'}</button>`;
     const item = (c, slot, side) => (c ? `${heart(c, slot, side)}<span data-hover="${esc(slot)}|${side}" style="cursor:help">${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain;vertical-align:middle">` : ''} ${esc(itemLabel(c))}${c.src === 'hdv' ? ` <span style="color:#f0c04a">🛒 ${fmt(c.price)} K</span>` : ''}${c.src === 'bank' ? ` <span style="color:#8fb8ee">🏦 ${esc(c.bankName)}</span>` : ''}${c.src === 'drop' ? ` <span style="color:#c99bff">🐉 à looter</span>${c.offer ? ` <span style="color:#f0c04a">· en vente ${fmt(c.offer.price)} K${c.offer.fusion ? ` (fusion ${c.offer.fusion})` : ''}</span>` : ''}` : ''}${c.bought ? ' <span style="color:#6fcf7a">✔ acheté</span>' : ''}</span>` : '<i style="color:#8a7d66">vide</i>');
@@ -360,12 +397,14 @@ async function openBuildOptimizer({ load = null } = {}) {
       <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:baseline">
         ${gs ? `<div>${esc(STAT_LABELS[gs] || gs)}${r.goal.also ? ' (Chance comprise)' : ''} : <b>${fmt(gA)}</b> → <b style="font-size:17px;color:#6fcf7a">${fmt(gB)}</b> ${gB - gA > 0 ? `<span style="color:#6fcf7a">(+${fmt(gB - gA)})</span>` : '<span style="color:#b9a98c">(ton build est déjà le meilleur trouvé)</span>'}</div>
         <div style="font-size:12px">Dégâts par tour : ${fmt(r.curTurn.dmg)} → <b>${fmt(r.nxtTurn.dmg)}</b>${gain ? ` <span style="color:${gain > 0 ? '#6fcf7a' : '#ff7b6b'}">(${gain > 0 ? '+' : ''}${fmt(gain)})</span>` : ''}</div>`
-  : `<div>Dégâts par tour${r.target ? ` sur ${esc(r.target.name)} (résistances comprises)` : ''} : <b>${fmt(r.curTurn.dmg)}</b> → <b style="font-size:17px;color:#6fcf7a">${fmt(r.nxtTurn.dmg)}</b> ${gain > 0.5 ? `<span style="color:#6fcf7a">(+${fmt(gain)}, +${(gain / Math.max(1, r.curTurn.dmg) * 100).toFixed(1)} %)</span>` : '<span style="color:#b9a98c">(ton build est déjà le meilleur trouvé)</span>'}</div>`}
+  : `<div>Dégâts par tour${r.target ? ` sur ${esc(r.target.name)} (résistances comprises)` : ''} : <b>${fmt(r.curTurn.dmg)}</b> → <b style="font-size:17px;color:#6fcf7a">${fmt(r.nxtTurn.dmg)}</b> ${gain > 0.5 ? `<span style="color:#6fcf7a">(+${fmt(gain)}, +${(gain / Math.max(1, r.curTurn.dmg) * 100).toFixed(1)} %)</span>` : '<span style="color:#b9a98c">(ton build est déjà le meilleur trouvé)</span>'}</div>
+        ${r.target?.pv > 0 ? `<div title="Tours moyens pour vider ses ${fmt(r.target.pv)} PV, à dégâts par tour constants (sans soins, boucliers ni buffs)">☠️ Tours pour tuer : ${killTurns(r.curTurn.dmg)} → <b style="color:#6fcf7a">${killTurns(r.nxtTurn.dmg)}</b></div>` : ''}`}
         ${hdvCost ? `<div style="color:#f0c04a">🛒 Achats HDV restants : ${fmt(hdvCost)} K${r.budget ? ` / budget ${fmt(r.budget)} K` : ''}</div>` : r.budget ? `<div style="color:#b9a98c">Budget ${fmt(r.budget)} K : aucun achat nécessaire</div>` : ''}
       </div>
       ${r.planLevel && r.planLevel !== r.sheet.level ? `<div style="font-size:12px;color:#8fd4ee">📅 ${ahead ? `Prévision au niveau ${r.planLevel} (tu es niveau ${r.sheet.level}) : objets jusqu’au niveau ${r.planLevel}, PV, PA et ${fmt(r.planCapital)} points de caractéristiques de ce niveau. Les objets au-dessus de ton niveau actuel ne seront pas équipés.` : `Objets limités au niveau ${r.planLevel} (tu es niveau ${r.sheet.level}).`}</div>` : ''}
       ${r.bestiary ? `<div style="font-size:12px;color:#c99bff">🐉 Bestiaire : ${r.bestiary.count} objet(s) lootable(s) à ton niveau que tu n’as pas, pris en compte (copie du ${new Date(r.bestiary.at).toLocaleString('fr-FR')})${drops.length ? ` — ${drops.length} à looter dans le build proposé${drops.some((c) => c.offer) ? `, dont ${drops.filter((c) => c.offer).length} en vente à l’HDV` : ''}` : ''}.</div>` : ''}
       ${r.bank ? `<div style="font-size:12px;color:#8fb8ee">🏦 Banque ${esc(r.bank.name)} : ${r.bank.count} objet(s) disponible(s)${r.bank.bound ? `, ${r.bank.bound} lié(s) ignoré(s)` : ''}.</div>` : ''}
+      ${r.target?.rf ? `<div style="font-size:12px;color:#b9a98c">🎯 ${esc(r.target.name)} : ${ELEMENTS.map((E, i) => `${E.name} ${r.target.resPct[i]} %${r.target.rf[i] ? ` + ${r.target.rf[i]}` : ''}`).join(' · ')}${r.target.pv ? ` · ${fmt(r.target.pv)} PV` : ''}</div>` : ''}
       ${r.simTier ? `<div style="font-size:12px;color:#ffd76a">⚗️ Simulation : tous les objets (portés compris) comptés au tier ${r.simTier}${r.simTier === 5 ? ' (Rayonnant)' : ''}, prestige et forge en plus — les stats affichées sont celles de ce tier, pas celles de tes exemplaires.</div>` : ''}
       ${r.ownKept ? `<div style="font-size:12px;color:#6fcf7a">🎒 Tolérance ${String(r.ownTol).replace('.', ',')} % : ${r.ownKept} objet(s) à acheter ou looter remplacé(s) par des objets que tu as (−${r.ownLoss.toFixed(1).replace('.', ',')} % par rapport au meilleur build trouvé).</div>` : ''}
       ${r.paShort ? `<div style="color:#ff7b6b;font-weight:700">⚠️ PA minimum (${r.paMin}) impossible à atteindre avec tes objets : le build ci-dessous est celui qui a le plus de PA (${r.paOf(r.nxt.S)}).</div>` : ''}
@@ -586,28 +625,17 @@ async function openSpellList() {
     return;
   }
   const { spells, favs, variableOnly, chunks } = data;
-  const NO_TGT = { key: '', pv: 0, rp: [0, 0, 0, 0, 0], rf: [0, 0, 0, 0, 0] };
-  const NO_FILTERS = { q: '', target: '', el: '', sort: 'avg', dir: -1, favOnly: false, real: false, tgt: NO_TGT };
+  const NO_FILTERS = { q: '', target: '', el: '', sort: 'avg', dir: -1, favOnly: false, real: false };
+  const baseOf = new Map(spells.map((sp) => [sp, { ...sp }]));   // valeurs de base de chaque sort
   let charStats = null, statsMsg = '';
   let f = { ...NO_FILTERS };
   try { f = { ...f, ...JSON.parse(localStorage.getItem(SPELL_FILTERS_KEY) || '{}'), q: '' }; } catch { /* stockage indisponible */ }
-  f.tgt = { ...NO_TGT, ...f.tgt };
-  // Cibles proposées : ennemis du dernier combat capturé (résistances et PV relevés), boss connus ; sinon saisie libre
-  const fight = lastFight();
-  const presets = new Map(Object.entries(BUILD_TARGETS).map(([k, t]) => [k, { name: t.name, rp: t.resPct, rf: [0, 0, 0, 0, 0], pv: 0 }]));
-  for (const fr of Object.values(fight?.fighters || {})) {
-    if (fr.id === 'p' || fr.team === fight.fighters.p?.team) continue;
-    presets.set(`f:${fr.name}`, { ...fighterTarget(fr), name: `${fr.name}${fr.level ? ` (niv. ${fr.level})` : ''} — combat de ${DM.hhmm(fight.at)}` });
-  }
-  if (f.tgt.key && f.tgt.key !== 'custom' && !presets.has(f.tgt.key)) f.tgt.key = 'custom';   // ennemi d'un ancien combat : valeurs gardées
-  const tgtOn = () => !!f.tgt.key;
   const saveFilters = () => { try { localStorage.setItem(SPELL_FILTERS_KEY, JSON.stringify(f)); } catch { /* idem */ } };
   let msg = '';
 
   const inp = 'background:#2a231a;border:1px solid #5a4a33;border-radius:8px;color:#eee;padding:5px 8px;font:13px system-ui,sans-serif';
   const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:5px 10px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
   const SORTS = [['avg', 'Dégâts totaux'], ['perAp', 'Dégâts / PA'], ['ap', 'Coût en PA'], ['name', 'Nom']];
-  const tgtLabel = () => (f.tgt.key === 'custom' ? 'la cible personnalisée' : presets.get(f.tgt.key)?.name || 'la cible');
   ov.innerHTML = `
     <div style="width:min(860px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
       <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📚 Tierlist de mes sorts${DM.tip("Tous les sorts à dégâts de ta collection, avec les dégâts de base de la carte (sans tes caractéristiques). Un sort à plusieurs lignes de dégâts affiche leur total, même sur des éléments différents : toutes les lignes sont appliquées, sauf celles à x % de chance (comptées en moyenne, 🎲). Bombes, pièges et poisons comptent leurs dégâts (le poison, sur toute sa durée). Le cadenas met le sort en favori sur le site (toujours en haut de la liste de /deck).")}</b><button data-a="test" style="${btn}" data-tip="Compare mon calcul aux vrais coups de ton dernier combat (capturé automatiquement) : coup observé, estimation sans résistance et estimation avec les résistances de la cible. « Copier » pour me l’envoyer.">🧪 Tester le calcul</button><button data-a="x" style="${btn};background:transparent">✕</button></div>
@@ -619,15 +647,6 @@ async function openSpellList() {
         <label data-tip="Calcule les dégâts avec tes caractéristiques (lues sur ton dernier combat) : stat de l’élément + Puissance (+1 % par point), Dommages fixes à chaque ligne, % Dommages aux sorts, critique (chance de la carte + ton % Critique, coup ×1,25 estimé) et vision spectrale. Un sort multi-éléments ne profite que de tes éléments forts." style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-left:auto">
           <span class="dm-sw" style="position:relative;width:34px;height:18px;border-radius:9px;background:#5a4a33;transition:.15s;flex:none"><span style="position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#eee;transition:.15s"></span></span>
           <input type="checkbox" data-f="real" style="display:none"> Avec mes stats</label>
-      </div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
-        <span data-tip="Applique les résistances de la cible à chaque coup : (dégât − rés. fixe de l’élément) × (1 − % rés. de l’élément), jamais sous 0 (formule vérifiée par 🧪 Tester le calcul). Avec des PV, chaque sort affiche le nombre de lancers moyens pour tuer la cible et les PA que ça coûte.&#10;Les ennemis de ton dernier combat capturé sont proposés avec leurs vraies résistances et PV ; modifier une valeur passe en « Personnalisée ».">🎯 Cible</span>
-        <select data-t="key" style="${inp}"><option value="">Aucune (dégâts bruts)</option><option value="custom">Personnalisée</option>${[...presets].map(([k, t]) => `<option value="${esc(k)}">${esc(t.name)}</option>`).join('')}</select>
-        <span data-k="tgtFields" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
-          ${ELEMENTS.map((E, i) => `<span style="display:flex;align-items:center;gap:3px;color:${E.color};font-size:12px;font-weight:700" title="${esc(E.name)} : % de résistance, puis résistance fixe">${esc(E.name.slice(0, 3))}
-            <input data-t="rp" data-i="${i}" type="number" step="1" style="${inp};width:46px;padding:3px 4px">%<input data-t="rf" data-i="${i}" type="number" step="1" style="${inp};width:46px;padding:3px 4px"></span>`).join('')}
-          <label style="display:flex;align-items:center;gap:3px;font-size:12px">PV <input data-t="pv" type="number" min="0" step="1" style="${inp};width:76px;padding:3px 4px"></label>
-        </span>
       </div>
       <div data-k="stats" style="font-size:11px;color:#b9a98c;display:none"></div>
       <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><span style="color:#b9a98c">Trier :</span>
@@ -648,28 +667,7 @@ async function openSpellList() {
       render();
     });
   }
-  // Cible : valeurs du préréglage dans les champs ; une saisie passe en « Personnalisée »
-  const fillTgt = () => {
-    $('[data-t="key"]').value = f.tgt.key;
-    $('[data-k="tgtFields"]').style.display = tgtOn() ? 'flex' : 'none';
-    for (const el of ov.querySelectorAll('[data-t="rp"],[data-t="rf"]')) el.value = f.tgt[el.dataset.t][+el.dataset.i] || 0;
-    $('[data-t="pv"]').value = f.tgt.pv || '';
-  };
-  $('[data-t="key"]').addEventListener('change', (e) => {
-    const k = e.target.value, p = presets.get(k);
-    f.tgt = p ? { key: k, pv: p.pv || 0, rp: [...p.rp], rf: [...p.rf] } : { ...f.tgt, key: k };
-    fillTgt(); saveFilters(); applyStats();
-  });
-  for (const el of ov.querySelectorAll('[data-t="rp"],[data-t="rf"],[data-t="pv"]')) {
-    el.addEventListener('input', () => {
-      const t = el.dataset.t, v = +el.value || 0;
-      if (t === 'pv') f.tgt.pv = Math.max(0, v);
-      else f.tgt[t] = f.tgt[t].map((x, i) => (i === +el.dataset.i ? (t === 'rp' ? Math.min(100, v) : v) : x));
-      if (f.tgt.key !== 'custom') { f.tgt.key = 'custom'; $('[data-t="key"]').value = 'custom'; }
-      saveFilters(); applyStats();
-    });
-  }
-  // Recalcul de tous les sorts : caractéristiques (interrupteur « Avec mes stats ») et résistances de la cible
+  // Interrupteur « Avec mes stats » : recalcul de tous les sorts avec les caractéristiques (ou retour aux valeurs de base)
   async function applyStats() {
     if (f.real && !charStats) {
       statsMsg = 'Lecture de tes caractéristiques…';
@@ -678,11 +676,9 @@ async function openSpellList() {
       statsMsg = charStats ? '' : 'Caractéristiques introuvables : lance un combat puis rouvre la tierlist.';
     }
     for (const sp of spells) {
-      const d = spellDamage(sp.card, f.real && charStats ? charStats.stats : null, tgtOn() ? f.tgt : null);
+      const d = f.real && charStats ? spellDamage(sp.card, charStats.stats) : baseOf.get(sp);
       Object.assign(sp, { min: d.min, max: d.max, avg: d.avg, byEl: d.byEl, critP: d.critP || 0 });
       sp.perAp = sp.ap ? sp.avg / sp.ap : Infinity;
-      // lancers moyens pour tuer la cible (lignes dépendant des PV : non comptées)
-      sp.kill = tgtOn() && f.tgt.pv > 0 && sp.avg > 0 ? Math.ceil(f.tgt.pv / sp.avg) : null;
     }
     render();
   }
@@ -723,7 +719,7 @@ async function openSpellList() {
     sw.firstElementChild.style.left = f.real ? '18px' : '2px';
     const sb = $('[data-k="stats"]');
     sb.style.display = f.real ? '' : 'none';
-    sb.textContent = statsMsg || (charStats ? `Tes stats (combat de ${DM.hhmm(charStats.at)}) : ${STAT_SHOW.filter(([k]) => +charStats.stats[k]).map(([k, l]) => `${l} ${charStats.stats[k]}`).join(' · ') || 'aucun bonus'} — ${tgtOn() ? `après résistances de ${tgtLabel()}` : 'dégâts avant résistances du monstre'}.` : '');
+    sb.textContent = statsMsg || (charStats ? `Tes stats (combat de ${DM.hhmm(charStats.at)}) : ${STAT_SHOW.filter(([k]) => +charStats.stats[k]).map(([k, l]) => `${l} ${charStats.stats[k]}`).join(' · ') || 'aucun bonus'} — dégâts avant résistances du monstre.` : '');
     const q = normName(f.q || '');
     const list = spells.filter((sp) => {
       if (q && !normName(sp.name).includes(q)) return false;
@@ -753,8 +749,7 @@ async function openSpellList() {
         return `<span title="${esc(E.name)} : ${fmt(v)} en moyenne" style="display:inline-block;padding:1px 6px;border-radius:6px;font-size:11px;font-weight:700;color:${E.color};border:1px solid ${E.color}66;background:${E.color}1f">${esc(E.name)}</span>`;
       }).join(' ');
       const tags = [sp.zone ? '🌀 Zone' : '🎯 Cible unique', sp.delayed ? '⏳ différé' : '', sp.random ? '🎲 % de chance' : '', sp.variable ? '+ variable' : ''].filter(Boolean).join(' · ');
-      const killCol = tgtOn() && f.tgt.pv > 0;
-      return `<div style="display:grid;grid-template-columns:28px 40px 1fr auto auto auto${killCol ? ' auto' : ''} 30px;gap:8px;align-items:center;background:${fav ? '#3a2e14' : '#241e16'};border:1px solid ${fav ? '#e0b040' : '#3a3024'};border-radius:8px;padding:5px 8px">
+      return `<div style="display:grid;grid-template-columns:28px 40px 1fr auto auto auto 30px;gap:8px;align-items:center;background:${fav ? '#3a2e14' : '#241e16'};border:1px solid ${fav ? '#e0b040' : '#3a3024'};border-radius:8px;padding:5px 8px">
         <b style="color:#b9a98c;text-align:right">${i + 1}</b>
         <img src="/img/spells/sort_${+sp.icon}.png" alt="" style="width:36px;height:36px;object-fit:contain">
         <div style="min-width:0"><div style="font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(sp.desc)}">${esc(sp.name)}</div>
@@ -762,11 +757,9 @@ async function openSpellList() {
         <div style="text-align:center" title="Coût en PA"><b style="font-size:15px;color:#5aa9e6">${sp.ap}</b><div style="font-size:10px;color:#8a7d66">PA</div></div>
         <div style="text-align:right;min-width:86px" title="${f.real ? `Dégâts moyens avec tes stats (critique ${Math.round((sp.critP || 0) * 100)} % compris) — min sans critique, max en critique` : 'Dégâts totaux (min – max)'}"><b style="font-size:15px">${fmt(sp.avg)}</b><div style="font-size:10px;color:#8a7d66">${sp.min} – ${sp.max}</div></div>
         <div style="text-align:right;min-width:56px" title="Dégâts moyens par PA"><b style="font-size:14px;color:#f0c04a">${sp.ap ? fmt(sp.perAp) : '—'}</b><div style="font-size:10px;color:#8a7d66">/ PA</div></div>
-        ${killCol ? `<div style="text-align:right;min-width:58px" title="${sp.kill ? `≈ ${sp.kill} lancer(s) en moyenne pour tuer ${esc(tgtLabel())} (${f.tgt.pv} PV), soit ${sp.kill * sp.ap} PA${sp.zone ? ' — sur la cible visée (les autres cibles de la zone prennent ~60 %)' : ''}` : 'Aucun dégât sur cette cible'}"><b style="font-size:14px;color:${sp.kill ? '#6fcf7a' : '#8a7d66'}">${sp.kill ? `${sp.kill}×` : '—'}</b><div style="font-size:10px;color:#8a7d66">${sp.kill ? `${sp.kill * sp.ap} PA` : 'pour tuer'}</div></div>` : ''}
         <button data-fav="${sp.id}" title="${fav ? 'Favori sur le site : cliquer pour le retirer' : 'Mettre en favori sur le site (toujours en haut de /deck)'}" style="width:28px;height:28px;border-radius:50%;cursor:pointer;border:1px solid ${fav ? '#e0b040' : '#5a4a33'};background:${fav ? '#e0b040' : 'transparent'};color:${fav ? '#1d1812' : '#b9a98c'};font-size:13px">${fav ? '🔒' : '🔓'}</button>
       </div>`;
     }).join('') || '<div style="color:#b9a98c;padding:12px">Aucun sort ne correspond aux filtres.</div>';
   }
-  fillTgt();
-  if (f.real || tgtOn()) applyStats(); else render();
+  if (f.real) applyStats(); else render();
 }

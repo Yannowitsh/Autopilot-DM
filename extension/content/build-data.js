@@ -24,6 +24,7 @@ const BUILD_TARGETS = { krala: { name: 'Kralamoure Géant', resPct: [20, 20, 20,
 const BUILD_GOALS = {
   dps: { label: '⚔️ Dégâts par tour' },
   krala: { label: '🐙 Dégâts sur Kralamoure', target: BUILD_TARGETS.krala },
+  cible: { label: '🎯 Dégâts sur une cible', custom: true },   // résistances et PV saisis (opts.tgt)
   prospection: { label: '💰 Prospection', stat: 'prospection', points: 'chance', also: ['chance'],
     value: (S) => 100 + (S.prospection || 0) + Math.floor((S.chance || 0) / 10) },
   sagesse: { label: '📚 Sagesse', stat: 'sagesse', points: 'sagesse', value: (S) => S.sagesse || 0 },
@@ -394,17 +395,19 @@ function spellProfile(card) {
   return any ? { B, N, cc: +card.cc || 0 } : null;
 }
 // Dégâts moyens d'un sort avec ces stats (même formule que spellDamage, en version rapide).
+// pf.R (cible à résistances fixes) : retirées à chaque coup, après les % Dommages ; B et N portent déjà (1 − % rés.).
 function profileAvg(pf, S) {
-  const pct = (1 + (S.dmgPctSorts || 0) / 100) * (1 + (S.po || 0) * SPECTRAL_PER_PO / 100);
+  const pct = 1 + (S.dmgPctSorts || 0) / 100, spectral = 1 + (S.po || 0) * SPECTRAL_PER_PO / 100;
   const p = pf.cc > 0 ? Math.min(1, Math.max(0, (pf.cc + (S.critique || 0)) / 100)) : 0;
   let tot = 0;
   for (let el = 0; el < 5; el++) {
     if (!pf.N[el]) continue;
     const m = 1 + ((S[EL_STAT[el]] || 0) + (S.puissance || 0)) / 100;
     const fixed = (S.dommages || 0) + (S[EL_DMG[el]] || 0);
-    tot += pf.B[el] * m * (1 + p * (CRIT_MULT - 1)) + pf.N[el] * (fixed + p * (S.dommagesCritiques || 0));
+    const v = (pf.B[el] * m * (1 + p * (CRIT_MULT - 1)) + pf.N[el] * (fixed + p * (S.dommagesCritiques || 0))) * pct;
+    tot += pf.R ? Math.max(0, v - pf.N[el] * pf.R[el]) : v;
   }
-  return tot * pct;
+  return tot * spectral;
 }
 // Meilleur tour sans limite de nombre de sorts (cartes distinctes) dont la somme des PA ≤ pa : sac à dos 0/1.
 function bestTurnPA(spells, S, pa) {
