@@ -325,6 +325,16 @@ function fusedStats(st, type, fusion) {
   if (fusion >= FUSION_MAX && (out.pa ?? 0) > 0) out.pa = Math.max(out.pa, FUSION_RULES.radiantPa);
   return out;
 }
+// Inverse approché de fusedStats (stats de base d'un objet fusionné, à l'arrondi près) : repli quand seules les stats
+// fusionnées sont connues (banque lue par une ancienne version de l'extension).
+function unfusedStats(eff, type, fusion) {
+  if (!fusion) return eff || {};
+  const radiant = type === 'dofus' && fusion >= FUSION_MAX;
+  const mult = radiant ? 1 + FUSION_RULES.dofusRadiantPct / 100 : 1 + fusion * FUSION_RULES.stepPct / 100;
+  const out = {};
+  for (const [k, v] of Object.entries(eff || {})) out[k] = v > 0 && (radiant || !FUSION_RULES.excluded.includes(k)) ? Math.round(v / mult) : v;
+  return out;
+}
 
 // Inventaire + objets portés, lus dans le payload RSC de /inventaire.
 async function fetchEquipState() {
@@ -336,7 +346,7 @@ async function fetchEquipState() {
     const it = res(raw) || {};
     const type = it.s;
     return { id: it.id, name: it.n, lvl: it.lvl, type, rarity: it.r, icon: it.icon, fusion: fusion || 0, setName: it.setName || null,
-      two: !!res(it.w)?.twoHanded, eff: fusedStats(res(it.st), type, fusion || 0) };
+      two: !!res(it.w)?.twoHanded, eff: fusedStats(res(it.st), type, fusion || 0), baseEff: res(it.st) || {} };
   };
   const entries = props.entries.map((e) => ({ ...norm(e.item, e.fusion), qty: e.qty })).filter((e) => Number.isInteger(e.id) && e.qty > 0);
   const slots = props.slots.map((s) => ({ slot: s.slot, label: s.label, accepts: s.accepts, cur: s.item ? norm(s.item, s.fusion) : null }));

@@ -51,7 +51,7 @@ async function optimizeBuild(opts, say) {
     const realDrop = (id) => (b.drops[id] || []).some(([, , , , zs]) => zs?.length);
     const add = b.items.filter((it) => !have.has(it.id) && !(it.lvl > planLevel) && (opts.dropsOnly === false || realDrop(it.id)));
     pool.push(...add.map((it) => ({ id: it.id, name: it.n, lvl: it.lvl, type: it.s, rarity: it.r, icon: it.icon, fusion: 0,
-      setName: it.setName, two: it.two, eff: fusedStats(it.st, it.s, 0), src: 'drop' })));
+      setName: it.setName, two: it.two, eff: fusedStats(it.st, it.s, 0), baseEff: it.st || {}, src: 'drop' })));
     bestiary = { drops: b.drops, boss: b.boss, zones: b.zones, count: add.length, at: b.at };
   }
   say('Bonus de panoplie (dofusdb)…');
@@ -73,7 +73,23 @@ async function optimizeBuild(opts, say) {
   const fitSheet = { ...sheet, bonus: Object.fromEntries(Object.entries(sheet.bonus).map(([k, v]) => [k, v - (+state.scrolls?.[k] || 0)])) };
   gearMult = fitGearMult(pool.filter((c) => c.src === 'worn'), setFx, fitSheet, gearMult);
   DM.log(`optimiseur : panoplies — ${setsFromGame} connue(s) par la fiche du jeu, le reste via dofusdb ; parchemins ${JSON.stringify(fixedStats)}`);
-  pool = pool.map((c, i) => ({ ...c, uid: i, eff: withPrestige(c.eff) }));
+  // Tier simulé (option) : tous les objets, portés compris, comptés à ce tier de fusion (stats de base × fusion, puis
+  // prestige et forge) — compare les objets entre eux et pas leurs fusions actuelles. Vide = fusions réelles.
+  // realEff = stats réelles (contrôle du modèle sur la fiche du jeu).
+  const simTier = Math.max(0, Math.min(FUSION_MAX + 1, Math.round(+opts.simTier || 0)));
+  const simFusion = simTier ? simTier - 1 : null;
+  pool = pool.map((c, i) => {
+    const realEff = withPrestige(c.eff);
+    if (simFusion == null) return { ...c, uid: i, eff: realEff };
+    const base = c.baseEff || unfusedStats(c.eff, c.type, c.fusion || 0);
+    return { ...c, uid: i, realEff, eff: withPrestige(fusedStats(base, c.type, simFusion)) };
+  });
+  // au même tier simulé, deux annonces HDV d'un même objet se valent : la moins chère suffit
+  if (simFusion != null) {
+    const cheapest = new Map();
+    for (const c of pool) if (c.src === 'hdv' && !(cheapest.get(c.id)?.price <= c.price)) cheapest.set(c.id, c);
+    pool = pool.filter((c) => c.src !== 'hdv' || cheapest.get(c.id) === c);
+  }
   const banned = new Set(Object.keys(buildBlacklist()).map(Number));
   const budget = opts.hdv && +opts.budget > 0 ? +opts.budget : 0;   // 0 = pas de limite
 
@@ -392,10 +408,12 @@ async function optimizeBuild(opts, say) {
   // actuel : équipement et points tels quels ; proposé : nouvel équipement (+ points redistribués si l'option est active)
   const cur = evalBuild(current, false), nxt = evalBuild(final);
   const curTurn = cur.turn, nxtTurn = nxt.turn;
-  // contrôle du modèle : stats calculées pour l'équipement actuel vs fiche du jeu
+  // contrôle du modèle : stats calculées pour l'équipement actuel (fusions réelles) vs fiche du jeu
+  const realS = simFusion == null ? cur.S
+    : evalBuild(Object.fromEntries(Object.entries(current).map(([k, c]) => [k, c && { ...c, eff: c.realEff }])), false).S;
   const checks = [
-    ['PV', buildPvOf(level)(cur.S), sheet.pv], ['PA', buildPaOf(level, sheet.prestige)(cur.S), sheet.pa],   // fiche = niveau actuel
-    ...Object.keys(sheet.bonus).map((k) => [STAT_LABELS[k] || k, cur.S[k] || 0, (sheet.base[k] || 0) + sheet.bonus[k]]),
+    ['PV', buildPvOf(level)(realS), sheet.pv], ['PA', buildPaOf(level, sheet.prestige)(realS), sheet.pa],   // fiche = niveau actuel
+    ...Object.keys(sheet.bonus).map((k) => [STAT_LABELS[k] || k, realS[k] || 0, (sheet.base[k] || 0) + sheet.bonus[k]]),
   ].filter(([, a, b]) => Number.isFinite(b));
   // deck conseillé : deckN sorts offensifs (ceux du tour d'abord, les plus forts ; complétés par les plus forts du build)
   const ranked = spells.filter((x) => x.usable).map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })).sort((a, b) => b.v - a.v);
@@ -404,7 +422,7 @@ async function optimizeBuild(opts, say) {
   // cartes non offensives déjà dans le deck 3 (buffs, soins…) : conservées, c'est toi qui les choisis
   const dmgIds = new Set(sp.spells.map((x) => x.id));
   const keepCards = sp.deckIds(DECK_TARGET).filter((id) => !dmgIds.has(id) && !deck.some((x) => x.id === id)).slice(0, DECK_CARDS - deck.length);
-  return { gearMult, sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, paOff, deckN, planLevel, statLevel, planCapital, setFx, hdv: opts.hdv, target, goal, bestiary,
+  return { simTier, gearMult, sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, paOff, deckN, planLevel, statLevel, planCapital, setFx, hdv: opts.hdv, target, goal, bestiary,
     ownTol, ownKept, ownLoss: ownKept && bestFound > 0 ? (1 - top.best / bestFound) * 100 : 0,
     pvMin, pvShort: pvMin && pvOf(nxt.S) < pvMin, paMin, paShort: paMin && paOf(nxt.S) < paMin, bank, budget, hdvFailed, realloc: opts.realloc !== false, cost: costOf(final), deck: deck.map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })),
     deckChunks: sp.chunks, keepCards };

@@ -56,7 +56,8 @@ function packBuild(r) {
   for (const c of Object.values(r.final)) for (const [, , , , zs] of c?.sources || []) for (const z of zs) if (r.bestiary?.zones[z]) zones[z] = r.bestiary.zones[z];
   const goalKey = Object.keys(BUILD_GOALS).find((k) => BUILD_GOALS[k] === r.goal) || 'dps';
   const { pvOf, paOf, goal, setFx, equipped, ...rest } = r;
-  return JSON.parse(JSON.stringify({ ...rest, goalKey, bestiary: r.bestiary ? { count: r.bestiary.count, at: r.bestiary.at, zones } : null }));
+  return JSON.parse(JSON.stringify({ ...rest, goalKey, bestiary: r.bestiary ? { count: r.bestiary.count, at: r.bestiary.at, zones } : null },
+    (k, v) => (k === 'baseEff' || k === 'realEff' ? undefined : v)));
 }
 // Dernière recherche de l'optimiseur (par personnage), réaffichée à la réouverture : localStorage, photo comme un build enregistré.
 const LAST_BUILD_KEY = 'dmLastBuild';
@@ -436,7 +437,7 @@ async function fetchHdvGear(types, level, failed = []) {
       if (!it?.id || l.mine || (it.lvl || 0) > level) continue;
       out.push({ id: it.id, name: it.n, lvl: it.lvl, type: it.s, rarity: it.r, icon: it.icon, fusion: +l.fusion || 0,
         setName: it.setName || null, two: !!rscResolve(rows, it.w)?.twoHanded, eff: fusedStats(rscResolve(rows, it.st), it.s, +l.fusion || 0),
-        src: 'hdv', price: +l.price || 0, listingId: l.id, seller: l.seller });
+        baseEff: rscResolve(rows, it.st) || {}, src: 'hdv', price: +l.price || 0, listingId: l.id, seller: l.seller });
     }
     await sleep(250);
   }
@@ -460,7 +461,7 @@ async function peerGear() {
     }
     const entries = state.entries.filter((e) => free.get(`${e.id}|${e.fusion || 0}`) > 0)
       .map((e) => ({ id: e.id, name: e.name, lvl: e.lvl, type: e.type, rarity: e.rarity, icon: e.icon, fusion: e.fusion,
-        setName: e.setName, two: e.two, eff: e.eff }));
+        setName: e.setName, two: e.two, eff: e.eff, baseEff: e.baseEff }));
     return { ok: true, name: myName(), entries, bound: state.entries.length - entries.length };
   } catch (e) {
     return { ok: false, error: e.message };
