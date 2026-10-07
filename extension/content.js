@@ -4643,7 +4643,8 @@
     const tierOf = (i) => tiers[items[i].c.id] || 1;
     ov.innerHTML = `<div style="width:min(680px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
       <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🐉 Aller dropper${DM.tip('Coche les objets à aller chercher : ils passent dans la liste de courses, où tu choisis le tier voulu. Le pilote passe ensuite en mode Chasse : il va dans la zone la plus rentable, n’attaque que les groupes qui contiennent un monstre qui lâche un objet de la liste, compte les objets reçus en fin de combat et change de zone quand celle-ci n’a plus rien à donner (ou aucun groupe utile). 5 défaites d’affilée dans une zone : elle est abandonnée (notification) et on passe à la suivante. Plus aucune zone possible : arrêt + notification. Tout est droppé : arrêt + notification. Le mode de combat (Auto du jeu / par poids) est celui du menu 🤖. Tier : T1 = 1 exemplaire, T2 = 3, T3 = 9, T4 = 27, T5 (Rayonnant) = 81 (fusion 3 → 1).')}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
-      <div style="font-size:12px;color:#b9a98c">Objets à looter du build et objets favoris ❤️ — coche ceux à farmer :</div>
+      <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#b9a98c"><span style="flex:1">Objets à looter du build et objets favoris ❤️ — coche ceux à farmer :</span>
+        <button data-a="all" style="${btn};padding:2px 8px">☑ Tout sélectionner</button><button data-a="none" style="${btn};padding:2px 8px">☐ Tout désélectionner</button></div>
       <div style="overflow-y:auto;max-height:38vh;display:flex;flex-direction:column;gap:4px">${items.map(({ c, srcs, best }, i) => `<label style="${row};cursor:${srcs.length ? 'pointer' : 'default'};${srcs.length ? '' : 'opacity:.55'}">
         <input type="checkbox" data-i="${i}" ${srcs.length ? '' : 'disabled'}>
         ${icon(c)}
@@ -4652,7 +4653,8 @@
           : `objet bonus de victoire (chance non publiée) · ${esc([...new Set(srcs.flatMap((s) => s.z))].map((z) => zones[z]?.[0] || `zone ${z}`).slice(0, 3).join(', '))}`}</span></span>
       </label>`).join('') || '<div style="color:#b9a98c">Aucun objet : ce build n’a pas d’objet à looter (🐉), et tu n’as pas de favori ❤️. Ajoute des objets en favori avec le cœur ♡ de l’optimiseur.</div>'}</div>
       <div style="border-top:1px solid #3a3024;padding-top:8px;display:flex;flex-direction:column;gap:4px">
-        <b style="font-size:13px">🛒 Liste de courses</b>
+        <div style="display:flex;align-items:center;gap:6px"><b style="font-size:13px;flex:1">🛒 Liste de courses</b>
+          <label style="font-size:12px;color:#b9a98c">Tier pour toute la liste <select data-a="tierAll" style="${inp}"><option value="">—</option>${[1, 2, 3, 4, 5].map((n) => `<option value="${n}">T${n}${n === 5 ? ' (Rayonnant)' : ''}</option>`).join('')}</select></label></div>
         <div data-k="cart" style="overflow-y:auto;max-height:30vh;display:flex;flex-direction:column;gap:4px"></div>
       </div>
       <div style="display:flex;gap:8px;align-items:center"><span data-k="msg" style="flex:1;font-size:12px;color:#b9a98c"></span><button data-a="go" style="${btn};background:#8a5a1a">🐉 Lancer le farm</button></div></div>`;
@@ -4679,6 +4681,12 @@
     ov.addEventListener('change', (e) => {
       const t = e.target;
       if (t.dataset.i != null) { if (t.checked) cart.add(+t.dataset.i); else cart.delete(+t.dataset.i); renderCart(); }
+      if (t.dataset.a === 'tierAll' && t.value) {   // tier de toute la liste ; chaque ligne reste modifiable ensuite
+        for (const i of cart) tiers[items[i].c.id] = +t.value;
+        try { localStorage.setItem(DROP_TIERS_KEY, JSON.stringify(tiers)); } catch { /* idem */ }
+        t.value = '';
+        renderCart();
+      }
       if (t.dataset.t != null) {
         tiers[items[+t.dataset.t].c.id] = +t.value;
         try { localStorage.setItem(DROP_TIERS_KEY, JSON.stringify(tiers)); } catch { /* idem */ }
@@ -4687,6 +4695,17 @@
     });
     ov.addEventListener('click', async (e) => {
       if (e.target === ov || e.target.closest('[data-a="x"]')) return close();
+      const sel = e.target.closest('[data-a="all"], [data-a="none"]')?.dataset.a;
+      if (sel) {
+        items.forEach(({ srcs }, i) => {
+          const cb = $(`[data-i="${i}"]`);
+          if (!cb || !srcs.length) return;
+          cb.checked = sel === 'all';
+          if (cb.checked) cart.add(i); else cart.delete(i);
+        });
+        renderCart();
+        return;
+      }
       const rm = e.target.closest('[data-rm]');
       if (rm) { cart.delete(+rm.dataset.rm); const cb = $(`[data-i="${rm.dataset.rm}"]`); if (cb) cb.checked = false; renderCart(); return; }
       if (!e.target.closest('[data-a="go"]') || !cart.size) return;
