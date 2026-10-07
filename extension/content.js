@@ -3004,6 +3004,17 @@
     const { pvOf, paOf, goal, setFx, equipped, ...rest } = r;
     return JSON.parse(JSON.stringify({ ...rest, goalKey, bestiary: r.bestiary ? { count: r.bestiary.count, at: r.bestiary.at, zones } : null }));
   }
+  // Dernière recherche de l'optimiseur (par personnage), réaffichée à la réouverture : localStorage, photo comme un build enregistré.
+  const LAST_BUILD_KEY = 'dmLastBuild';
+  const lastBuildAll = () => { try { return JSON.parse(localStorage.getItem(LAST_BUILD_KEY) || '{}'); } catch { return {}; } };
+  const lastBuild = () => lastBuildAll()[myName() || '?'] || null;
+  function rememberBuild(r) {
+    try {
+      const all = lastBuildAll();
+      all[myName() || '?'] = { at: Date.now(), data: packBuild(r) };
+      localStorage.setItem(LAST_BUILD_KEY, JSON.stringify(all));
+    } catch (e) { DM.log(`optimiseur : dernière recherche non gardée (${e.message})`); }
+  }
   function unpackBuild(d) {
     const r = { ...d, goal: BUILD_GOALS[d.goalKey] || BUILD_GOALS.dps, pvOf: buildPvOf(d.statLevel || d.sheet.level), paOf: buildPaOf(d.statLevel || d.sheet.level) };
     r.target = r.goal.target || null;
@@ -3971,6 +3982,7 @@
           loaded = null;
           say(`Terminé : ${result.evals} builds testés en ${((Date.now() - t0) / 1000).toFixed(1)} s.`);
           render();
+          rememberBuild(result);
         } catch (err) {
           say(`❌ ${err.message || err}`, true);
         } finally {
@@ -4127,6 +4139,16 @@
           Prestige ${r.sheet.prestige} (+${r.sheet.prestige * PRESTIGE_GEAR_PCT} %)${r.sheet.forge ? `, Bouclier de forge niv. ${r.sheet.forge} (+${String(r.sheet.forgePct).replace('.', ',')} %)` : ''}${r.gearMult ? ` → équipement ×${r.gearMult.toFixed(4).replace('.', ',')}` : ''}, niveau ${r.sheet.level}.</details>`;
     }
     if (load) openSave(load);
+    else {   // réouverture : la dernière recherche, sans la relancer
+      const last = lastBuild();
+      if (last) {
+        try {
+          result = unpackBuild(last.data);
+          render();
+          say(`🕘 Dernière recherche (${new Date(last.at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}) : photo de ce moment-là — « Lancer » pour la refaire avec ton inventaire actuel.`);
+        } catch { result = null; }
+      }
+    }
   }
 
   // Favoris : chaque objet se déplie sur ses sources (bestiaire) ; une zone ouvre ses groupes de chasse.
