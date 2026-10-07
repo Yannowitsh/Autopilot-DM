@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <style>
     :root { --bg: #1b1d22; --panel: #262a31; --text: #e8e6e1; --muted: #9aa0a8; --on: #2e7d32; --pause: #b07400; --off: #555; }
-    body { margin: 0; width: 320px; background: var(--bg); color: var(--text); font: 13px system-ui, sans-serif; }
+    body { margin: 0; width: 320px; max-width: 100%; background: var(--bg); color: var(--text); font: 13px system-ui, sans-serif; }
     main { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
     h1 { font-size: 15px; margin: 0; }
     .panel { background: var(--panel); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
@@ -19,6 +19,8 @@
     input, select { background: #14161a; color: var(--text); border: 1px solid #3a3f48; border-radius: 4px; padding: 4px; }
     .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
     #msg { min-height: 1em; }
+    /* Firefox Android : la popup s'ouvre en plein écran, boutons plus faciles à toucher */
+    @media (pointer: coarse) { body { width: auto; font-size: 15px; } button { padding: 12px; } input[type=number] { width: 72px; } }
   </style>
 </head>
 <body>
@@ -30,6 +32,10 @@
       <button id="installUpdate" data-tip="Ouvre la page de mise à jour : télécharge la nouvelle version depuis GitHub, l’écrit dans le dossier de l’extension et la recharge. La première fois, Chrome te demande de choisir ce dossier. Tes réglages sont conservés.">⬇️ Installer</button>
       <button id="openRepo" data-tip="Ouvre la page GitHub de l’extension (code, README, historique des versions).">GitHub</button>
     </div>
+  </div>
+  <div id="hostPerm" class="panel" hidden style="border-color:#8a2b2b">
+    <div>⚠️ L’extension n’a pas encore accès au site du jeu.</div>
+    <button id="grantHost" data-tip="Firefox demande d’autoriser l’accès à dofusmasters.houk.fr (et Discord, GitHub pour les alertes et les mises à jour). Sans ça, le pilote ne peut pas tourner.">🔓 Autoriser l’accès</button>
   </div>
   <button id="toggle" data-tip="Démarre ou arrête le pilote sur l’onglet du jeu actif (ou en ouvre un). Le pilote enchaîne les combats en Auto selon le mode choisi dans les réglages.">…</button>
 

@@ -6,6 +6,11 @@ const DM = {
   REPO: 'Yannowitsh/Autopilot-DM',
   get UPDATE_MANIFEST() { return `https://raw.githubusercontent.com/${DM.REPO}/main/extension/manifest.json`; },
   get REPO_URL() { return `https://github.com/${DM.REPO}`; },
+  // Firefox (ordinateur ou Android) : pas de mise à jour par dossier (File System Access) ni d'échange entre comptes.
+  get IS_FIREFOX() { return chrome.runtime.getURL('').startsWith('moz-extension:'); },
+  get IS_MOBILE() { return /Android|Mobi/i.test(navigator.userAgent); },
+  // Firefox : la version signée (.xpi) est publiée dans les releases GitHub ; Firefox la met aussi à jour tout seul.
+  get RELEASES_URL() { return `https://github.com/${DM.REPO}/releases/latest`; },
   // « 1.32.0 » > « 1.31.4 » ?
   isNewer(a, b) {
     const pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number);

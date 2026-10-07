@@ -201,7 +201,20 @@ $('checkNow').onclick = async () => {
   const upd = DM.pendingUpdate(await DM.getAll());
   $('msg').textContent = upd ? `🆕 Version ${upd} disponible (voir en haut).` : `À jour (v${chrome.runtime.getManifest().version}).`;
 };
-$('installUpdate').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('update.html') });
+// Firefox : pas de mise à jour par dossier → la page des releases GitHub (le .xpi signé ; Firefox se met aussi à jour tout seul).
+$('installUpdate').onclick = () => chrome.tabs.create({ url: DM.IS_FIREFOX ? DM.RELEASES_URL : chrome.runtime.getURL('update.html') });
+if (DM.IS_FIREFOX) $('installUpdate').dataset.tip = 'Ouvre la page de la dernière version sur GitHub : touche le fichier .xpi pour l’installer. Firefox installe aussi les nouvelles versions tout seul. Tes réglages sont conservés.';
+
+// Firefox (Manifest V3) : l'accès aux sites peut ne pas être accordé à l'installation → bouton pour le demander.
+const HOSTS = { origins: chrome.runtime.getManifest().host_permissions };
+async function renderHostPerm() {
+  $('hostPerm').hidden = await chrome.permissions.contains(HOSTS).catch(() => true);
+}
+$('grantHost').onclick = async () => {
+  await chrome.permissions.request(HOSTS).catch(() => false);   // doit partir du clic (geste utilisateur)
+  renderHostPerm();
+};
+renderHostPerm();
 $('openRepo').onclick = () => chrome.tabs.create({ url: DM.REPO_URL });
 loadForm();
 render();

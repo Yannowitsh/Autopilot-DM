@@ -1,0 +1,103 @@
+# Version Firefox (ordinateur et Android) : fabrique le .xpi et le publie dans les releases GitHub.
+#
+# - Push sur main (dossier extension/ modifié) : version signée par Mozilla (liste « unlisted », pas publique sur
+#   addons.mozilla.org), release « v<version> » + updates.json → Firefox installe les mises à jour tout seul.
+# - Push sur une autre branche : build de test, release « test-<branche> » (préversion, remplacée à chaque push).
+#
+# La signature demande deux secrets du dépôt (Settings → Secrets and variables → Actions) :
+#   AMO_JWT_ISSUER et AMO_JWT_SECRET, la clé d'API de https://addons.mozilla.org/developers/addon/api/key/
+# Sans eux, le .xpi n'est pas signé : il ne s'installe que sur Firefox Nightly (signature désactivée).
+name: Firefox
+
+on:
+  push:
+    paths: ['extension/**', '.github/workflows/firefox.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: firefox-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  xpi:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+      AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Vérification (web-ext lint)
+        run: npx --yes web-ext@8 lint -s extension --self-hosted
+
+      - name: Version et type de build
+        id: v
+        run: |
+          base=$(node -p "require('./extension/manifest.json').version")
+          signed=$([ -n "$AMO_JWT_ISSUER" ] && [ -n "$AMO_JWT_SECRET" ] && echo 1 || echo 0)
+          if [ "$GITHUB_REF_NAME" = main ]; then
+            version=$base; tag="v$base"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "La release $tag existe déjà (version pas montée) : rien à publier."; tag=""
+            elif [ "$signed" = 0 ]; then
+              # Une version non signée en « latest » casserait les mises à jour automatiques de Firefox.
+              echo "::warning::Secrets AMO_JWT_ISSUER / AMO_JWT_SECRET absents : pas de release Firefox pour main."; tag=""
+            fi
+          else
+            # Mozilla refuse de signer deux fois la même version : la build de test prend un 4e numéro.
+            version=$([ "$signed" = 1 ] && echo "$base.$GITHUB_RUN_NUMBER" || echo "$base")
+            tag="test-$(echo "$GITHUB_REF_NAME" | tr '/' '-')"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "signed=$signed" >> "$GITHUB_OUTPUT"
+
+      - name: Fabrication du .xpi
+        if: steps.v.outputs.tag != ''
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          SIGNED: ${{ steps.v.outputs.signed }}
+        run: |
+          mkdir -p build dist
+          cp -r extension build/
+          node -e "
+            const fs = require('fs'), p = 'build/extension/manifest.json';
+            const m = JSON.parse(fs.readFileSync(p, 'utf8'));
+            m.version = process.env.VERSION;
+            fs.writeFileSync(p, JSON.stringify(m, null, 2));"
+          if [ "$SIGNED" = 1 ]; then
+            npx --yes web-ext@8 sign -s build/extension -a out --channel=unlisted \
+              --api-key="$AMO_JWT_ISSUER" --api-secret="$AMO_JWT_SECRET" --ignore-files mettre-a-jour.bat
+          else
+            npx --yes web-ext@8 build -s build/extension -a out --ignore-files mettre-a-jour.bat
+          fi
+          mv out/* "dist/autopilot-dm-$VERSION.xpi"
+
+      - name: Publication (release GitHub)
+        if: steps.v.outputs.tag != ''
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          TAG: ${{ steps.v.outputs.tag }}
+          SIGNED: ${{ steps.v.outputs.signed }}
+        run: |
+          xpi="dist/autopilot-dm-$VERSION.xpi"
+          sig=$([ "$SIGNED" = 1 ] && echo "signée par Mozilla" || echo "NON signée : Firefox Nightly uniquement (xpinstall.signatures.required = false)")
+          if [ "$GITHUB_REF_NAME" = main ]; then
+            # Lu par Firefox (update_url du manifest) pour les mises à jour automatiques.
+            cat > dist/updates.json <<EOF
+          {"addons":{"autopilot-dm@yannowitsh":{"updates":[{"version":"$VERSION","update_link":"https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/autopilot-dm-$VERSION.xpi"}]}}}
+          EOF
+            gh release create "$TAG" "$xpi" dist/updates.json --target "$GITHUB_SHA" \
+              --title "Autopilot-DM $VERSION" --notes "Version Firefox ($sig). Sur Android : télécharge le .xpi puis installe-le (voir README, « Version Firefox / Android »)."
+          else
+            gh release delete "$TAG" --cleanup-tag -y >/dev/null 2>&1 || true
+            gh release create "$TAG" "$xpi" --prerelease --target "$GITHUB_SHA" \
+              --title "Test $GITHUB_REF_NAME ($VERSION)" --notes "Build de test de la branche $GITHUB_REF_NAME, commit $GITHUB_SHA ($sig)."
+          fi

@@ -1,6 +1,6 @@
 # Autopilot-DM
 
-Extension Chrome : enchaîne l'Aventure ou la chasse, résout la vérification de présence, surveille l'énergie, échange des objets entre deux comptes via l'HDV et envoie des alertes sur Discord.
+Extension Chrome et Firefox (aussi sur Android) : enchaîne l'Aventure ou la chasse, résout la vérification de présence, surveille l'énergie, échange des objets entre deux comptes via l'HDV et envoie des alertes sur Discord.
 
 ## Installation
 
@@ -21,6 +21,21 @@ Quand une nouvelle version sort, la popup de l'extension l'indique et un message
 En secours, tu peux aussi double-cliquer **`mettre-a-jour.bat`** dans le dossier `extension`, puis recharger l'extension dans `chrome://extensions`.
 
 Tes réglages (webhook Discord, objets verrouillés, file d'échange…) sont conservés : ils sont stockés dans Chrome, pas dans le dossier.
+
+## Version Firefox / Android
+
+La même extension tourne sur **Firefox** (ordinateur et Android, version 142 ou plus). Chrome sur Android et Brave n'acceptent pas les extensions.
+
+1. Sur le téléphone, installe **Firefox** depuis le Play Store.
+2. Télécharge le fichier **`.xpi`** de la [dernière version](https://github.com/Yannowitsh/Autopilot-DM/releases/latest).
+3. Firefox → **Paramètres** → **À propos de Firefox** → touche 5 fois le logo Firefox (menu de débogage), reviens dans **Paramètres** → **Installer le module depuis un fichier** → choisis le `.xpi`.
+4. Sur le site du jeu, menu **⋮** → **Extensions** → **Autopilot-DM** ouvre la popup. Si elle affiche « ⚠️ L'extension n'a pas encore accès au site du jeu », touche **🔓 Autoriser l'accès**.
+
+Firefox installe ensuite les nouvelles versions tout seul (le bouton **⬇️ Installer** ouvre la page de la dernière version).
+
+Sur téléphone, garde Firefox au premier plan et le téléphone branché : tant que le pilote tourne, l'extension garde l'écran allumé ; en veille ou en arrière-plan, Android gèle la page et le farm s'arrête. L'échange entre deux comptes n'est pas disponible sur Firefox.
+
+Les fichiers `.xpi` sont fabriqués par GitHub Actions (`.github/workflows/firefox.yml`) : signés par Mozilla pour chaque nouvelle version de `main` (secrets du dépôt `AMO_JWT_ISSUER` et `AMO_JWT_SECRET`, clé d'API de [addons.mozilla.org](https://addons.mozilla.org/developers/addon/api/key/)), et une préversion de test « test-&lt;branche&gt; » pour chaque push sur une autre branche.
 
 ## Farm de drop
 

@@ -48,6 +48,7 @@
     quiet(() => clearInterval(ticker));
     quiet(() => clearInterval(aliveTimer));
     quiet(() => clearInterval(eqTimer));
+    quiet(() => wakeLock?.release());
     quiet(() => eqAsk?.host.remove());
     quiet(() => domObserver.disconnect());
     quiet(() => ui?.host.remove());
@@ -2392,8 +2393,27 @@
     return true;
   }
 
+  // Android : l'écran reste allumé tant que le pilote tourne sur cet onglet (en veille, le navigateur gèle la page
+  // et le farm s'arrête). Le verrou est rendu par le navigateur quand l'onglet passe en arrière-plan : redemandé au retour.
+  let wakeLock = null, wakeAsking = false;
+  async function keepAwake() {
+    const want = DM.IS_MOBILE && isOwner() && document.visibilityState === 'visible' && !dead;
+    if (want && !wakeLock && !wakeAsking && navigator.wakeLock) {
+      wakeAsking = true;
+      try {
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener('release', () => { wakeLock = null; });
+      } catch { /* refusé (économie d'énergie…) : on réessaiera au prochain tour */ }
+      wakeAsking = false;
+    } else if (!want && wakeLock) {
+      wakeLock.release().catch(() => {});
+      wakeLock = null;
+    }
+  }
+
   async function tick() {
     if (!contextAlive()) { shutdown(); return; }
+    keepAwake();
     if (!isOwner()) return;
     if (stuckCheck() || busy) return;
     busy = true;
