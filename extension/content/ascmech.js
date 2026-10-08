@@ -140,7 +140,10 @@ function planTurn(st, cand, rules) {
   const p = st.fighters.p, round = +st.round || +p.turnNo || 1;
   const enemies = Object.values(st.fighters).filter((f) => f.team !== p.team && f.alive && f.id !== 'p');
   const alive = new Set(enemies.map((f) => f.id));
-  const R = rules.filter((r) => alive.has(r.boss));
+  // « Les mécaniques qui te visent viennent du premier boss encore debout : quand il tombe, le suivant prend le relais. »
+  const order = (st.order || Object.keys(st.fighters)).filter((id) => alive.has(id));
+  const lead = order.find((id) => rules.some((r) => r.boss === id)) ?? order[0];
+  const R = rules.filter((r) => r.boss === lead);
   const has = (k) => R.filter((r) => r.k === k);
   const notes = [];
   const fureur = has('fureur').reduce((m, r) => Math.min(m, r.max), Infinity);

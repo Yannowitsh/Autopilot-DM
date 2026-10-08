@@ -9,7 +9,8 @@
 const ASC_DECK_SIZE = 5;
 const ASC_DECK_SLOT = 5;   // Deck 6 : réservé au deck conseillé
 const SELECT_DECK_FALLBACK = '4073c2992e75439598aa66fea0fe140b07a9d11302';
-const ASC_SIM = { hpPct: 0.7, bossHp: 15000, bossAtk: 1700, bossRes: 30, rounds: [1, 2, 3, 4, 5] };   // boss inconnus avant le combat
+// boss inconnus avant le combat ; chaque boss « mène » (ses mécaniques s'appliquent) pendant 2 tours : 1-2, 3-4, 5-6
+const ASC_SIM = { hpPct: 0.7, bossHp: 15000, bossAtk: 1700, bossRes: 30, roundsPerBoss: 2 };
 
 // Étage, difficulté, boss et decks de la page Ascension.
 async function readAscPage() {
@@ -47,18 +48,21 @@ const usefulCard = (c) => c.usable && !c.once && (c.eff || []).some((e) => e && 
 
 // Score moyen d'un deck sur quelques tours simulés (planTurn : mécaniques, ordre, cibles).
 function evalAscDeck(deck, sim) {
-  let total = 0, dmg = 0;
-  for (const round of ASC_SIM.rounds) {
+  let total = 0, dmg = 0, n = 0;
+  for (let lead = 0; lead < sim.bosses.length; lead++) for (let k = 1; k <= ASC_SIM.roundsPerBoss; k++) {
+    const round = lead * ASC_SIM.roundsPerBoss + k;
+    n++;
     const cards = Object.fromEntries(deck.map((c, i) => [`c${i}`, { ...c, uid: `c${i}`, name: c.n || c.name }]));
     const p = { ...sim.p, cards, hand: Object.keys(cards), ap: sim.p.basePa, hp: sim.p.maxHp * ASC_SIM.hpPct, cardsThisTurn: 0, shields: [],
       lastEl: null, weaponUsed: false, alive: true };
     const fighters = { p };
     sim.bosses.forEach((b, i) => {
+      if (i < lead) return;   // déjà tombé
       const res = Object.fromEntries(EL_RES_PCT.map((k) => [k, ASC_SIM.bossRes]));
       fighters[`b${i}`] = { id: `b${i}`, team: 1, isBoss: true, alive: true, monsterId: b.id, name: b.name, stats: res, resCap: 100,
         hp: ASC_SIM.bossHp, maxHp: ASC_SIM.bossHp, atk: ASC_SIM.bossAtk, intent: { k: 'attack', value: ASC_SIM.bossAtk } };
     });
-    const st = { round, fighters, log: [] };
+    const st = { round, fighters, log: [], order: ['p', ...sim.bosses.map((_, i) => `b${i}`)] };
     const cand = Object.values(cards).map((c) => ({ c, key: c.id, weapon: false, w: weightOf(c).w, ap: +c.ap || 0 }));
     if (p.weaponCard) cand.push({ c: p.weaponCard, key: WEAPON_KEY, weapon: true, w: weightOf(p.weaponCard, true).w, ap: +p.weaponCard.ap || 0 });
     planTurn.lastEl = null;
@@ -66,7 +70,6 @@ function evalAscDeck(deck, sim) {
     total += plan.score;
     dmg += plan.plan.reduce((t, q) => t + (q.x.isDmg && q.target ? cardEffect(q.x.c, p, q.target).dmg : 0), 0);
   }
-  const n = ASC_SIM.rounds.length;
   return { score: total / n, dmg: dmg / n };
 }
 
@@ -134,20 +137,45 @@ async function applyAscDeck(deck, page) {
 }
 
 // ---------- Panneau 🧠 sur /ascension ----------
-let ascPanelFor = null;
+// Il prend la place du bloc « Comment ça marche » de la page (à côté des boss) ; la flèche ⇄ en haut à droite rebascule
+// vers le texte du jeu (choix gardé pour l'onglet). Le site peut re-rendre ce bloc : le panneau (déjà calculé) y est remis.
+// Bloc introuvable : panneau flottant en bas à droite.
+const ASC_VIEW_KEY = 'dmAscView';
+let ascPanelFor = null, ascPanelEl = null;
+const ascShowGame = () => { try { return sessionStorage.getItem(ASC_VIEW_KEY) === 'game'; } catch { return false; } };
 function scanAscPanel() {
   const on = location.pathname.startsWith('/ascension') && modOn('spells');
-  const box = document.querySelector('.dm-asc');
-  if (!on) { box?.remove(); ascPanelFor = null; return; }
-  if (box?.isConnected && ascPanelFor === location.href) return;
-  ascPanelFor = location.href;
-  box?.remove();
-  const el = document.createElement('div');
-  el.className = 'dm-asc';
-  el.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:2147483600;width:min(420px,calc(100vw - 24px));max-height:70vh;overflow:auto;background:#1d1812;border:1px solid #5a4a33;border-radius:12px;padding:10px 12px;font:13px system-ui,sans-serif;color:#eee;box-shadow:0 8px 30px #000a';
-  el.innerHTML = '<b>🧠 Préparer l’étage</b> <span style="color:#b9a98c">lecture de la page…</span>';
-  document.body.appendChild(el);
-  renderAscPanel(el).catch((e) => { el.innerHTML = `<b>🧠 Préparer l’étage</b><div style="color:#ff7b6b">${e.message}</div>`; });
+  if (!on) { document.querySelectorAll('.dm-asc, .dm-asc-toggle').forEach((x) => x.remove()); ascPanelFor = null; ascPanelEl = null; return; }
+  if (ascPanelFor !== location.href || !ascPanelEl) {
+    ascPanelFor = location.href;
+    ascPanelEl = document.createElement('div');
+    ascPanelEl.className = 'dm-asc';
+    ascPanelEl.innerHTML = '<b>🧠 Préparer l’étage</b> <span style="color:#b9a98c">lecture de la page…</span>';
+    renderAscPanel(ascPanelEl).catch((e) => { ascPanelEl.innerHTML = `<b>🧠 Préparer l’étage</b><div style="color:#ff7b6b">${e.message}</div>`; });
+  }
+  const aside = [...document.querySelectorAll('aside')].find((x) => /Comment ça marche/.test(x.querySelector('h3')?.textContent || ''));
+  const el = ascPanelEl;
+  if (!aside) {   // repli : panneau flottant
+    el.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:2147483600;width:min(420px,calc(100vw - 24px));max-height:70vh;overflow:auto;background:#1d1812;border:1px solid #5a4a33;border-radius:12px;padding:10px 12px;font:13px system-ui,sans-serif;color:#eee;box-shadow:0 8px 30px #000a';
+    if (el.parentNode !== document.body) document.body.appendChild(el);
+    return;
+  }
+  el.style.cssText = 'font:13px system-ui,sans-serif;color:#eee';
+  if (getComputedStyle(aside).position === 'static') aside.style.position = 'relative';
+  if (el.parentNode !== aside) aside.appendChild(el);
+  let tg = aside.querySelector(':scope > .dm-asc-toggle');
+  if (!tg) {
+    tg = document.createElement('button');
+    tg.className = 'dm-asc-toggle';
+    tg.style.cssText = 'position:absolute;top:8px;right:8px;z-index:2;border:1px solid #5a4a33;border-radius:8px;padding:2px 8px;background:#2a231a;color:#eee;cursor:pointer;font:600 12px system-ui,sans-serif';
+    tg.onclick = () => { try { sessionStorage.setItem(ASC_VIEW_KEY, ascShowGame() ? 'ext' : 'game'); } catch { /* rien */ } scanAscPanel(); };
+    aside.appendChild(tg);
+  }
+  const game = ascShowGame();
+  tg.textContent = game ? '🧠 ⇄' : '⇄';
+  tg.title = game ? 'Revenir aux infos de l’extension (boss, mécaniques, deck conseillé)' : 'Afficher « Comment ça marche » (texte du jeu)';
+  for (const c of aside.children) if (c !== el && c !== tg) c.style.display = game ? '' : 'none';
+  el.style.display = game ? 'none' : '';
 }
 async function renderAscPanel(el) {
   const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -157,14 +185,13 @@ async function renderAscPanel(el) {
   const list = await bossMechanics();
   const fake = { fighters: { p: { team: 0 }, ...Object.fromEntries(page.bosses.map((b, i) => [`b${i}`, { id: `b${i}`, team: 1, isBoss: true, monsterId: b.id, name: b.name }])) } };
   const rules = fightMechanics(fake, list, page.floor, page.diff);
-  const head = `<div style="display:flex;gap:6px;align-items:center"><b style="flex:1">🧠 Étage ${page.floor ?? '?'}${page.diff ? ` · ${esc(page.diff)}` : ''}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>`;
-  const mech = page.bosses.map((b, i) => `<div style="margin-top:6px"><b>${esc(b.name)}</b>${rules.filter((r) => r.boss === `b${i}`).map((r) => `<div style="font-size:12px;color:#d8cbb3">• <b>${esc(r.name)}</b> — ${esc(r.text)}</div>`).join('') || '<div style="font-size:12px;color:#8a7d66">aucune mécanique connue</div>'}</div>`).join('');
+  const head = `<div style="padding-right:44px"><b style="font-size:15px">🧠 Étage ${page.floor ?? '?'}${page.diff ? ` · ${esc(page.diff)}` : ''}</b><div style="font-size:11px;color:#8a7d66">Mécaniques du premier boss encore debout ; à sa chute, le suivant prend le relais.</div></div>`;
+  const mech = page.bosses.map((b, i) => `<div style="margin-top:6px"><b>${i + 1}. ${esc(b.name)}</b>${rules.filter((r) => r.boss === `b${i}`).map((r) => `<div style="font-size:12px;color:#d8cbb3">• <b>${esc(r.name)}</b> — ${esc(r.text)}</div>`).join('') || '<div style="font-size:12px;color:#8a7d66">aucune mécanique connue</div>'}</div>`).join('');
   const deckNow = page.decks[page.active];
   el.innerHTML = `${head}${mech}
     <div style="margin-top:8px;font-size:12px;color:#b9a98c">Deck actif : <b>${esc(deckNow?.label || '?')}</b> — ${esc((deckNow?.names || []).join(', ') || 'vide')}</div>
     <div style="margin-top:8px"><button data-a="advise" style="${btn};background:#2e6fbf">🃏 Conseiller un deck (${ASC_DECK_SIZE} cartes)</button></div>
     <div data-k="out" style="margin-top:8px"></div>`;
-  el.querySelector('[data-a="x"]').onclick = () => el.remove();
   const out = el.querySelector('[data-k="out"]');
   let advice = null;
   el.querySelector('[data-a="advise"]').onclick = async (e) => {
