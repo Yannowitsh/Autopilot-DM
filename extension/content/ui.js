@@ -241,7 +241,7 @@ function buildUi() {
         <label class="check"><input type="checkbox" data-k="wantedLoop"> Scanner en continu (à chaque renouvellement des groupes)${DM.tip("Relance automatiquement un scan juste après chaque renouvellement des groupes, tant que l’onglet reste ouvert.")}</label>
         <div class="status" data-k="scanMsg"></div>
         <ul class="wanted" data-k="wanted"></ul>
-        <button data-k="farmStats" style="margin-top:6px;width:100%" data-tip="XP et drops (revente marchand) mesurés à chaque combat de chasse, par zone et groupe, ramenés à ta Sagesse / Prospection actuelles ; estimations pour les groupes du dernier scan. Bouton ▶ pour y envoyer le pilote.">📈 Rentabilité des zones</button>
+        <button data-k="farmStats" style="margin-top:6px;width:100%" data-tip="XP et drops (revente marchand) de chaque combat de chasse, calculés monstre par monstre (le nombre de monstres compte), ramenés à ta Sagesse / Prospection actuelles ; mesures partagées via la synchro ; estimations pour les groupes du dernier scan. Bouton ▶ pour y envoyer le pilote.">📈 Rentabilité des zones</button>
       </div>
     </div>
     <div class="bubble" title="Autopilot-DM">🤖</div>

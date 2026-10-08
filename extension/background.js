@@ -233,6 +233,67 @@ async function checkUpdate(force = false) {
   }
 }
 
+// ---------- Synchro des mesures de « Rentabilité des zones » (Worker Cloudflare partagé, voir sync-worker/) ----------
+// Envoie les combats de chasse de tes personnages (farmLog) pas encore envoyés (syncPushed : dernier `at` par perso),
+// puis reçoit ceux des autres joueurs depuis le curseur syncSince → farmShared[joueur] (jamais mélangés à farmLog).
+const SYNC_EVERY_MS = 5 * 60000;
+const SYNC_PUSH = 500;            // combats par envoi (limite du Worker)
+const SYNC_SHARED_MAX = 5000;     // combats gardés au plus par joueur partagé
+let syncing = false;
+
+async function farmSync(force = false) {
+  const s = await DM.getAll();
+  const url = (s.syncUrl || '').trim().replace(/\/+$/, '');
+  if (!url || !s.syncKey) return { ok: false, error: 'synchro non configurée (adresse + clé)' };
+  if (syncing || (!force && Date.now() - (s.syncStatus?.at || 0) < SYNC_EVERY_MS)) return { ok: true, skipped: true };
+  syncing = true;
+  const headers = { Authorization: `Bearer ${s.syncKey}`, 'Content-Type': 'application/json' };
+  let sent = 0, got = 0;
+  try {
+    const log = s.farmLog || {}, pushed = { ...(s.syncPushed || {}) };
+    for (const [p, recs] of Object.entries(log)) {
+      const todo = (recs || []).filter((r) => r.at > (pushed[p] || 0));
+      for (let i = 0; i < todo.length; i += SYNC_PUSH) {
+        const chunk = todo.slice(i, i + SYNC_PUSH);
+        const r = await DM.fetchT(`${url}/fights`, { method: 'POST', headers, body: JSON.stringify({ player: p, fights: chunk }) });
+        if (!r.ok) throw new Error(r.status === 401 ? 'clé refusée' : `envoi : HTTP ${r.status}`);
+        pushed[p] = chunk[chunk.length - 1].at;
+        sent += chunk.length;
+        await chrome.storage.local.set({ syncPushed: pushed });
+      }
+    }
+    const mine = new Set([...Object.keys(log), ...Object.keys(pushed)]);
+    const shared = { ...(s.farmShared || {}) };
+    let since = s.syncSince || 0;
+    for (let page = 0; page < 50; page++) {
+      const r = await DM.fetchT(`${url}/fights?since=${since}`, { headers, cache: 'no-store' });
+      if (!r.ok) throw new Error(r.status === 401 ? 'clé refusée' : `réception : HTTP ${r.status}`);
+      const { fights = [], next } = await r.json();
+      for (const { p, r: rec } of fights) {
+        if (mine.has(p) || !rec?.at || !Array.isArray(rec.m)) continue;
+        (shared[p] ||= []).push(rec);
+        got++;
+      }
+      if (!(next > since)) break;
+      since = next;
+    }
+    for (const p of Object.keys(shared)) {
+      if (mine.has(p)) { delete shared[p]; continue; }
+      shared[p] = shared[p].sort((a, b) => a.at - b.at).slice(-SYNC_SHARED_MAX);
+    }
+    const syncStatus = { at: Date.now(), ok: true, sent, got, players: Object.keys(shared).length };
+    await chrome.storage.local.set({ farmShared: shared, syncSince: since, syncStatus });
+    return syncStatus;
+  } catch (e) {
+    const syncStatus = { at: Date.now(), ok: false, error: e.message, sent, got };
+    await chrome.storage.local.set({ syncStatus });
+    DM.log(`synchro : ${e.message}`);
+    return syncStatus;
+  } finally {
+    syncing = false;
+  }
+}
+
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   ensureAlarm();
   checkUpdate(true);
@@ -247,6 +308,7 @@ chrome.runtime.onStartup.addListener(() => { ensureAlarm(); checkUpdate(); });
 chrome.alarms.onAlarm.addListener(async (a) => {
   if (a.name !== 'main') return;
   checkUpdate();
+  farmSync();
   await bossCheck();
   await buyWatchdog();
   await pilotWatchdog();
@@ -284,6 +346,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return !enabled;
       }
       case 'refreshBoss': await refreshBoss(); return true;
+      case 'farmSync': return farmSync(true);
       case 'checkUpdate': {   // msg.force : bouton « Vérifier maintenant » ; sinon (ouverture de la popup) seulement si la vérif auto est active
         const { updateCheckMin } = await DM.getAll();
         if (msg.force || updateCheckMin > 0) await checkUpdate(true);

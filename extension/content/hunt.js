@@ -445,65 +445,106 @@ function farmOnRewards(st, rewards) {
 
 const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
 
-// Mesures et estimations, par zone + n° de groupe → lignes du classement.
 // Valeur des objets d'un combat recalculée à la Prospection `pp` (chaque objet : chance actuelle / chance d'alors, plafond
 // 90 % ; objet bonus de victoire inchangé). Combats enregistrés sans détail (1.80.0) : proportionnel, sans plafond.
 const farmValueAt = (r, pp) => (r.it
   ? r.it.reduce((s, [v, base]) => s + (base > 0 ? v * dropChance(base, pp) / dropChance(base, r.pp) : v), 0)
   : r.v * (pp || 100) / (r.pp || 100));
 
-function farmRows(log, scan, best, cur) {
-  const sagMul = 1 + (cur.sag || 0) / 100;
-  // xp de base de chaque monstre (nom|niveau) et bonus de groupe réel (par nombre de monstres), appris des combats
-  const mobXp = new Map(), coefs = {};
-  for (const r of log) {
-    let sum = 0;
-    for (const [n, l, x] of r.m) { if (x) mobXp.set(`${normName(n)}|${l}`, x); sum += x; }
+// Modèle par monstre, appris de TOUS les combats (les tiens + ceux partagés par la synchro) :
+// - XP de base de chaque monstre (nom|niveau) et bonus de groupe réel par nombre de monstres ;
+// - kamas par niveau de monstre (médiane, par zone si ≥ 3 combats, sinon toutes zones) ;
+// - drops : valeur moyenne par monstre d'après le bestiaire (à ta Prospection), recalée sur les drops réellement mesurés
+//   (Σ mesuré / Σ prévu, objets bonus de victoire compris) dès 5 combats.
+// → farmPredict(zone, monstres) = ce que rapporte une composition donnée, quel que soit le nombre de monstres.
+function farmModel(all, best, cur) {
+  const mobXp = new Map(), coefs = {}, kpl = { all: [] };
+  let dropMeas = 0, dropPred = 0, nPred = 0;
+  for (const r of all) {
+    let sum = 0, lvl = 0, pred = 0;
+    for (const [n, l, x] of r.m) {
+      if (x) mobXp.set(`${normName(n)}|${l}`, x);
+      sum += x;
+      lvl += +l || 0;
+      pred += best?.get(normName(n)) || 0;
+    }
     if (sum && r.xp) (coefs[r.m.length] ||= []).push(r.xp / (sum * (1 + r.sag / 100)));
+    if (lvl) { kpl.all.push(r.k / lvl); (kpl[r.z] ||= []).push(r.k / lvl); }
+    if (pred) { dropMeas += farmValueAt(r, cur.pp); dropPred += pred; nPred++; }
   }
   const learned = Object.fromEntries(Object.entries(coefs).map(([n, a]) => [n, median(a)]));
-  const ratio = median(Object.entries(learned).map(([n, c]) => c / GROUP_COEF[n]).filter(Boolean)) || 2;
+  const ratio = median(Object.entries(learned).map(([n, c]) => c / GROUP_COEF[Math.min(8, n)]).filter(Boolean)) || 2;
   const coef = (n) => learned[n] || (GROUP_COEF[Math.min(8, n)] || 1) * ratio;
-  const cycle = median(log.map((r) => r.d).filter(Boolean)) || null;   // durée type d'un combat (estimations)
+  const dropCal = nPred >= 5 && dropPred ? Math.min(4, Math.max(0.25, dropMeas / dropPred)) : 1;
+  const kamasPerLvl = (z) => median(kpl[z]?.length >= 3 ? kpl[z] : kpl.all) || 0;
+  const sagMul = 1 + (cur.sag || 0) / 100;
+  // mons : [{ name, lvl }] → { xp (à ta Sagesse) | null si un monstre n'a jamais été combattu à ce niveau, val | null sans bestiaire }
+  const predict = (z, mons) => {
+    const xs = mons.map((m) => mobXp.get(`${normName(m.name)}|${m.lvl}`));
+    const lvl = mons.reduce((s, m) => s + (+m.lvl || 0), 0);
+    return {
+      xp: mons.length && xs.every(Boolean) ? xs.reduce((a, b) => a + b, 0) * coef(mons.length) * sagMul : null,
+      val: best ? mons.reduce((s, m) => s + (best.get(normName(m.name)) || 0), 0) * dropCal + kamasPerLvl(z) * lvl : null,
+    };
+  };
+  return { predict, learned, dropCal };
+}
+
+// Lignes du classement, par zone + n° de groupe (ce que farme ▶ : le groupe n° N, renouvelé toutes les ~3 min).
+// Un même n° de groupe change de composition (2 monstres puis 6…) : la moyenne brute des combats mélange tout. On prend
+// donc, pour chaque composition déjà vue sous ce n° (combats, tiens ou partagés, + dernier scan), ce que le modèle par
+// monstre en prévoit, et on en fait la moyenne. La moyenne brute mesurée reste affichée en info-bulle.
+// Durée : tes combats seulement (elle dépend de ton build) — ce groupe, sinon la zone, sinon ta durée type.
+function farmRows(log, shared, scan, best, cur) {
+  const all = [...log, ...shared];
+  const { predict, learned, dropCal } = farmModel(all, best, cur);
+  const sagMul = 1 + (cur.sag || 0) / 100;
+  const cycle = median(log.map((r) => r.d).filter(Boolean)) || null;   // ta durée type d'un combat
+  const zoneDur = {};
   const rows = new Map();
   const row = (z, g, zn) => {
     const k = `${z}|${g}`;
-    if (!rows.has(k)) rows.set(k, { z, g, zn: zn || '', meas: null, est: null });
+    if (!rows.has(k)) rows.set(k, { z, g, zn: zn || '', meas: null, now: null, samples: [] });
     const r = rows.get(k);
     if (zn && !r.zn) r.zn = zn;
     return r;
   };
-  for (const r of log) {
+  const addFight = (r, own) => {
     const o = row(r.z, r.g, r.zn);
-    const m = o.meas ||= { n: 0, xp: 0, v: 0, k: 0, d: [], last: 0 };
+    const m = o.meas ||= { n: 0, mine: 0, xp: 0, v: 0, k: 0, d: [], last: 0 };
     m.n++;
+    if (own) m.mine++;
     m.xp += r.xp / (1 + r.sag / 100);
     m.v += farmValueAt(r, cur.pp);
     m.k += r.k;
-    if (r.d) m.d.push(r.d);
+    if (own && r.d) { m.d.push(r.d); (zoneDur[r.z] ||= []).push(r.d); }
     m.last = Math.max(m.last, r.at);
-  }
-  for (const o of rows.values()) {
-    const m = o.meas;
-    if (!m) continue;
-    const dur = median(m.d) || cycle;
-    o.xp = m.xp / m.n * sagMul;
-    o.val = (m.v + m.k) / m.n;
-    o.dur = dur;
-  }
-  // estimations : groupes du dernier scan (xp si tous les monstres sont connus ; drops via le bestiaire, prospection comprise)
+    o.samples.push(r.m.map(([name, lvl]) => ({ name, lvl })));
+  };
+  log.forEach((r) => addFight(r, true));
+  shared.forEach((r) => addFight(r, false));
   for (const z of scan?.zones || []) {
     for (const g of z.groups || []) {
       const mons = g.monsters.map((x) => (typeof x === 'string' ? { name: x } : x));
-      const xs = mons.map((m) => mobXp.get(`${normName(m.name)}|${m.lvl}`));
-      const xp = xs.every(Boolean) ? xs.reduce((a, b) => a + b, 0) * coef(mons.length) * sagMul : null;
-      const val = best ? mons.reduce((s, m) => s + (best.get(normName(m.name)) || 0), 0) : null;
       const o = row(z.id, g.n, z.name);
-      o.est = { xp, val, mons: mons.map((m) => `${m.name}${m.lvl ? ` ${m.lvl}` : ''}`) };
-      if (o.xp == null) { o.xp = xp; o.val = val; o.dur = cycle; o.estOnly = true; }
+      o.now = { mons: mons.map((m) => `${m.name}${m.lvl ? ` ${m.lvl}` : ''}`), ...predict(z.id, mons) };
+      o.samples.push(mons);
     }
   }
-  return { rows: [...rows.values()], cycle, learned };
+  const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+  for (const o of rows.values()) {
+    const preds = o.samples.map((mons) => predict(o.z, mons));
+    const m = o.meas;
+    const measXp = m ? m.xp / m.n * sagMul : null, measVal = m ? (m.v + m.k) / m.n : null;
+    o.xp = mean(preds.map((p) => p.xp).filter((x) => x != null)) ?? measXp;
+    o.val = mean(preds.map((p) => p.val).filter((x) => x != null)) ?? measVal;
+    o.measXp = measXp;
+    o.measVal = measVal;
+    o.comps = new Set(o.samples.map((mons) => mons.map((x) => `${normName(x.name)}|${x.lvl}`).sort().join(','))).size;
+    o.dur = median(m?.d || []) || median(zoneDur[o.z] || []) || cycle;
+    o.estOnly = !m;
+  }
+  return { rows: [...rows.values()], cycle, learned, dropCal };
 }
 
 // Valeur de drop moyenne d'un monstre à la Prospection `pp` (bestiaire : chance de base par objet × pp / 100, 90 % au plus)
@@ -536,11 +577,12 @@ async function openFarmStats() {
   const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:4px 9px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
   const inp = 'background:#241e16;color:#eee;border:1px solid #5a4a33;border-radius:6px;padding:3px 6px;font:12px system-ui,sans-serif';
   ov.innerHTML = `<div style="width:min(900px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
-    <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📈 Rentabilité des zones${DM.tip('Mesuré : chaque victoire en chasse est enregistrée (XP, kamas, objets lâchés au prix de revente marchand), par zone et n° de groupe. L’XP est ramenée à 0 de Sagesse et chaque objet lâché recalculé à ta Prospection actuelle (+1 % de chance par point, 90 % au plus par objet ; objet bonus de victoire inchangé) : changer d’équipement ne fausse pas le classement.&#10;≈ Estimé : groupes du dernier scan des zones ; XP si chaque monstre a déjà été combattu à ce niveau (bonus de groupe appris en jeu), drops d’après le bestiaire (chance de base × ta Prospection / 100, 90 % au plus par objet ; objets bonus de victoire non comptés). Les kamas ne sont pas estimés.&#10;/min : avec la durée réelle entre deux combats (relance comprise).&#10;▶ envoie le pilote farmer ce groupe en mode chasse.')}</b>
+    <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📈 Rentabilité des zones${DM.tip('Chaque victoire en chasse est enregistrée (XP, kamas, objets lâchés au prix de revente marchand), ramenée à 0 de Sagesse et à ta Prospection actuelle : changer d’équipement ne fausse pas le classement.&#10;Le nombre de monstres compte : un n° de groupe change de composition à chaque renouvellement (2 monstres puis 6…). Pour chaque composition vue sous ce n° (combats + dernier scan), on calcule ce qu’elle rapporte monstre par monstre — XP de base × bonus de groupe appris en jeu, drops du bestiaire recalés sur tes drops réels, kamas par niveau de monstre — puis on fait la moyenne. La moyenne brute est en info-bulle.&#10;≈ : groupe jamais combattu (composition du dernier scan seulement ; XP si chaque monstre a déjà été combattu à ce niveau).&#10;Combats : les tiens, + ceux reçus par la synchro (en bleu). /min : avec TA durée réelle entre deux combats.&#10;▶ envoie le pilote farmer ce groupe en mode chasse.')}</b>
       <button data-a="x" style="${btn};background:transparent">✕</button></div>
     <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:12px">
       <label>Trier par <select data-f="sort" style="${inp}"><option value="xpMin">XP / min</option><option value="xp">XP / combat</option><option value="valMin">Kamas + drops / min</option><option value="val">Kamas + drops / combat</option></select></label>
       <label><input type="checkbox" data-f="est"> estimations (≈)</label>
+      <label title="Combats reçus par la synchro (popup de l’extension)"><input type="checkbox" data-f="shared"> mesures partagées</label>
       <label>Niveau max <input type="number" data-f="lvl" min="0" max="200" style="${inp};width:60px" placeholder="—"></label>
       <span data-k="cur" style="color:#b9a98c;margin-left:auto"></span>
     </div>
@@ -550,10 +592,11 @@ async function openFarmStats() {
       <button data-a="clear" style="${btn}" title="Effacer toutes les mesures de ce personnage — 2e clic pour confirmer">🗑️ Effacer les mesures</button></div></div>`;
   document.body.appendChild(ov);
   const $ = (q) => ov.querySelector(q);
-  let prefs = { sort: 'xpMin', est: true, lvl: '' };
+  let prefs = { sort: 'xpMin', est: true, shared: true, lvl: '' };
   try { prefs = { ...prefs, ...JSON.parse(localStorage.getItem('dmFarmStatsPrefs') || '{}') }; } catch { /* défaut */ }
   $('[data-f="sort"]').value = prefs.sort;
   $('[data-f="est"]').checked = prefs.est;
+  $('[data-f="shared"]').checked = prefs.shared;
   $('[data-f="lvl"]').value = prefs.lvl;
   let bc = null, bz = null, best = null, bestPp = null;
   try {
@@ -570,7 +613,8 @@ async function openFarmStats() {
     const cur = farmChar() || (last ? { sag: last.sag, pp: last.pp } : { sag: 0, pp: 100 });
     $('[data-k="cur"]').textContent = `Sagesse ${fmt(cur.sag)} · Prospection ${fmt(cur.pp)}`;
     if (bc && bestPp !== cur.pp) { best = bestiaryMobValue(bc, cur.pp); bestPp = cur.pp; }
-    const { rows, cycle } = farmRows(log, cfg.wantedScan, best, cur);
+    const shared = prefs.shared ? Object.values(cfg.farmShared || {}).flat() : [];
+    const { rows, cycle, dropCal } = farmRows(log, shared, cfg.wantedScan, best, cur);
     const lvlMax = +prefs.lvl || 0;
     const zoneLvl = (z) => bz?.[z]?.[1];
     for (const r of rows) {
@@ -585,17 +629,19 @@ async function openFarmStats() {
     $('[data-k="tbl"]').innerHTML = shown.length ? `<tr><th style="${th}">#</th><th style="${th}">Zone · groupe</th><th style="${th}">Combats</th><th style="${th}">XP / combat</th><th style="${th}">XP / min</th><th style="${th}">Kamas + drops / combat</th><th style="${th}">/ min</th><th style="${th}"></th></tr>`
       + shown.map((r, i) => {
         const e = r.estOnly ? '≈ ' : '';
-        const tip = [r.meas && `${r.meas.n} combat(s) mesuré(s), dernier ${new Date(r.meas.last).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}`,
-          r.dur && `durée type ${Math.round(r.dur / 1000)} s`, r.est && `dernier scan : ${r.est.mons.join(', ')}`,
-          r.est && !r.estOnly && `estimé : ${fmt(r.est.xp)} XP, ${fmt(r.est.val)} K de drops`].filter(Boolean).join('\n');
+        const tip = [r.meas && `${r.meas.mine} combat(s) à toi${r.meas.n > r.meas.mine ? ` + ${r.meas.n - r.meas.mine} partagé(s)` : ''}, dernier ${new Date(r.meas.last).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}`,
+          `moyenne de ${r.comps} composition(s) vue(s) sous ce n° de groupe`,
+          r.meas && `moyenne brute mesurée : ${fmt(r.measXp)} XP, ${fmt(r.measVal)} K`,
+          r.dur && `durée type ${Math.round(r.dur / 1000)} s`,
+          r.now && `groupe du dernier scan : ${r.now.mons.join(', ')} → ≈ ${fmt(r.now.xp)} XP, ${fmt(r.now.val)} K`].filter(Boolean).join('\n');
         return `<tr title="${esc(tip)}" style="${r.estOnly ? 'color:#b9a98c;font-style:italic' : ''}"><td style="${td}">${i + 1}</td>
           <td style="${td}">${esc(r.name)}${zoneLvl(r.z) != null ? ` <span style="color:#8a7d66">niv. ${bz[r.z][1]}–${bz[r.z][2]}</span>` : ''} · G${r.g}</td>
-          <td style="${td}">${r.meas ? r.meas.n : '—'}</td><td style="${td}">${e}${fmt(r.xp)}</td><td style="${td}">${e}${fmt(r.xpMin)}</td>
+          <td style="${td}">${r.meas ? `${r.meas.mine}${r.meas.n > r.meas.mine ? ` <span style="color:#7fb2ff">+${r.meas.n - r.meas.mine}</span>` : ''}` : '—'}</td><td style="${td}">${e}${fmt(r.xp)}</td><td style="${td}">${e}${fmt(r.xpMin)}</td>
           <td style="${td}">${e}${fmt(r.val)}</td><td style="${td}">${e}${fmt(r.valMin)}</td>
           <td style="${td}"><button data-farm="${i}" style="${btn};background:#2e7d32" title="Farmer ce groupe (mode chasse, pilote démarré)">▶</button></td></tr>`;
       }).join('')
       : '<tr><td style="color:#b9a98c;padding:8px">Rien à classer : gagne des combats en chasse (ils sont enregistrés automatiquement), ou lance un scan des zones et coche « estimations ».</td></tr>';
-    $('[data-k="foot"]').textContent = `${log.length} combat(s) enregistré(s)${cycle ? ` · durée type d’un combat ${Math.round(cycle / 1000)} s` : ''}`
+    $('[data-k="foot"]').textContent = `${log.length} combat(s) enregistré(s)${shared.length ? ` + ${shared.length} partagé(s)` : ''}${dropCal !== 1 ? ` · drops du bestiaire × ${dropCal.toFixed(2)} (recalage sur les mesures)` : ''}${cycle ? ` · durée type d’un combat ${Math.round(cycle / 1000)} s` : ''}`
       + `${cfg.wantedScan?.finishedAt ? ` · scan du ${new Date(cfg.wantedScan.finishedAt).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}` : ' · aucun scan'}`;
   };
   render();

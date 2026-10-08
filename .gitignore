@@ -1,3 +1,8 @@
 Thumbs.db
 .DS_Store
 *.har
+
+# Worker de synchro
+sync-worker/.wrangler/
+sync-worker/node_modules/
+sync-worker/.dev.vars
