@@ -156,7 +156,7 @@ async function openSampleFarm() {
     const rows = zones.map((z) => ({ ...z, c: counts.get(z.id) || { n: 0, sizes: {} } })).sort((a, b) => a.c.n - b.c.n || b.lvlMin - a.lvlMin);
     const todo = rows.reduce((s, r) => s + Math.max(0, o.target - r.c.n), 0);
     const done = rows.filter((r) => r.c.n >= o.target).length;
-    $('[data-k="sum"]').textContent = zones.length ? `${zones.length} zone(s) accessible(s) · ${done} à l’objectif · ~${fmt(todo)} combat(s) à faire`
+    $('[data-k="sum"]').textContent = zones.length ? `Objectif : ${o.target} combats dans CHACUNE des ${zones.length} zone(s) · ${done} déjà à ${o.target} (ignorée(s)) · ${zones.length - done} à compléter, soit ~${fmt(todo)} combat(s) au total`
       : 'Aucune zone accessible dans cette plage de niveaux.';
     $('[data-k="list"]').innerHTML = rows.map((r) => {
       const pct = Math.min(100, r.c.n / o.target * 100);
