@@ -38,6 +38,7 @@ window.addEventListener('message', (e) => {
     const obj = JSON.parse(e.data.line);
     const st = obj.state;
     if (obj.rewards && st?.status && st.status !== 'ongoing') { dropOnRewards(obj.rewards, `${st.kind}|${st.logCount}`); farmOnRewards(st, obj.rewards); }
+    if (st?.status && st.status !== 'ongoing') combatOnEnd(st, obj.rewards);
     if (!st?.fighters?.p?.stats || !st.log?.some((L) => L.t === 'play' && L.who === 'p')) return;
     const fighters = Object.fromEntries(Object.entries(st.fighters).map(([id, f]) => [id,
       { id, name: f.name, kind: f.kind, team: f.team, level: f.level, maxHp: f.maxHp, stats: f.stats, resCap: f.resCap, buffs: f.buffs }]));
@@ -205,7 +206,7 @@ function damageTest(fight, spells) {
       const fatal = log[j + 1]?.t === 'death' && log[j + 1].who === D.who;
       const secondary = !!L.target && D.who !== L.target;   // autre cible touchée par la zone
       const row = { card: L.card, ap: card?.ap, target: tg.name, el: D.el, v: (+D.v || 0) + (+D.absorbed || 0), crit, fatal, buffed,
-        secondary };
+        secondary, pos: li >= 0 ? `${li + 1}/${lines.length}` : null, base: e ? `${e.min}-${e.max ?? e.min}` : null };
       if (e) {
         const n = e.k === 'poison' ? Math.max(1, +(e.turns || e.dur) || 1) : 1;
         const mult = 1 + (S(EL_STAT[D.el]) + S('puissance')) / 100, fixed = S('dommages') + S(EL_DMG[D.el]);
@@ -221,7 +222,13 @@ function damageTest(fight, spells) {
       rows.push(row);
     }
   }
-  return { rows, stats };
+  // détails bruts pour l'analyse : cartes jouées (lignes complètes) et buffs du journal / des combattants
+  const played = [...new Set(log.filter((L) => L.t === 'play' && L.who === 'p').map((L) => L.card))];
+  const cards = played.map((n) => [n, byName.get(n)]).filter(([, c]) => c)
+    .map(([n, c]) => `${n} : ${c.ap} PA, cc ${c.cc ?? 0} % — ${JSON.stringify((c.eff || []).filter((e) => DMG_FIXED.has(e.k) || DMG_VARIABLE.has(e.k)))}`);
+  const buffs = log.filter((L) => L.t === 'buff').map((L) => JSON.stringify(L));
+  const fbuffs = Object.values(fight.fighters).filter((f) => f.buffs && (!Array.isArray(f.buffs) || f.buffs.length)).map((f) => `${f.name} : ${JSON.stringify(f.buffs)}`);
+  return { rows, stats, cards, buffs, fbuffs };
 }
 
 function openDamageTest(spells) {
@@ -242,7 +249,7 @@ function openDamageTest(spells) {
     document.body.appendChild(ov);
     return;
   }
-  const { rows, stats } = damageTest(fight, spells);
+  const { rows, stats, cards, buffs, fbuffs } = damageTest(fight, spells);
   const EL = (el) => ELEMENTS[el]?.name || '?';
   const r1 = (x) => Math.round(x);
   const statLine = Object.entries(stats).filter(([, v]) => +v).map(([k, v]) => `${k} ${v}`).join(', ');
@@ -250,7 +257,10 @@ function openDamageTest(spells) {
     `Test calcul dégâts — combat ${fight.kind || ''} du ${new Date(fight.at).toLocaleString('fr-FR')} (${fight.status || ''})`,
     `Stats : ${statLine}`,
     ...rows.map((r) => `${r.card} (${r.ap ?? '?'} PA) → ${r.target} : ${r.v} ${EL(r.el)}${r.crit ? ' CRIT' : ''}${r.secondary ? ' [zone ×0,6]' : ''}${r.fatal ? ' (coup fatal)' : ''}${r.buffed ? ' [buff]' : ''}`
-      + (r.lo != null ? ` | estimé ${r1(r.lo)}-${r1(r.hi)} sans rés. | ${r1(r.loR)}-${r1(r.hiR)} avec rés. (${r.rp} %, ${r.rf} fixe) | ratio ${r.ratio.toFixed(2)}` : ` | ${card(r)}`)),
+      + (r.pos ? ` | ligne ${r.pos} base ${r.base}` : '') + (r.lo != null ? ` | estimé ${r1(r.lo)}-${r1(r.hi)} sans rés. | ${r1(r.loR)}-${r1(r.hiR)} avec rés. (${r.rp} %, ${r.rf} fixe) | ratio ${r.ratio.toFixed(2)}` : ` | ${card(r)}`)),
+    '', 'Cartes jouées (lignes de dégâts) :', ...cards,
+    '', `Buffs du journal : ${buffs.length ? '' : 'aucun'}`, ...buffs,
+    ...(fbuffs.length ? ['Buffs des combattants (fin de combat) :', ...fbuffs] : []),
   ].join('\n');
   const okRows = rows.filter((r) => r.lo != null && !r.fatal && !r.buffed);
   function card(r) { return r.ap == null ? 'arme ou carte hors collection : non gérée' : 'ligne de la carte introuvable'; }

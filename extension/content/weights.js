@@ -180,6 +180,7 @@ async function weightedFight(manual = null) {
       if (pick) { casts[pick.key] = p.turnNo; keepCasts(); }
       st = res.state;
       if (res.rewards && st.status !== 'ongoing') { dropOnRewards(res.rewards, `${st.kind}|${st.logCount}`); farmOnRewards(st, res.rewards); }
+      if (st.status !== 'ongoing') combatOnEnd(st, res.rewards);
     }
     if (st.status !== 'ongoing') DM.log(`auto par poids : combat ${st.status === 'won' ? 'gagné' : 'perdu'}`);
   } catch (e) {

@@ -21,6 +21,16 @@ Vérification : `https://dm-sync.<compte>.workers.dev/health` doit afficher `ok`
 Popup de l'extension → **Synchro des mesures** : adresse du Worker + clé → **🔄 Enregistrer + synchroniser**.
 Dans 📈 Rentabilité des zones, la colonne « Combats » montre les tiens + ceux reçus (en bleu) ; la case « mesures partagées » les retire du calcul.
 
+## Combats enregistrés (analyse des dégâts)
+
+Avec l'option **Enregistrer mes combats en ligne** (popup, activée par défaut), chaque combat terminé est envoyé complet
+(`POST /combats`) : état du serveur (stats de tous les combattants, buffs, journal des coups), récompenses, cartes jouées
+(lignes de dégâts) et photo du build (fiche : niveau, prestige, Bouclier de forge, points ; équipement porté avec fusions ; parchemins).
+
+- Liste : `GET /combats?since=0&limit=100` (en-tête `Authorization: Bearer <clé>`) ; avec `&full=1` (20 au plus) : combats complets.
+- En SQL : `npx wrangler d1 execute dm-sync --remote --command "SELECT seq, player, kind, status, at FROM combats ORDER BY seq DESC LIMIT 20"`
+- Purge : `npx wrangler d1 execute dm-sync --remote --command "DELETE FROM combats"`
+
 ## Divers
 
 - Domaine perso : Cloudflare → Workers → dm-sync → Settings → Domains & Routes → Custom domain (le domaine doit être sur Cloudflare).

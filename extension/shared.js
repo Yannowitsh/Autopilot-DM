@@ -55,6 +55,7 @@ const DM = {
     huntZone: null,      // id de zone (/chasse?zone=…)
     huntGroup: null,     // n° de groupe choisi à la main en jeu (null = le plus dur)
     huntZoneName: '',
+    combatUpload: true,  // enregistre chaque combat terminé (stats, build, journal des coups) sur le Worker de synchro
     updateCheckMin: 180, // vérification d'une nouvelle version sur GitHub, en minutes (0 = jamais automatiquement)
     wins: 0,
     losses: 0,

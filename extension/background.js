@@ -294,6 +294,48 @@ async function farmSync(force = false) {
   }
 }
 
+// ---------- Enregistrement en ligne des combats (option combatUpload, même Worker et même clé que la synchro) ----------
+// Les onglets du jeu remettent chaque combat terminé (content/combatrec.js) ; file d'attente gardée ici jusqu'à l'envoi
+// (POST /combats), réessayée à chaque alarme. Sans adresse / clé de synchro : les combats restent en file (COMBAT_QUEUE_MAX).
+const COMBAT_QUEUE_MAX = 30;
+const COMBAT_REC_MAX = 1500000;   // taille max d'un combat (JSON), limite du Worker
+let combatChain = Promise.resolve();
+const combatLocked = (fn) => (combatChain = combatChain.then(fn, fn));
+
+function combatEnqueue(rec) {
+  return combatLocked(async () => {
+    const { combatQueue = [] } = await chrome.storage.local.get('combatQueue');
+    if (JSON.stringify(rec).length > COMBAT_REC_MAX) { DM.log(`combat en ligne : combat trop gros, ignoré (${rec.kind})`); return; }
+    if (!combatQueue.some((r) => r.id === rec.id)) combatQueue.push(rec);
+    await chrome.storage.local.set({ combatQueue: combatQueue.slice(-COMBAT_QUEUE_MAX) });
+  });
+}
+
+function combatPush() {
+  return combatLocked(async () => {
+    const s = await DM.getAll();
+    const queue = s.combatQueue || [];
+    if (!queue.length) return;
+    if (s.combatUpload === false) { await chrome.storage.local.set({ combatQueue: [] }); return; }
+    const url = (s.syncUrl || '').trim().replace(/\/+$/, '');
+    if (!url || !s.syncKey) return;
+    const headers = { Authorization: `Bearer ${s.syncKey}`, 'Content-Type': 'application/json' };
+    let sent = 0;
+    try {
+      for (const rec of queue) {
+        const r = await DM.fetchT(`${url}/combats`, { method: 'POST', headers, body: JSON.stringify({ player: rec.player || rec.acct || '?', combat: rec }) });
+        if (!r.ok) throw new Error(r.status === 401 ? 'clé refusée' : r.status === 404 ? 'Worker pas à jour (npx wrangler deploy)' : `HTTP ${r.status}`);
+        sent++;
+      }
+      await chrome.storage.local.set({ combatQueue: [], combatStatus: { at: Date.now(), ok: true, sent, total: (s.combatStatus?.total || 0) + sent } });
+    } catch (e) {
+      await chrome.storage.local.set({ combatQueue: queue.slice(sent),
+        combatStatus: { at: Date.now(), ok: false, error: e.message, sent, total: (s.combatStatus?.total || 0) + sent } });
+      DM.log(`combat en ligne : ${e.message}`);
+    }
+  });
+}
+
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   ensureAlarm();
   checkUpdate(true);
@@ -309,6 +351,7 @@ chrome.alarms.onAlarm.addListener(async (a) => {
   if (a.name !== 'main') return;
   checkUpdate();
   farmSync();
+  combatPush();
   await bossCheck();
   await buyWatchdog();
   await pilotWatchdog();
@@ -347,6 +390,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       case 'refreshBoss': await refreshBoss(); return true;
       case 'farmSync': return farmSync(true);
+      case 'combatRec': await combatEnqueue({ ...msg.rec, player: msg.rec.player || msg.rec.acct }); combatPush(); return { ok: true };
       case 'checkUpdate': {   // msg.force : bouton « Vérifier maintenant » ; sinon (ouverture de la popup) seulement si la vérif auto est active
         const { updateCheckMin } = await DM.getAll();
         if (msg.force || updateCheckMin > 0) await checkUpdate(true);

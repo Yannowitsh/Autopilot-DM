@@ -43,4 +43,5 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   lockTimer = setInterval(lockTick, 60000);
   setTimeout(lockTick, 4000 + Math.random() * 4000);
   tick();
+  setTimeout(() => combatFlush(), 3000);   // combats terminés juste avant un rechargement
 })();

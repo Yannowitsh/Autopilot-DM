@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 const NUM = ['minEnergy', 'resumeEnergy', 'delayMin', 'delayMax', 'fastFightMinSec', 'huntRetries', 'errorReloadSec', 'reloadGapSec', 'updateCheckMin', 'equipCheckMin'];
-const BOOL = ['sellKeepAbove', 'bossAuto', 'fastFight'];
+const BOOL = ['sellKeepAbove', 'bossAuto', 'fastFight', 'combatUpload'];
 
 async function render() {
   const s = await DM.getAll();
@@ -217,6 +217,9 @@ async function renderSync() {
     : !st ? 'Jamais synchronisée.'
     : `${st.ok ? '✔' : `⚠️ ${st.error} —`} ${DM.hhmm(st.at)} · ${shared} combat(s) partagé(s) de ${Object.keys(s.farmShared || {}).length} joueur(s)`
       + (st.sent || st.got ? ` · dernier passage : ${st.sent} envoyé(s), ${st.got} reçu(s)` : '');
+  const cs = s.combatStatus, q = (s.combatQueue || []).length;
+  $('combatMsg').textContent = s.combatUpload === false ? '' : [cs && `${cs.ok ? '✔' : `⚠️ ${cs.error} —`} ${DM.hhmm(cs.at)} · ${cs.total} combat(s) enregistré(s)`,
+    q && `${q} en attente${s.syncUrl && s.syncKey ? '' : ' (adresse + clé à renseigner)'}`].filter(Boolean).join(' · ');
 }
 $('syncNow').onclick = async () => {
   const syncUrl = $('syncUrl').value.trim().replace(/\/+$/, '');
@@ -236,7 +239,8 @@ $('syncNow').onclick = async () => {
   await chrome.runtime.sendMessage({ type: 'farmSync' });
   renderSync();
 };
-chrome.storage.onChanged.addListener((ch) => { if (ch.syncStatus || ch.farmShared) renderSync(); });
+$('combatUpload').onchange = () => chrome.storage.local.set({ combatUpload: $('combatUpload').checked });
+chrome.storage.onChanged.addListener((ch) => { if (ch.syncStatus || ch.farmShared || ch.combatStatus || ch.combatQueue) renderSync(); });
 renderSync();
 
 // ---------- Journal de débogage ----------
@@ -248,7 +252,7 @@ $('logCopy').onclick = async () => {
   const { debugLog = [] } = await chrome.storage.local.get('debugLog');
   const s = await DM.getAll();
   // contexte utile, sans le webhook Discord ni le journal lui-même
-  const { webhookUrl, debugLog: _, huntZones, wantedScan, lockedItems, lockState, farmLog, farmShared, syncKey, syncPushed, tradeQueues, tradeHistory, tradeLastRun, buildSaves, buildFavs, ...state } = s;
+  const { webhookUrl, debugLog: _, huntZones, wantedScan, lockedItems, lockState, farmLog, farmShared, syncKey, syncPushed, combatQueue, tradeQueues, tradeHistory, tradeLastRun, buildSaves, buildFavs, ...state } = s;
   await navigator.clipboard.writeText(`version ${chrome.runtime.getManifest().version}\nétat ${JSON.stringify(state)}\n\n${debugLog.join('\n')}`);
   $('logInfo').textContent = `Copié (${debugLog.length} lignes) : colle-le dans la discussion.`;
 };
