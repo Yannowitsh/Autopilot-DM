@@ -165,15 +165,16 @@ function planTurn(st, cand, rules) {
   const apRule = has('apExact').find((r) => r.turn === round);
   if (apRule) notes.push(`finir à ${apRule.ap} PA`);
   // Échange de vie : boss à ménager avant son tour… sauf si on peut l'abattre d'ici là (plus d'échange, ni de ses
-  // autres mécaniques : il ne mène plus). Dégâts possibles par tour sur lui : ses meilleures cartes (N si Fureur) + l'arme.
+  // autres mécaniques : il ne mène plus). Nos tours jusqu'au sien compris (on joue avant lui) ; dégâts possibles par tour
+  // sur lui : nos 4 meilleures cartes + l'arme.
   const killableBy = (id, turns) => {
     const f = st.fighters[id];
     const per = cand.filter((x) => !x.weapon && damageLines(x.c, fighterStat(p)).length).map((x) => cardEffect(x.c, p, f).dmg).sort((a, b) => b - a)
-      .slice(0, fureur < Infinity ? fureur : 4).reduce((t, d) => t + d, 0)
+      .slice(0, 4).reduce((t, d) => t + d, 0)   // 4 cartes : la Fureur se paie (bouclier), cf. Auto du jeu
       + cand.filter((x) => x.weapon).reduce((t, x) => t + cardEffect(x.c, p, f).dmg, 0);
     return (+f.hp || 0) <= per * turns;
   };
-  const swapProt = new Set(has('swap').filter((r) => round < r.turn && !killableBy(r.boss, r.turn - round)).map((r) => r.boss));
+  const swapProt = new Set(has('swap').filter((r) => round < r.turn && !killableBy(r.boss, r.turn - round + 1)).map((r) => r.boss));
   const swapRush = has('swap').filter((r) => round < r.turn && !swapProt.has(r.boss));
   if (swapRush.length) notes.push(`abattre ${swapRush.map((r) => st.fighters[r.boss]?.name).join(', ')} avant le tour ${swapRush[0].turn}`);
   if (swapProt.size) notes.push(`Échange de vie : ménager ${[...swapProt].map((id) => st.fighters[id]?.name).join(', ')}`);
@@ -220,7 +221,8 @@ function planTurn(st, cand, rules) {
       if (!(count > r.max && ehp[r.boss] > 0)) continue;
       const boosted = nextHitOf(st.fighters[r.boss]) * (r.mult || 2);
       const shieldNow = (p.shields || []).reduce((t, x) => t + (+x.v || +x.value || +x.amount || 0), 0) + (seq.some((q) => q.x.shield) ? Math.max(...seq.filter((q) => q.x.shield).map((q) => shieldOf(q.x.c, p).v)) : 0);
-      s -= boosted >= hp + shieldNow ? 1e9 : SELF_W * boosted * (1 - 1 / (r.mult || 2));
+      // surcoût de l'attaque amplifiée, en partie absorbé par le bouclier posé ce tour
+      s -= boosted >= hp + shieldNow ? 1e9 : SELF_W * Math.max(0, boosted * (1 - 1 / (r.mult || 2)) - shieldNow / 2);
     }
     if (!best || s > best.s + 1e-6 || (Math.abs(s - best.s) <= 1e-6 && seq.length < best.seq.length)) best = { s, seq };
     if (allDead) return;
@@ -244,7 +246,8 @@ function planTurn(st, cand, rules) {
           const d = cardEffect(x.c, p, f).dmg;
           if (d >= nh[f.id] && !(reviveAt[f.id] && !nh[`r:${f.id}`])) return 1e12 + d;   // coup fatal
           const extra = reviveAt[f.id] && !nh[`r:${f.id}`] ? (+f.maxHp || 0) * reviveAt[f.id] / 100 : 0;
-          return Math.max(1, +f.atk || incomingOf(f) || 1) * d / Math.max(1, nh[f.id] + extra);
+          const rush = swapRush.some((q) => q.boss === f.id) ? 10 : 1;   // à abattre avant son Échange de vie : en priorité
+          return rush * Math.max(1, +f.atk || incomingOf(f) || 1) * d / Math.max(1, nh[f.id] + extra);
         };
         target = ok.sort((a, b) => threat(b) - threat(a))[0];
         const pass = shieldRule && !shieldUp ? shieldRule.pass / 100 : 1;
@@ -271,7 +274,12 @@ function planTurn(st, cand, rules) {
         gain += Math.min(maxHp - hp, x.w * 20);
       } else if (!x.shield && !apGainOf(x.c)) gain += x.w * 5;   // buff… : valeur tirée de son poids
       // bouclier : PV épargnés sur les attaques à venir (une seule fois par tour)
-      if (x.shield && !seq.some((q) => q.x.shield)) { const sh = shieldOf(x.c, p); gain += Math.min(sh.v, safety * sh.dur); }
+      // bouclier : PV épargnés, comptés comme nos PV (× SELF_W, comme les PV perdus) ; relancé, il remplace ce qui reste
+      // du précédent (l'Auto du jeu relance Vertu chaque tour : 3 046 à chaque fois)
+      if (x.shield && !seq.some((q) => q.x.shield)) {
+        const sh = shieldOf(x.c, p), left = (p.shields || []).reduce((t, z) => t + (+z.v || +z.value || +z.amount || 0), 0);
+        gain += SELF_W * Math.max(0, Math.min(sh.v, safety * sh.dur) - left);
+      }
       if (x.shield && shieldRule && !shieldUp) gain += 5000;   // Peau dure : le bouclier d'abord
       const wave = ondePct > 0 && x.isDmg && !x.weapon && lastEl != null && x.firstEl === lastEl;
       if (wave) self += maxHp * ondePct / 100;
