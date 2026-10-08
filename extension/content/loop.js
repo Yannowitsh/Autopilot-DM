@@ -83,6 +83,8 @@ async function step() {
         setStatus(`Défaite — nouvel essai ${cfg.lossStreak}/${maxRetries()}…`);
         await sleep(relaunchDelay());
         if (!isOwner()) return;
+        // deck auto : la défaite apporte des infos (mécaniques, stats des boss) → deck recalculé depuis la page Ascension
+        if (isAsc() && cfg.ascAutoDeck && modOn('spells')) { endRetries = 0; return goHome(); }
         const autoRetry = weightsOn() ? null : findBtn(/^Réessayer en auto$/i);
         const retry = autoRetry || findBtn(isHunt() ? HUNT_RETRY : isAsc() ? /^Réessayer l.étage$/i : /^Réessayer l.étape$/i);
         if (!retry) return;
@@ -115,6 +117,8 @@ async function step() {
       if (!isOwner()) return;
       // Bouton « en auto » de préférence ; sinon relance simple, le mode Auto sera activé dans le combat.
       const autoNext = weightsOn() ? null : findBtn(AUTO_NEXT);
+      // deck auto : on repasse par la page Ascension pour voir les boss de l'étage suivant et préparer le deck
+      if (isAsc() && cfg.ascAutoDeck && modOn('spells')) { endRetries = 0; return goHome(); }
       const next = autoNext || findBtn(isHunt() ? HUNT_RETRY : isAsc() ? /^Étage suivant$/ : /^Étape suivante$/);
       if (!next) return;
       await save({ botFight: true, ...(isAsc() && cfg.ascFloor ? { ascFloor: cfg.ascFloor + 1, ascDiff: null, ascBosses: null } : {}) });   // difficulté de l'étage suivant : inconnue
@@ -220,6 +224,8 @@ async function step() {
       if (!off) return progress();
     }
     if (!(await gate())) return progress();
+    // option « deck auto » : deck conseillé enregistré et activé avant le lancement (la page est rechargée s'il change)
+    if (!(await ascPrepareDeck())) return progress();
     const label = start()?.textContent.trim();
     if (!label) return;
     setStatus(`Ascension : ${label.toLowerCase()}…`);

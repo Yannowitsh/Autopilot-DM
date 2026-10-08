@@ -155,6 +155,34 @@ async function applyAscDeck(deck, page) {
   await callAction('ascension', selId, [ASC_DECK_SLOT]);
 }
 
+// ---------- Deck automatique (pilote) ----------
+// cfg.ascAutoDeck : avant de lancer un étage, le deck conseillé est enregistré dans le Deck 6 et activé s'il diffère du
+// deck actif. Un seul calcul par étage, boss et nombre d'essais connus (une défaite apporte des infos : on recalcule).
+// Renvoie false si la page va être rechargée (deck changé) : le pilote attend.
+async function ascPrepareDeck() {
+  if (!cfg.ascAutoDeck || !modOn('spells')) return true;
+  try {
+    const page = await readAscPage();
+    if (!page.floor || !page.bosses.length) return true;
+    const attempts = await ascSeenAll(page.floor).catch(() => []);
+    const sig = `${page.floor}|${page.bosses.map((b) => b.id).join(',')}|${attempts.length}`;
+    if (cfg.ascDeckSig === sig) return true;
+    const adv = await adviseAscDeck(page, (m) => setStatus(`Ascension étage ${page.floor} : ${m}`));
+    const now = (page.decks[page.active]?.names || []).slice().sort().join('|');
+    const want = adv.deck.map((c) => c.n).sort().join('|');
+    await save({ ascDeckSig: sig });
+    if (now === want) { DM.log(`ascension étage ${page.floor} : deck actif déjà conseillé`); return true; }
+    setStatus(`Ascension étage ${page.floor} : deck conseillé → Deck ${ASC_DECK_SLOT + 1}…`);
+    await applyAscDeck(adv.deck, page);
+    DM.log(`ascension étage ${page.floor} : deck auto ${adv.deck.map((c) => c.n).join(', ')} (−${adv.remove.map((c) => c.n).join(', ') || '∅'} / +${adv.add.map((c) => c.n).join(', ') || '∅'})`);
+    location.reload();
+    return false;
+  } catch (e) {
+    DM.log(`ascension : deck auto impossible (${e.message}) — deck actuel gardé`);
+    return true;
+  }
+}
+
 // ---------- Panneau 🧠 sur /ascension ----------
 // Il prend la place du bloc « Comment ça marche » de la page (à côté des boss) ; la flèche ⇄ en haut à droite rebascule
 // vers le texte du jeu (choix gardé pour l'onglet). Le site peut re-rendre ce bloc : le panneau (déjà calculé) y est remis.
@@ -214,7 +242,9 @@ async function renderAscPanel(el) {
     ${hist ? `<div style="margin-top:8px"><b style="font-size:12px">📜 Essais à cet étage</b>${hist}</div>` : ''}
     <div style="margin-top:8px;font-size:12px;color:#b9a98c">Deck actif : <b>${esc(deckNow?.label || '?')}</b> — ${esc((deckNow?.names || []).join(', ') || 'vide')}</div>
     <div style="margin-top:8px"><button data-a="advise" style="${btn};background:#2e6fbf">🃏 Conseiller un deck (${ASC_DECK_SIZE} cartes)</button></div>
+    <label style="display:flex;gap:6px;align-items:center;margin-top:6px;font-size:12px;color:#d8cbb3;cursor:pointer" title="Avec le pilote en Ascension : avant chaque étage, le deck conseillé est enregistré dans le Deck ${ASC_DECK_SLOT + 1} et activé s’il diffère du deck actif ; recalculé après une défaite. Après une victoire, le pilote repasse par cette page pour voir les boss suivants."><input type="checkbox" data-a="autodeck"${cfg.ascAutoDeck ? ' checked' : ''}> 🤖 Pilote : appliquer le deck conseillé avant chaque étage</label>
     <div data-k="out" style="margin-top:8px"></div>`;
+  el.querySelector('[data-a="autodeck"]').onchange = (e) => save({ ascAutoDeck: e.target.checked, ascDeckSig: null });
   const out = el.querySelector('[data-k="out"]');
   let advice = null;
   el.querySelector('[data-a="advise"]').onclick = async (e) => {
