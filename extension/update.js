@@ -65,6 +65,8 @@ async function readManifest(dir) {
 async function checkFolder(dir) {
   const m = await readManifest(dir);
   if (!m || !OUR_NAMES.test(m.name)) throw new Error(`« ${dir.name} » n’est pas le dossier de l’extension (pas de manifest.json d’Autopilot-DM dedans).`);
+  // dossier déjà plus récent que la version chargée (copie de travail git, mettre-a-jour.bat…) : il suffit de recharger
+  if (DM.isNewer(m.version, CUR)) throw Object.assign(new Error(`Le dossier contient déjà la version ${m.version}.`), { reload: m.version });
   if (m.version !== CUR) {
     throw new Error(`Le dossier « ${dir.name} » contient la version ${m.version}, alors que l’extension chargée est en ${CUR}. `
       + 'Choisis le dossier indiqué dans chrome://extensions → Détails → « Chargée depuis ».');
@@ -109,7 +111,7 @@ async function install() {
     let dir = await getDir();
     if (dir && !(await access(dir))) throw new Error('Autorisation de modifier le dossier refusée.');
     if (dir) {
-      try { await checkFolder(dir); } catch (e) { log(`${e.message} Choisis-le à nouveau.`, 'err'); dir = null; }
+      try { await checkFolder(dir); } catch (e) { if (e.reload) throw e; log(`${e.message} Choisis-le à nouveau.`, 'err'); dir = null; }
     }
     if (!dir) {
       log('Choix du dossier de l’extension…');
@@ -149,7 +151,11 @@ async function install() {
     log('Les onglets du jeu ouverts vont se recharger tout seuls.', 'muted');
     setTimeout(() => chrome.runtime.sendMessage({ type: 'reloadExtension' }), 1500);
   } catch (e) {
-    if (e.name === 'AbortError') log('Choix du dossier annulé.', 'err');
+    if (e.reload) {
+      log(`${e.message} Rechargement de l’extension…`, 'ok');
+      log('Les onglets du jeu ouverts vont se recharger tout seuls.', 'muted');
+      setTimeout(() => chrome.runtime.sendMessage({ type: 'reloadExtension' }), 1500);
+    } else if (e.name === 'AbortError') log('Choix du dossier annulé.', 'err');
     else log(`❌ ${e.message}`, 'err');
   } finally {
     busy = false;
