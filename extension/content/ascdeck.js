@@ -182,7 +182,10 @@ async function ascOptimizerData(floor) {
     const names = new Set(page?.decks?.[page.active]?.names || []);
     for (const c of cards) if (names.has(c.n)) for (const e of c.eff || []) if (e?.k === 'shieldHp' && e.tgt === 'self') shieldPct = Math.max(shieldPct, (+e.min || 0) / Math.max(1, +e.dur || 1));
   } catch { /* sans boucliers */ }
-  return { floor: +floor, diff: att.diff || null, from: att.player, at: att.at, bosses, shieldPct, rules };
+  // passif de classe : bonus moyen sur un combat (dégâts, dégâts subis) — classe du dernier combat capté
+  const cp = classOf(lastFight()?.fighters?.p?.breedId);
+  return { floor: +floor, diff: att.diff || null, from: att.player, at: att.at, bosses, shieldPct, rules,
+    classMult: cp?.avg || 1, classTaken: cp?.avgTaken || 1, className: cp?.name || null };
 }
 // Marge de survie d'un build : PV effectifs ÷ dégâts encaissés le temps de tout tuer (> 1 : on gagne).
 // Boss tués dans l'ordre de menace ; chacun frappe (son élément, nos rés. plafonnées) jusqu'à sa mort.
@@ -193,11 +196,11 @@ function ascSurvival(S, pv, dpt, asc, avgRes) {
   for (const b of order) {
     const r = b.res.reduce((t, x) => t + x, 0) / 5 / 100;
     const eff = b.maxHp * (1 + b.revive / 100) * (1 - avgRes) / Math.max(0.05, 1 - r);   // dégâts « contre la moyenne » à fournir
-    const t = eff / Math.max(1, dpt);
+    const t = eff / Math.max(1, dpt * (asc.classMult || 1));
     T += t;
     const el = b.element ?? 1;
     const rp = Math.min(PLAYER_RES_CAP, S[EL_RES_PCT[el]] || 0), rf = S[EL_RES[el]] || 0;
-    const hit = Math.max(0, b.atk * b.factor - rf) * (1 - rp / 100);
+    const hit = Math.max(0, b.atk * b.factor - rf) * (1 - rp / 100) * (asc.classTaken || 1);
     taken += hit * T;
     per.push({ name: b.name, turns: t, hit });
   }

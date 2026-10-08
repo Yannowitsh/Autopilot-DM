@@ -58,7 +58,7 @@ function selfCheckFight(st) {
     if (!st?.fighters?.p) return;
     // 1. calcul des dégâts : coups comparables (hors coups fatals), journal complet seulement
     if (!(+st.logFrom > 0) && !((+st.logCount || 0) > (st.log?.length || 0))) {
-      const { rows } = damageTest({ fighters: st.fighters, log: st.log, logCount: st.logCount }, []);
+      const { rows } = damageTest({ fighters: st.fighters, log: st.log, logCount: st.logCount, at: Date.now() }, []);
       const s = selfState();
       const d = (s.dmg ||= { hits: [] });
       for (const r of rows) {

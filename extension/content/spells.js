@@ -283,8 +283,11 @@ function damageTest(fight, spells) {
   };
   let pTurn = 0;
   const S = (k) => (+stats[k] || 0) + buffs.reduce((s, b) => s + (b.stat === k && pTurn < b.from + b.turns ? b.v : 0), 0);
-  let passive = 0;   // % de dégâts du passif de classe, mis à jour au fil du journal
-  const pct = () => (1 + S('dmgPctSorts') / 100) * (1 + passive / 100);
+  // passif de classe (classes.js) rejoué au fil du journal ; PV des combattants suivis (Sram, Sacrieur…)
+  const tr = classTracker(P.breedId, +fight.at || Date.now());
+  const hpNow = Object.fromEntries(Object.values(fight.fighters).map((f) => [f.id, +f.maxHp || 0]));
+  let castMult = 1;
+  const pct = () => (1 + S('dmgPctSorts') / 100) * castMult;
   // cartes de l'état de combat (lignes critiques comprises), sinon celles de la collection
   const byName = new Map(spells.map((sp) => [sp.name, sp.card]));
   for (const c of [...Object.values(P.cards || {}), P.weaponCard]) if (c?.name) byName.set(c.name, { ...byName.get(c.name), ...c, n: c.name });
@@ -294,9 +297,15 @@ function damageTest(fight, spells) {
     const L = log[i];
     if (L.t === 'turn' && L.who === 'p') pTurn++;
     if (L.t === 'buff') addBuff(i, L);
-    if (L.t === 'passive' && L.who === 'p') passive = passiveOf(L).dmg;
+    if (L.t === 'turn' && L.who === 'p') tr.turn();
+    if (L.t === 'passive' && L.who === 'p') tr.passiveLog(L.text);
+    if (L.t === 'dmg' && L.who in hpNow) hpNow[L.who] -= +L.v || 0;
+    if (L.t === 'heal' && L.who in hpNow) hpNow[L.who] = Math.min(+fight.fighters[L.who]?.maxHp || Infinity, hpNow[L.who] + (+L.v || 0));
     if (L.t !== 'play' || L.who !== 'p') continue;
     const card = byName.get(L.card);
+    const pct0 = (id) => hpNow[id] / Math.max(1, +fight.fighters[id]?.maxHp || 1);
+    castMult = card ? tr.mult(card, { tgtId: L.target, tgtPct: pct0(L.target), selfPct: pct0('p') }) : 1;
+    if (card && !card.weapon) tr.cast(card, { tgtId: L.target });
     const lines = card ? damageLines(card, S).filter(({ e }) => !(e.chance != null && +e.chance < 100)) : [];
     const used = new Set();
     // cible principale : celle visée ; si elle meurt, l'ennemi touché par une ligne suivante devient la cible principale

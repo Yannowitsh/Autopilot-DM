@@ -95,7 +95,7 @@ function cardEffectRaw(card, p, tgt) {
   const S = fighterStat(p);
   const lines = damageLines(card, S);
   const critP = +card.cc > 0 ? Math.min(1, Math.max(0, (+card.cc + S('critique')) / 100)) : 0;
-  const pct = (1 + S('dmgPctSorts') / 100) * (1 + (+p.passiveDmg || 0) / 100);   // passif de classe (« Mots »)
+  const pct = 1 + S('dmgPctSorts') / 100;   // le passif de classe est appliqué par le plan (classTracker)
   let dmg = 0, steal = 0;
   for (const { e, c, el, first } of lines) {
     if (e.chance != null && +e.chance < 100) continue;
@@ -144,7 +144,6 @@ const AP_REMOVE_CUT = 0.3;   // PA retirés à l'ennemi : sa prochaine attaque e
 // cand : cartes jouables [{ c, key, weapon, w, ap }] ; rules : fightMechanics(...). Renvoie la 1re carte de la meilleure
 // suite { pick, target } (ou null = finir le tour) et les mécaniques en jeu ce tour (texte court).
 function planTurn(st, cand, rules) {
-  if (st.fighters?.p && st.log) { const pv = lastPassive(st.log); st.fighters.p.passiveDmg = pv.dmg; st.fighters.p.passiveHeal = pv.heal; }
   const p = st.fighters.p, round = +st.round || +p.turnNo || 1;
   const enemies = Object.values(st.fighters).filter((f) => f.team !== p.team && f.alive && f.id !== 'p');
   const alive = new Set(enemies.map((f) => f.id));
@@ -207,7 +206,9 @@ function planTurn(st, cand, rules) {
     const rp = Math.min(50, fighterStat(p)(EL_RES_PCT[el]));
     return (+f.atk || 0) * 1.7 * (1 - rp / 100);
   };
-  const safety = enemies.reduce((t, f) => t + incomingOf(f), 0) + maxHp * 0.05;
+  // passif de classe : rejoué sur le journal, puis suivi carte par carte dans la recherche (Iop, Forgelance, Enutrof…)
+  const tr0 = classTrackerFromLog(st);
+  const safety = enemies.reduce((t, f) => t + incomingOf(f), 0) * tr0.taken() + maxHp * 0.05;   // Féca, Zobal : dégâts subis réduits
   const ondePct = Math.max(0, ...has('onde').map((r) => r.pct));
   const fureurRules = has('fureur');
   let best = null;
@@ -215,7 +216,7 @@ function planTurn(st, cand, rules) {
   // Recherche en profondeur : ordre des cartes, cible de chacune, PV des ennemis et du joueur estimés au fil de la suite.
   // Score en PV : dégâts utiles infligés (sans l'excédent), + bonus par ennemi tué (son attaque ne viendra plus),
   // − SELF_W × PV perdus par nous-mêmes (onde de choc, soins maudits, coups renvoyés, Fureur).
-  const dfs = (seq, used, ap, lastEl, count, hp, ehp, shieldUp, score) => {
+  const dfs = (seq, used, ap, lastEl, count, hp, ehp, shieldUp, score, tr) => {
     const allDead = enemies.every((f) => ehp[f.id] <= 0);
     let s = score;
     if (apRule) s -= Math.abs(ap - apRule.ap) * 1e6;   // PA comptés : sinon il nous pulvérise
@@ -255,9 +256,10 @@ function planTurn(st, cand, rules) {
         };
         target = ok.sort((a, b) => threat(b) - threat(a))[0];
         const pass = shieldRule && !shieldUp ? shieldRule.pass / 100 : 1;
+        const cm = tr.mult(x.c, { tgtId: target.id, tgtPct: nh[target.id] / Math.max(1, +target.maxHp || 1), selfPct: hp / maxHp });   // passif de classe
         const hit = (f, part) => {
           const e = cardEffect(x.c, p, f);
-          const d = e.dmg * part * pass;
+          const d = e.dmg * part * pass * cm;
           if (mirrored.has(f.id)) { self += d; return e; }   // Miroir : le coup nous revient
           const before = nh[f.id];
           nh[f.id] -= d;
@@ -295,11 +297,13 @@ function planTurn(st, cand, rules) {
       const left = hp - self + healUse;
       const killsAll = enemies.every((f) => nh[f.id] <= 0);
       if (self > 0 && left < safety && !(killsAll && left > 0)) continue;
+      const tr2 = tr.clone();
+      if (!x.weapon) tr2.cast(x.c, { tgtId: target?.id });
       dfs([...seq, { x, target }], used | (1 << i), ap - x.ap + apGainOf(x.c), x.isDmg && !x.weapon ? x.lastEl : lastEl, count + (x.weapon ? 0 : 1),
-        left, nh, shieldUp || x.shield, score + gain - SELF_W * self);
+        left, nh, shieldUp || x.shield, score + gain - SELF_W * self, tr2);
     }
   };
-  dfs([], 0, +p.ap || 0, startLast, cardsDone, +p.hp || 0, Object.fromEntries(enemies.map((f) => [f.id, +f.hp || 0])), shieldUp0, 0);
+  dfs([], 0, +p.ap || 0, startLast, cardsDone, +p.hp || 0, Object.fromEntries(enemies.map((f) => [f.id, +f.hp || 0])), shieldUp0, 0, tr0);
   const first = best?.seq[0];
   return { pick: first?.x || null, target: first?.target || null, plan: best?.seq || [], notes, score: best?.s || 0 };
 }
