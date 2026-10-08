@@ -44,6 +44,28 @@ async function onPlayPause() {
   }
 }
 
+// Bulles ⚔️ / 🍀 : équipements enregistrés n° 1 (Combat : stuff dégâts) et n° 2 (Loot : stuff prospection), équipés d'un clic.
+const GEAR_BUBBLES = [{ icon: '⚔️', label: 'Combat' }, { icon: '🍀', label: 'Loot' }];
+const presetName = (slot) => cfg.lockState?.[myName() || '']?.presets?.find((x) => +x.slot === slot)?.name;
+let gearBusy = false;
+async function onGearPreset(slot, el) {
+  if (gearBusy) return;
+  const b = GEAR_BUBBLES[slot], name = presetName(slot) || `équipement ${slot + 1}`;
+  gearBusy = true;
+  el.classList.add('busy');
+  try {
+    await equipGearPreset(slot);
+    DM.log(`équipement rapide : ${b.label} (« ${name} ») équipé`);
+    tradeToast(`${b.icon} ${b.label} : « ${name} » équipé`, 'ok');
+    if (/^\/(personnage|inventaire)/.test(location.pathname)) setTimeout(() => location.reload(), 600);   // page à jour
+  } catch (e) {
+    tradeToast(`${b.icon} ${b.label} : ${e.message}`, 'err');
+  } finally {
+    gearBusy = false;
+    el.classList.remove('busy');
+  }
+}
+
 // ---------- Bulle en bas à gauche + menu (pilote, chasse, autosell) ----------
 // Shadow DOM : le CSS du site (Tailwind) ne déteint pas sur le menu, et inversement.
 const MENU_CSS = `
@@ -54,7 +76,10 @@ const MENU_CSS = `
     background: #262a31; border: 3px solid var(--st, #666); box-shadow: 0 2px 10px rgba(0,0,0,.5); transition: transform .15s; }
   .bubble:hover { transform: scale(1.08); }
   .bubble.play { bottom: 64px; left: 16px; width: 36px; height: 36px; font-size: 15px; border-width: 2px; color: #fff; }
-  .panel:not([hidden]) ~ .bubble.play { display: none; }
+  .panel:not([hidden]) ~ .bubble.play, .panel:not([hidden]) ~ .bubble.gear { display: none; }
+  .bubble.gear { bottom: 64px; width: 36px; height: 36px; font-size: 16px; border-width: 2px; border-color: #8a6d3b; }
+  .bubble.gear.g0 { left: 60px; } .bubble.gear.g1 { left: 104px; }
+  .bubble.gear.busy { opacity: .5; cursor: progress; }
   .bubble.fav { left: 64px; width: 36px; height: 36px; bottom: 16px; font-size: 16px; border-width: 2px; border-color: #c0485a; }
   .panel { position: fixed; left: 12px; bottom: 64px; z-index: 2147483647; width: 290px; max-width: calc(100vw - 24px);
     max-height: calc(100vh - 80px); overflow-y: auto; background: #1b1d22; color: #e8e6e1;
@@ -246,13 +271,16 @@ function buildUi() {
     </div>
     <div class="bubble" title="Autopilot-DM">🤖</div>
     <div class="bubble fav" data-mod="build" title="Favoris : builds enregistrés et objets à looter">❤️</div>
-    <div class="bubble play" data-k="play"></div>`;
+    <div class="bubble play" data-k="play"></div>
+    <div class="bubble gear g0" data-gear="0">⚔️</div>
+    <div class="bubble gear g1" data-gear="1">🍀</div>`;
   DM.installTips(root);
   const $ = (k) => root.querySelector(`[data-k="${k}"]`);
   const panel = root.querySelector('.panel');
   const bubble = root.querySelector('.bubble');
   root.querySelector('.bubble.fav').addEventListener('click', () => { setOpen(false); openFavorites(); });
   root.querySelector('.bubble.play').addEventListener('click', onPlayPause);
+  for (const g of root.querySelectorAll('.bubble.gear')) g.addEventListener('click', () => onGearPreset(+g.dataset.gear, g));
 
   // Ouverture du panneau mémorisée pour l'onglet : il reste ouvert après les rechargements de l'avance rapide.
   const setOpen = (open) => {

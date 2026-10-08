@@ -235,6 +235,21 @@ async function fetchPresets() {
   return props && props.presets.map((p) => ({ slot: p.slot, name: String(p.name || `Équipement ${(+p.slot || 0) + 1}`), items: (p.items || []).filter(Boolean) }));
 }
 
+// Équipe un équipement enregistré d'un coup : server action « equipGearPreset(n° 0, 1…) » de /personnage.
+const PRESET_ACTION_FALLBACK = '40d5fbc32d1885b3936085996df300c1581f064912';
+let presetActionId = null;
+async function equipGearPreset(slot) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await callAction('personnage', presetActionId || PRESET_ACTION_FALLBACK, [slot]);
+    } catch (e) {
+      // ID périmé (nouveau déploiement du site) : relu une fois dans les chunks de /personnage
+      if (e.game || attempt) throw e;
+      presetActionId = await findAction((await fetchFlight('/personnage')).chunks, 'equipGearPreset', PRESET_ACTION_FALLBACK);
+    }
+  }
+}
+
 // Synchronise les cadenas du jeu et l'état de l'extension. `unlock` : clés à déverrouiller (✕ dans le menu de l'extension) ;
 // `ifStale` : seulement si la dernière synchro a plus de LOCK_SYNC_MS. Une seule synchro à la fois par profil de navigateur
 // (Web Locks : les onglets d'un même compte ne se marchent pas dessus ; la navigation privée a les siens).

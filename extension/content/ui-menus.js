@@ -329,6 +329,10 @@ function renderUi() {
     pb.style.borderColor = on ? '#d66' : '#5c5';
     pb.title = on ? 'Pause : arrêter le pilote' : 'Lecture : enchaîner les combats de cette page en boucle (chasse, aventure, ascension)';
   }
+  for (const g of ui.root.querySelectorAll('.bubble.gear')) {
+    const slot = +g.dataset.gear, b = GEAR_BUBBLES[slot];
+    g.title = `${b.label} : équiper « ${presetName(slot) || `équipement enregistré n° ${slot + 1}`} » (équipement enregistré n° ${slot + 1} de la page Personnage)`;
+  }
   if (ui.panel.hidden) return;
 
   const $ = ui.$;
