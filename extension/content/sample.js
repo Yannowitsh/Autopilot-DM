@@ -107,13 +107,15 @@ async function sampleEnd(status, msg) {
 }
 const sampleStop = (reason) => sampleEnd(`Échantillonnage arrêté : ${reason}`.slice(0, 200), `⏹️ **Échantillonnage arrêté** : ${reason}`);
 
-async function startSample({ min, max, target, zones }) {
-  if (dropOn()) await dropStop('remplacé par 🧪 Échantillonnage');
+async function startSample({ min, max, target, zones }, say = () => {}) {
+  if (dropOn()) { say('Arrêt du farm de drop…'); await dropStop('remplacé par 🧪 Échantillonnage', false); }
   const run = { active: true, startedAt: Date.now(), min, max, target, zones, skipped: [], zone: null,
     prev: sampleOn() ? cfg.sampleRun.prev : { mode: cfg.mode, huntZone: cfg.huntZone, huntZoneName: cfg.huntZoneName, huntGroup: cfg.huntGroup } };
   if (!sampleLeft(run).length) throw new Error('toutes ces zones ont déjà assez de combats');
   await save({ sampleRun: run, mode: 'chasse', pauseReason: null });
+  say('Démarrage du pilote…');
   await send({ type: 'claim', start: true }).catch(() => {});   // le pilote démarre sur cet onglet
+  say(`Direction ${sampleLeft(run)[0]?.name || 'la 1re zone'}…`);
   await sampleGoZone('départ');
 }
 
@@ -190,7 +192,7 @@ async function openSampleFarm() {
     if (o.min > o.max) { $('[data-k="msg"]').textContent = 'Niveau min > niveau max.'; return; }
     try {
       $('[data-k="msg"]').textContent = 'Lancement…';
-      await startSample({ ...o, zones: pick(o) });
+      await startSample({ ...o, zones: pick(o) }, (t) => { $('[data-k="msg"]').textContent = t; });
       ov.remove();
     } catch (err) { $('[data-k="msg"]').textContent = `❌ ${err.message}`; }
   });

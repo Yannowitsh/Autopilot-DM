@@ -159,10 +159,11 @@ function dropOnRewards(rewards, key) {
 }
 
 // Fin du farm : pilote arrêté, mode précédent rétabli.
-async function dropEnd(status, msg) {
+// fuse = false : remplacé par une autre activité, on ne la fait pas attendre (fusions faites toutes les 5 min pendant le farm)
+async function dropEnd(status, msg, fuse = true) {
   const run = cfg.dropRun;
   if (!run) return;
-  if (cfg.dropAutoFuse !== false) {
+  if (fuse && cfg.dropAutoFuse !== false) {
     try { await fuseTowards(new Map(run.items.map((it) => [it.id, it.tier || 1]))); } catch { /* fusion facultative */ }
   }
   const prev = run.prev || {};
@@ -172,7 +173,7 @@ async function dropEnd(status, msg) {
 }
 const dropFinish = () => dropEnd('Farm de drop terminé ✔',
   `✅ **Farm de drop terminé** : tout est droppé (${(cfg.dropRun?.items || []).map((it) => `${it.name} ×${it.need}`).join(', ')}). Pilote arrêté.`);
-const dropStop = (reason) => dropEnd(`Farm de drop arrêté : ${reason}`.slice(0, 200), `⏹️ **Farm de drop arrêté** : ${reason}`);
+const dropStop = (reason, fuse = true) => dropEnd(`Farm de drop arrêté : ${reason}`.slice(0, 200), `⏹️ **Farm de drop arrêté** : ${reason}`, fuse);
 
 // Lancement depuis l'optimiseur : items = [{ id, name, icon, tier, srcs }], zoneNames = { id: libellé }.
 async function startDropFarm(items, zoneNames) {
