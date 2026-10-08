@@ -132,7 +132,7 @@ async function openSampleFarm() {
   const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:5px 10px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
   const inp = 'background:#2a231a;border:1px solid #5a4a33;border-radius:8px;color:#eee;padding:3px 6px;font:13px system-ui,sans-serif;width:64px';
   ov.innerHTML = `<div style="width:min(680px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
-    <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🧪 Échantillonner les zones${DM.tip('Pour fiabiliser 📈 Rentabilité des zones : le pilote farme en chasse jusqu’à avoir au moins N combats mesurés (victoires) dans chaque zone choisie.&#10;Comptés : tes combats (tous tes personnages) + ceux reçus par la synchro — ce que farme ton pote avance aussi les compteurs (synchro toutes les 5 min).&#10;Le pilote va toujours dans la zone la MOINS mesurée. Dans la zone, il attaque le groupe dont le nombre de monstres y est le moins représenté (2, 3… 8 monstres : la rentabilité est calculée monstre par monstre, il faut toutes les tailles), puis repasse par la zone après chaque victoire pour rechoisir.&#10;Zones : celles accessibles à ton niveau dont le niveau min est dans la plage. 3 défaites d’affilée dans une zone : abandonnée (notification). Tout est mesuré : arrêt + notification.')}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
+    <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🧪 Échantillonner les zones${DM.tip('Pour fiabiliser 📈 Rentabilité des zones : le pilote farme en chasse jusqu’à avoir au moins N combats mesurés (victoires) dans chaque zone choisie.&#10;Comptés : tes combats (tous tes personnages) + ceux reçus par la synchro — ce que farme ton pote avance aussi les compteurs (synchro toutes les 5 min).&#10;Le pilote va toujours dans la zone la MOINS mesurée. Dans la zone, il attaque le groupe dont le nombre de monstres y est le moins représenté (2, 3… 8 monstres : la rentabilité est calculée monstre par monstre, il faut toutes les tailles), puis repasse par la zone après chaque victoire pour rechoisir.&#10;Zones : toutes celles dont le niveau min est dans la plage (et pas au-dessus de ton niveau). 3 défaites d’affilée dans une zone : abandonnée (notification). Tout est mesuré : arrêt + notification.')}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
     <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:12px">
       <label>Niveau min <input type="number" data-f="min" min="1" max="250" style="${inp}" value="${+p.min}"></label>
       <label>Niveau max <input type="number" data-f="max" min="1" max="250" style="${inp}" value="${+p.max}"></label>
@@ -147,7 +147,14 @@ async function openSampleFarm() {
   DM.installTips(ov);
   const $ = (q) => ov.querySelector(q);
   let all = [];
-  try { all = await DM.fetchZones(); } catch (e) { $('[data-k="sum"]').textContent = `❌ Zones illisibles : ${e.message}`; return; }
+  // toutes les zones du jeu (pas seulement celles « à ton niveau » du site), jusqu'à ton niveau
+  let myLvl = null;
+  try {
+    const r = await DM.fetchT(DM.ORIGIN + '/chasse', { credentials: 'include', cache: 'no-store' });
+    myLvl = +DM.zoneBrowserProps(await r.text())?.level || null;
+    all = await DM.fetchZones({ all: true });
+  } catch (e) { $('[data-k="sum"]').textContent = `❌ Zones illisibles : ${e.message}`; return; }
+  if (myLvl) all = all.filter((z) => z.lvlMin == null || z.lvlMin <= myLvl);
   const read = () => ({ min: +$('[data-f="min"]').value || 0, max: +$('[data-f="max"]').value || 0, target: Math.max(1, +$('[data-f="target"]').value || 0) });
   const pick = ({ min, max }) => all.filter((z) => z.lvlMin != null && z.lvlMin >= min && z.lvlMin <= max)
     .map((z) => ({ id: z.id, name: z.region ? `${z.name} (${z.region})` : z.name, lvlMin: z.lvlMin, lvlMax: z.lvlMax }));
