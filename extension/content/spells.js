@@ -48,15 +48,18 @@ function learnCardCrits(st) {
   if (changed) { try { localStorage.setItem(CARD_CRIT_KEY, JSON.stringify(known)); } catch { /* stockage plein */ } }
 }
 const critLinesOf = (card) => (Array.isArray(card?.crit) ? card.crit : cardCrits()[card?.id]) || null;
+// Élément « best » (armes…) : celui de la meilleure caractéristique (Terre, Feu, Eau, Air) ; statOf(clé) → valeur.
+const bestEl = (statOf) => (statOf ? [1, 2, 3, 4].reduce((b, el) => (statOf(EL_STAT[el]) > statOf(EL_STAT[b]) ? el : b), 1) : 0);
 // Lignes de dégâts d'une carte : { e: ligne normale, c: ligne critique (même rang dans `crit`) ou null, el, first }.
-function damageLines(card) {
+// Bonus fixes (Dommages…) une fois par lancer, sur la 1re ligne de dégâts — même si plusieurs lignes ont le même élément.
+function damageLines(card, statOf = null) {
   const crit = critLinesOf(card);
   const pair = Array.isArray(crit) && crit.length === (card.eff || []).length;
   const out = [];
   (card.eff || []).forEach((e, i) => {
     if (!e || !DMG_FIXED.has(e.k)) return;
     const c = pair && crit[i]?.k === e.k ? crit[i] : null;
-    out.push({ e, c, el: Number.isInteger(e.el) ? e.el : 0, first: !out.length });
+    out.push({ e, c, el: e.el === 'best' ? bestEl(statOf) : Number.isInteger(e.el) ? e.el : 0, first: !out.length });
   });
   return out;
 }
@@ -116,7 +119,7 @@ function spellDamage(card, stats = null) {
   const variable = (card.eff || []).some((e) => DMG_VARIABLE.has(e?.k));
   let delayed = false, rndAvg = 0, rndMax = 0, sure = 0;
   const byEl = {};
-  for (const { e, c, el, first } of damageLines(card)) {
+  for (const { e, c, el, first } of damageLines(card, stats ? S : null)) {
     fixed = true;
     const n = e.k === 'poison' ? Math.max(1, +(e.turns || e.dur) || 1) : 1;   // poison : dégâts à chaque tour
     const eMin = +e.min || 0, eMax = +(e.max ?? e.min) || 0;
@@ -234,7 +237,7 @@ function damageTest(fight, spells) {
     if (L.t === 'buff') addBuff(i, L);
     if (L.t !== 'play' || L.who !== 'p') continue;
     const card = byName.get(L.card);
-    const lines = card ? damageLines(card).filter(({ e }) => !(e.chance != null && +e.chance < 100)) : [];
+    const lines = card ? damageLines(card, S).filter(({ e }) => !(e.chance != null && +e.chance < 100)) : [];
     const used = new Set();
     for (let j = i + 1; j < log.length && !['play', 'turn', 'round'].includes(log[j].t); j++) {
       const D = log[j];
