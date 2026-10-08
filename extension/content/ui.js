@@ -267,6 +267,7 @@ function buildUi() {
         <div class="status" data-k="scanMsg"></div>
         <ul class="wanted" data-k="wanted"></ul>
         <button data-k="farmStats" style="margin-top:6px;width:100%" data-tip="XP et drops (revente marchand) de chaque combat de chasse, calculés monstre par monstre (le nombre de monstres compte), ramenés à ta Sagesse / Prospection actuelles ; mesures partagées via la synchro ; estimations pour les groupes du dernier scan. Bouton ▶ pour y envoyer le pilote.">📈 Rentabilité des zones</button>
+        <button data-k="selfDiag" style="margin-top:6px;width:100%" data-tip="Auto-diagnostic : l'extension vérifie seule si son calcul des dégâts dérive (formule du jeu changée), si une mécanique de boss ou un effet de carte inconnu apparaît, ou si une page du jeu devient illisible. Elle prévient une fois par problème (message + Discord). Ce bouton copie le récap à transmettre.">🩺 Diagnostic</button>
       </div>
     </div>
     <div class="bubble" title="Autopilot-DM">🤖</div>
@@ -338,6 +339,7 @@ function buildUi() {
   $('scanWanted').addEventListener('change', () => save({ scanWanted: $('scanWanted').checked }).then(renderUi));
   $('scanArchi').addEventListener('change', () => save({ scanArchi: $('scanArchi').checked }).then(renderUi));
   $('farmStats').addEventListener('click', () => { setOpen(false); openFarmStats(); });
+  $('selfDiag').addEventListener('click', () => selfCopy());
   // Appliqué aussitôt à la liste affichée (le scan garde tous les groupes) et aux prochaines notifications.
   $('minPerGroup').addEventListener('change', () => {
     if (!scanRunning) scanMsg = '';   // le compteur « N avis trouvé(s) » est recalculé avec le nouveau seuil

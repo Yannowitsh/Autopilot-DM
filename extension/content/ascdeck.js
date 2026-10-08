@@ -278,6 +278,8 @@ async function renderAscPanel(el) {
   const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
   const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:5px 10px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
   const page = await readAscPage();
+  if (!page.floor || !page.bosses.length) selfIssue('page:ascension', 'page Ascension illisible', `étage ${page.floor ?? '?'}, ${page.bosses.length} boss trouvés — la page du jeu a peut-être changé`);
+  else selfClear('page:ascension');
   if (page.floor) save({ ascFloor: page.floor, ascDiff: page.diff || null, ascBosses: page.bosses.map((b) => b.id) });
   const list = await bossMechanics();
   const fake = { fighters: { p: { team: 0 }, ...Object.fromEntries(page.bosses.map((b, i) => [`b${i}`, { id: `b${i}`, team: 1, isBoss: true, monsterId: b.id, name: b.name }])) } };

@@ -44,6 +44,7 @@ function withFullLog(st) {
 
 // Fin de combat (état du serveur `st`, récompenses) : mise en attente, puis remise au service worker.
 function combatOnEnd(st, rewards) {
+  if (st?.status && st.status !== 'ongoing') selfCheckFight(st);   // auto-diagnostic (selfcheck.js), même sans envoi en ligne
   try {
     if (!combatOn() || !st?.fighters?.p || !st.status || st.status === 'ongoing') return;
     const id = fnv(`${st.kind}|${st.logCount}|${st.status}|${JSON.stringify(st.log?.slice(0, 3))}|${JSON.stringify(st.log?.slice(-3))}`);

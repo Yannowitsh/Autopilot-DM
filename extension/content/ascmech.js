@@ -23,10 +23,12 @@ async function bossMechanics(force = false) {
     const list = props && rscDeep(rows, props.cards).filter((b) => b?.id && Array.isArray(b.m));
     if (!list?.length) throw new Error('liste des mécaniques introuvable');
     mechCache = { at: Date.now(), list };
+    selfCheckMechanics(list);   // nouveaux types de mécaniques : signalés
     try { localStorage.setItem(MECH_KEY, JSON.stringify(mechCache)); } catch { /* stockage plein */ }
     return list;
   } catch (e) {
     DM.log(`mécaniques des boss : ${e.message}${mechCache?.list ? ' — dernière copie utilisée' : ''}`);
+    selfIssue('page:bestiaire', 'mécaniques du bestiaire illisibles', e.message);
     return mechCache?.list || [];
   }
 }
@@ -277,7 +279,7 @@ const MECH_TEXTS = [
   [/scelle .* pour ce tour/i, 'Sceau'],
   [/échange sa vie/i, 'Échange de vie'],
   [/onde de choc/i, 'Onde de choc'],
-  [/fureur/i, 'Fureur'],
+  [/fureur|se déchaîne/i, 'Fureur'],   // « Koumiho se déchaîne ! » : plus de N cartes jouées dans le tour
   [/peau dure|sans bouclier/i, 'Peau dure'],
   [/perd patience|t.achève/i, 'Rage'],
   [/pulvérise .* d.un seul coup/i, 'PA comptés|Rage'],

@@ -261,8 +261,9 @@ function damageTest(fight, spells) {
       if (D.t !== 'dmg') continue;
       const tg = fight.fighters[D.who];
       if (!tg || tg.team === P.team) continue;   // coups sur soi / les alliés (zones) ignorés
-      const li = lines.findIndex((x, k) => !used.has(k) && x.el === D.el);
-      if (li >= 0 && !lines[li].e.zone) used.add(li);
+      // une ligne normale frappe une fois ; une ligne de zone, une fois par cible
+      const li = lines.findIndex((x, k) => !used.has(k) && !used.has(`${k}|${D.who}`) && x.el === D.el);
+      if (li >= 0) used.add(lines[li].e.zone ? `${li}|${D.who}` : li);
       if (primaryDead && li !== killLine && D.who !== primary) { primary = D.who; primaryDead = false; }
       lastLine = li;
       const ln = lines[li];

@@ -334,6 +334,7 @@ function renderUi() {
     g.title = `${b.label} : équiper « ${presetName(slot) || `équipement enregistré n° ${slot + 1}`} » (équipement enregistré n° ${slot + 1} de la page Personnage)`;
   }
   if (ui.panel.hidden) return;
+  { const n = Object.keys(selfState().issues || {}).length; ui.$('selfDiag').textContent = n ? `🩺 Diagnostic : ${n} problème${n > 1 ? 's' : ''} — copier le récap` : '🩺 Diagnostic : rien à signaler'; }
 
   const $ = ui.$;
   const hunt = cfg.mode === 'chasse';
