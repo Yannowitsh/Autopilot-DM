@@ -674,6 +674,7 @@ async function openFarmStats() {
     const r = shown[+go.dataset.farm];
     if (!r) return;
     if (dropOn()) await dropStop('remplacé par ▶ Rentabilité des zones');
+    if (sampleOn()) await sampleStop('remplacé par ▶ Rentabilité des zones');
     await save({ mode: 'chasse', huntZone: r.z, huntZoneName: r.name, huntGroup: r.g, huntTarget: null, pauseReason: null, lossStreak: 0 });
     await send({ type: 'claim', start: true, status: 'Démarrage…' }).catch(() => {});
     tradeToast(`▶ Chasse : ${r.name}, groupe ${r.g}`, 'ok');

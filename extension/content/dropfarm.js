@@ -176,6 +176,7 @@ const dropStop = (reason) => dropEnd(`Farm de drop arrêté : ${reason}`.slice(0
 
 // Lancement depuis l'optimiseur : items = [{ id, name, icon, tier, srcs }], zoneNames = { id: libellé }.
 async function startDropFarm(items, zoneNames) {
+  if (sampleOn()) await sampleStop('remplacé par 🐉 Farm de drop');
   const run = {
     active: true, startedAt: Date.now(), syncAt: Date.now(), zoneNames, tried: [], skipped: [], zone: null,
     items: items.map((it) => ({ ...it, need: it.need ?? 3 ** (it.tier - 1), got: 0 })),

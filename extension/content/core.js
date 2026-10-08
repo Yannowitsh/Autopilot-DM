@@ -84,7 +84,7 @@ const SEMI_AUTO = /^Auto$/;              // jamais « Auto AFK −50 % » ni « 
 const HUNT_RETRY = /^(Refaire ce combat|Réessayer ce groupe)$/;
 const isHunt = () => cfg.mode === 'chasse' && !!cfg.huntZone;
 const isAsc = () => cfg.mode === 'ascension';
-const maxRetries = () => (isHunt() ? (cfg.dropRun?.active ? DROP_MAX_DEFEATS - 1 : Math.max(0, Math.round(+cfg.huntRetries || 0))) : MAX_PATH_RETRIES);
+const maxRetries = () => (isHunt() ? (cfg.dropRun?.active ? DROP_MAX_DEFEATS - 1 : cfg.sampleRun?.active ? SAMPLE_MAX_DEFEATS - 1 : Math.max(0, Math.round(+cfg.huntRetries || 0))) : MAX_PATH_RETRIES);
 // Fin d'un combat d'Ascension : boutons propres aux étages (« Suivant en auto » / « Réessayer en auto » existent aussi).
 const ASC_END = /^(Étage suivant|Réessayer l.étage|Voir l.Ascension)$/;
 const ASC_START = /^Affronter l.étage \d+$/;   // bouton de /ascension

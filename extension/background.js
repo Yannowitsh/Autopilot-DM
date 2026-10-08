@@ -281,8 +281,14 @@ async function farmSync(force = false) {
       if (mine.has(p)) { delete shared[p]; continue; }
       shared[p] = shared[p].sort((a, b) => a.at - b.at).slice(-SYNC_SHARED_MAX);
     }
+    // combats par zone, tous joueurs, sans plafond (🧪 échantillonnage) ; Worker d'avant 2.1 : pas de compteurs
+    let syncCounts = s.syncCounts || null;
+    try {
+      const r = await DM.fetchT(`${url}/fights/counts`, { headers, cache: 'no-store' });
+      if (r.ok) syncCounts = { at: Date.now(), zones: (await r.json()).zones || {} };
+    } catch (e) { DM.log(`synchro : compteurs par zone illisibles (${e.message})`); }
     const syncStatus = { at: Date.now(), ok: true, sent, got, players: Object.keys(shared).length };
-    await chrome.storage.local.set({ farmShared: shared, syncSince: since, syncStatus });
+    await chrome.storage.local.set({ farmShared: shared, syncSince: since, syncStatus, syncCounts });
     return syncStatus;
   } catch (e) {
     const syncStatus = { at: Date.now(), ok: false, error: e.message, sent, got };

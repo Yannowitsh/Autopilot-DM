@@ -65,6 +65,7 @@ async function step() {
             await save({ dropRun: { ...cfg.dropRun, skipped: [...(cfg.dropRun.skipped || []), z] } });
             return dropGoZone(`${streak} défaites dans ${dropZoneName(z)}`);
           }
+          if (stop && sampleOn() && isHunt()) return sampleOnDefeats(streak, hint());   // échantillonnage : zone abandonnée
           if (stop) {
             await save({ enabled: false, paused: false, status: 'Arrêté : combat perdu' });
             const where = `${isHunt() ? ` en chasse (${cfg.huntZoneName || 'zone ' + cfg.huntZone})` : ` en ${isAsc() ? 'ascension' : 'aventure'}`}`
@@ -105,6 +106,8 @@ async function step() {
         if (!dropOn()) return;
         if (!dropTargets(cfg.huntZone).size) return dropGoZone(`${dropZoneName(cfg.huntZone)} : plus rien à y dropper`);
       }
+      // échantillonnage : zone suivante si l'objectif est atteint, sinon retour à la zone pour rechoisir le groupe
+      if (sampleOn() && isHunt()) { endRetries = 0; if (await sampleAfterWin()) return; }
       if (!(await gate())) return progress();
       // Auto-équipement : entre deux combats (le seul moment où le jeu l'accepte), avant la relance
       await autoEquipTick();
@@ -176,6 +179,15 @@ async function step() {
       if (g === null) return;   // page pas encore chargée
       if (g === false) return dropGoZone(`plus de groupe utile dans ${dropZoneName(cfg.huntZone)}`);
       if (cfg.huntGroup !== g) await save({ huntGroup: g });
+    } else if (sampleOn()) {
+      if (sampleCount(cfg.huntZone) >= cfg.sampleRun.target) return sampleGoZone(`${sampleZoneName(cfg.huntZone)} à l’objectif`);
+      const g = samplePickGroup();
+      if (g === null) return;   // page pas encore chargée
+      if (g === false) {   // zone sans groupe : abandonnée
+        await save({ sampleRun: { ...cfg.sampleRun, skipped: [...(cfg.sampleRun.skipped || []), cfg.huntZone] } });
+        return sampleGoZone(`aucun groupe dans ${sampleZoneName(cfg.huntZone)}`);
+      }
+      if (cfg.huntGroup !== g) await save({ huntGroup: g });
     }
     const group = targetGroup();
     if (!group) return;   // page pas encore chargée
@@ -183,7 +195,7 @@ async function step() {
     // attaquer le nouveau groupe n'a pas de sens → arrêt.
     const t = cfg.huntTarget;
     const isTarget = (m) => targetMatch(m, ALL_KINDS);
-    if (!dropOn() && cfg.huntGroup && t?.zone === cfg.huntZone && t.group === cfg.huntGroup && t.monsters?.some(isTarget)) {
+    if (!dropOn() && !sampleOn() && cfg.huntGroup && t?.zone === cfg.huntZone && t.group === cfg.huntGroup && t.monsters?.some(isTarget)) {
       const now = groupMonsters(group);
       if (now.length && now.join('|') !== t.monsters.join('|')) {
         await save({ enabled: false, paused: false, botFight: false, huntTarget: null,
@@ -199,7 +211,7 @@ async function step() {
     const attack = () => [...targetGroup()?.querySelectorAll('button') || []]
       .find((b) => !b.disabled && b.offsetParent !== null && /^Attaquer$/.test(b.textContent.trim()));
     if (!attack()) return;
-    setStatus(`${dropOn() ? `Farm de drop (${dropLeft().length} objet(s) restant(s))` : 'Chasse'} : attaque du groupe ${cfg.huntGroup || groupNumber(group)} (${cfg.huntZoneName || 'zone ' + cfg.huntZone})…`);
+    setStatus(`${dropOn() ? `Farm de drop (${dropLeft().length} objet(s) restant(s))` : sampleOn() ? `Échantillonnage (${sampleCount(cfg.huntZone)}/${cfg.sampleRun.target})` : 'Chasse'} : attaque du groupe ${cfg.huntGroup || groupNumber(group)} (${cfg.huntZoneName || 'zone ' + cfg.huntZone})…`);
     await sleep(humanDelay());
     const btn = isOwner() && attack();
     if (!btn) return;

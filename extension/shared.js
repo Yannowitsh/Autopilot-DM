@@ -46,6 +46,7 @@ const DM = {
     notifyEnergy: true,
     notifyErrors: true,
     notifyDrop: true,
+    notifySample: true,
     wantedMinPerGroup: 1, // avis de recherche : nb minimum de monstres recherchés dans le même groupe
     bossPreAlertMin: 0,  // pré-alerte N minutes avant (0 = désactivé)
     bossAuto: true,      // pilote actif : tente le boss de chasse dans un nouvel onglet à son apparition, puis reprend le farm
@@ -93,6 +94,8 @@ const DM = {
       tip: 'Message quand le pilote se met en pause faute d’énergie, puis quand il reprend.' },
     { kind: 'drop', key: 'notifyDrop', label: '🐉 Farm de drop',
       tip: 'Message à chaque objet voulu obtenu, quand une zone est abandonnée (5 défaites), et à la fin du farm (tout droppé, ou arrêt avec la raison).' },
+    { kind: 'sample', key: 'notifySample', label: '🧪 Échantillonnage des zones',
+      tip: 'Message quand une zone atteint l’objectif de combats, quand une zone est abandonnée (3 défaites), et à la fin.' },
     { kind: 'errors', key: 'notifyErrors', label: '⚠️ Problèmes (déconnexion, énergie illisible)',
       tip: 'Message en cas de souci technique : déconnexion du jeu, énergie impossible à lire, etc.' },
   ],

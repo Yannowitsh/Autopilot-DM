@@ -3,6 +3,7 @@
 // autres depuis son dernier curseur (seq). Accès : clé partagée (secret SYNC_KEY) dans l'en-tête Authorization.
 //   POST /fights  { player, fights: [rec…] }  → { ok, added }
 //   GET  /fights?since=<seq>                  → { fights: [{ p, r }], next }
+//   GET  /fights/counts                       → { zones: { zone: { n, sizes: { nb de monstres: combats } } } }  tous joueurs
 //   POST /combats { player, combat: rec }     → { ok, added }  combat complet (stats, build, journal) pour l'analyse des dégâts
 //   GET  /combats?since=<seq>&limit=<n>&full=1 → { combats: [{ seq, p, at, kind, status, r? }], next }  (r seulement avec full=1)
 //   GET  /asc?floor=<n>                       → { rows: [{ p, at, status, d }] }  tentatives d'Ascension à cet étage (mécaniques vues)
@@ -47,6 +48,19 @@ async function push(req, db) {
   if (!rows.length) return json({ ok: true, added: 0 });
   const res = await db.batch(rows);
   return json({ ok: true, added: res.reduce((s, x) => s + (x.meta?.changes || 0), 0) });
+}
+
+// Combats mesurés par zone et par nombre de monstres, tous joueurs (échantillonnage des zones, sans plafond local).
+async function counts(db) {
+  const { results } = await db.prepare("SELECT json_extract(rec, '$.z') AS z, json_array_length(rec, '$.m') AS k, COUNT(*) AS n FROM fights GROUP BY z, k").all();
+  const zones = {};
+  for (const { z, k, n } of results) {
+    if (z == null) continue;
+    const e = zones[z] ||= { n: 0, sizes: {} };
+    e.n += n;
+    e.sizes[k] = n;
+  }
+  return json({ zones });
 }
 
 async function pull(url, db) {
@@ -98,9 +112,10 @@ export default {
   async fetch(req, env) {
     const url = new URL(req.url);
     if (url.pathname === '/health') return new Response('ok');
-    if (!['/fights', '/combats', '/asc'].includes(url.pathname)) return json({ error: 'introuvable' }, 404);
+    if (!['/fights', '/fights/counts', '/combats', '/asc'].includes(url.pathname)) return json({ error: 'introuvable' }, 404);
     if (!authorized(req, env.SYNC_KEY)) return json({ error: 'clé invalide' }, 401);
     await init(env.DB);
+    if (url.pathname === '/fights/counts') return req.method === 'GET' ? counts(env.DB) : json({ error: 'méthode non gérée' }, 405);
     if (url.pathname === '/asc') return req.method === 'GET' ? pullAsc(url, env.DB) : json({ error: 'méthode non gérée' }, 405);
     if (url.pathname === '/combats') {
       if (req.method === 'POST') return pushCombat(req, env.DB);

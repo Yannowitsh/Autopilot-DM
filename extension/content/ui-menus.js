@@ -352,6 +352,16 @@ function renderUi() {
       : `<b>🐉 Farm de drop</b> · arrêté — liste de courses gardée`;
     if ($('dropInfo').innerHTML !== h) $('dropInfo').innerHTML = h;
   }
+  {
+    const run = cfg.sampleRun;
+    $('sampleBox').style.display = run?.active ? 'flex' : 'none';
+    if (run?.active) {
+      const done = run.zones.filter((z) => sampleCount(z.id) >= run.target).length;
+      const h = `<b>🧪 Échantillonnage</b> · niv. ${run.min}–${run.max} · ${String(sampleZoneName(run.zone)).replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`)} : ${sampleCount(run.zone)}/${run.target}`
+        + `<div>${done}/${run.zones.length} zone(s) à l’objectif${run.skipped?.length ? ` · ${run.skipped.length} abandonnée(s)` : ''}</div>`;
+      if ($('sampleInfo').innerHTML !== h) $('sampleInfo').innerHTML = h;
+    }
+  }
   $('status').textContent = on ? (cfg.status || '—') : cfg.enabled ? 'Actif dans un autre onglet' : 'Arrêté';
   const tg = $('toggle');
   tg.textContent = cfg.enabled ? '■ Arrêter' : `▶ Démarrer (${DM.modeLabel(cfg)})`;

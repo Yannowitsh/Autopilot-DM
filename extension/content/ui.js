@@ -32,6 +32,7 @@ async function onPlayPause() {
     const ctx = await playContext();
     if (ctx.error) { tradeToast(`▶ ${ctx.error}`, 'err'); return; }
     if (dropOn() && ctx.mode) await dropStop('remplacé par ▶ sur une autre activité');
+    if (sampleOn() && ctx.mode) await sampleStop('remplacé par ▶ sur une autre activité');
     await save({ ...ctx, pauseReason: null, lossStreak: 0 });
     await send({ type: 'claim', start: true, status: 'Démarrage…' }).catch(() => {});
     // combat en cours sur la page : le pilote le prend en main (Auto du jeu ou par poids), puis relance en boucle
@@ -158,6 +159,13 @@ function buildUi() {
             <button data-k="dropStop" style="padding:2px 7px;font-size:12px" data-tip="Arrête le farm de drop (le pilote s’arrête aussi). La liste de courses est gardée.">■ Arrêter</button>
           </div>
         </div>
+        <div data-k="sampleBox" class="muted" style="display:none;flex-direction:column;gap:3px;border:1px solid #2b6d8a;border-radius:6px;padding:6px">
+          <div data-k="sampleInfo"></div>
+          <div class="row" style="gap:4px">
+            <button data-k="sampleOpen2" style="padding:2px 7px;font-size:12px;flex:1">🧪 Détail par zone</button>
+            <button data-k="sampleStop" style="padding:2px 7px;font-size:12px" data-tip="Arrête l’échantillonnage (le pilote s’arrête aussi).">■ Arrêter</button>
+          </div>
+        </div>
         <details data-k="timesBox">
           <summary class="muted">⏱ Chronomètre des combats${DM.tip("Durée moyenne d’un combat du pilote (du lancement à l’écran de fin) et de la boucle complète (d’un lancement au suivant, pauses de plus de 5 min exclues), par activité et par mode de combat. Pour comparer l’Auto du jeu et l’Auto par poids sur la durée.")}</summary>
           <div class="muted" data-k="times" style="display:flex;flex-direction:column;gap:3px;margin-top:4px"></div>
@@ -267,6 +275,7 @@ function buildUi() {
         <div class="status" data-k="scanMsg"></div>
         <ul class="wanted" data-k="wanted"></ul>
         <button data-k="farmStats" style="margin-top:6px;width:100%" data-tip="XP et drops (revente marchand) de chaque combat de chasse, calculés monstre par monstre (le nombre de monstres compte), ramenés à ta Sagesse / Prospection actuelles ; mesures partagées via la synchro ; estimations pour les groupes du dernier scan. Bouton ▶ pour y envoyer le pilote.">📈 Rentabilité des zones</button>
+        <button data-k="sampleOpen" style="margin-top:6px;width:100%" data-tip="Le pilote farme en chasse jusqu’à avoir au moins N combats mesurés dans chaque zone d’une plage de niveaux (les tiens + ceux de la synchro), en allant toujours dans la zone la moins mesurée et en variant le nombre de monstres. Pour fiabiliser 📈 Rentabilité des zones.">🧪 Échantillonner les zones</button>
         <button data-k="selfDiag" style="margin-top:6px;width:100%" data-tip="Auto-diagnostic : l'extension vérifie seule si son calcul des dégâts dérive (formule du jeu changée), si une mécanique de boss ou un effet de carte inconnu apparaît, ou si une page du jeu devient illisible. Elle prévient une fois par problème (message + Discord). Ce bouton copie le récap à transmettre.">🩺 Diagnostic</button>
       </div>
     </div>
@@ -339,6 +348,8 @@ function buildUi() {
   $('scanWanted').addEventListener('change', () => save({ scanWanted: $('scanWanted').checked }).then(renderUi));
   $('scanArchi').addEventListener('change', () => save({ scanArchi: $('scanArchi').checked }).then(renderUi));
   $('farmStats').addEventListener('click', () => { setOpen(false); openFarmStats(); });
+  for (const k of ['sampleOpen', 'sampleOpen2']) $(k).addEventListener('click', () => { setOpen(false); openSampleFarm(); });
+  $('sampleStop').addEventListener('click', () => sampleStop('arrêté à la main'));
   $('selfDiag').addEventListener('click', () => selfCopy());
   // Appliqué aussitôt à la liste affichée (le scan garde tous les groupes) et aux prochaines notifications.
   $('minPerGroup').addEventListener('change', () => {
