@@ -7,8 +7,7 @@
     {
       "binding": "DB",
       "database_name": "dm-sync",
-      // remplacé par l'id affiché par « npx wrangler d1 create dm-sync »
-      "database_id": "REMPLACER_PAR_L_ID_DE_LA_BASE"
+      "database_id": "1afdcdf6-f76e-42c2-8d9c-8922813bd362"
     }
   ]
 }
