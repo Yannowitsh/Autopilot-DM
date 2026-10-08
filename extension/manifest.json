@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Autopilot-DM",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Enchaîne automatiquement les étapes de l’Aventure ou la chasse (groupe le plus dur d’une zone), résout la vérification de présence, surveille l’énergie, échange des objets entre deux comptes via l’HDV et alerte sur Discord (défaite, énergie basse, boss de chasse).",
   "permissions": ["storage", "alarms"],
   "incognito": "spanning",
   "host_permissions": [
+    "https://rpgmasters.houk.fr/*",
     "https://dofusmasters.houk.fr/*",
     "https://discord.com/*",
     "https://discordapp.com/*",
@@ -22,7 +23,7 @@
   "content_scripts": [
     {
       "matches": [
-        "https://dofusmasters.houk.fr/*"
+        "https://rpgmasters.houk.fr/*"
       ],
       "js": [
         "netwatch.js"
@@ -32,7 +33,7 @@
     },
     {
       "matches": [
-        "https://dofusmasters.houk.fr/*"
+        "https://rpgmasters.houk.fr/*"
       ],
       "js": [
         "shared.js",

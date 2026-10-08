@@ -1,6 +1,6 @@
 // Code partagé entre le service worker, le content script et la popup.
 const DM = {
-  ORIGIN: 'https://dofusmasters.houk.fr',
+  ORIGIN: 'https://rpgmasters.houk.fr',
 
   // Mises à jour : le manifest du dépôt GitHub public fait foi (vérifié toutes les `updateCheckMin` minutes).
   REPO: 'Yannowitsh/Autopilot-DM',
