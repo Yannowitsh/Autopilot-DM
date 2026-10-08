@@ -119,16 +119,19 @@ function cardEffectRaw(card, p, tgt) {
   return { dmg, self: steal + heal };
 }
 
-// Bouclier posé par une carte (PV) : shieldHp = % des PV max (Vertu : « 20 % de tes PV max ») ; shieldLvl = selon le
-// niveau (estimation : valeur × niveau / 20, à vérifier sur les combats enregistrés).
+// Bouclier posé par une carte (PV) : shieldHp = % des PV max (Vertu 26 → 26 % des PV max) ; shieldLvl = % du niveau
+// (Fermentation 247 ×2 au niveau 200 = 2 × 494 = 988). Avec beaucoup de PV, les boucliers en % des PV max l'emportent.
+// dur : tours pendant lesquels il absorbe (son utilité est plafonnée par les dégâts reçus sur cette durée).
 function shieldOf(card, p) {
-  let v = 0;
+  let v = 0, dur = 1;
   for (const e of card.eff || []) {
     if (e?.tgt !== 'self') continue;
     if (e.k === 'shieldHp') v += (+e.min || 0) / 100 * (+p.maxHp || 0);
-    else if (e.k === 'shieldLvl') v += (+e.min || 0) * (+p.level || 200) / 20;
+    else if (e.k === 'shieldLvl') v += (+e.min || 0) / 100 * (+p.level || 200);
+    else continue;
+    dur = Math.max(dur, +e.dur || 1);
   }
-  return v;
+  return { v, dur };
 }
 const apGainOf = (card) => (card.eff || []).reduce((t, e) => t + (e?.k === 'apGain' && e.tgt === 'self' ? +e.min || 0 : 0), 0);
 const AP_REMOVE_CUT = 0.3;   // PA retirés à l'ennemi : sa prochaine attaque est affaiblie (~30 %, estimation)
@@ -233,7 +236,7 @@ function planTurn(st, cand, rules) {
         gain += Math.min(maxHp - hp, x.w * 20);
       } else if (!x.shield && !apGainOf(x.c)) gain += x.w * 5;   // buff… : valeur tirée de son poids
       // bouclier : PV épargnés sur les attaques à venir (une seule fois par tour)
-      if (x.shield && !seq.some((q) => q.x.shield)) gain += Math.min(shieldOf(x.c, p), safety);
+      if (x.shield && !seq.some((q) => q.x.shield)) { const sh = shieldOf(x.c, p); gain += Math.min(sh.v, safety * sh.dur); }
       if (x.shield && shieldRule && !shieldUp) gain += 5000;   // Peau dure : le bouclier d'abord
       const wave = ondePct > 0 && x.isDmg && !x.weapon && lastEl != null && x.firstEl === lastEl;
       if (wave) self += maxHp * ondePct / 100;

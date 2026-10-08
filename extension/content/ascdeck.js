@@ -115,13 +115,17 @@ async function adviseAscDeck(page, say = () => {}) {
 const ascRuleTiming = (r) => (!r.seenRound ? '' : r.k === 'mirror' ? ` <b>[tours ${r.from}–${r.to}]</b>` : r.k === 'apExact' || r.k === 'swap' ? ` <b>[tour ${r.turn}]</b>` : '');
 
 // Raison courte d'un ajout / retrait, selon les mécaniques en jeu.
-function ascCardReason(c, rules, adding) {
+function ascCardReason(c, rules, adding, p = ascSimPlayer()) {
   const eff = c.eff || [];
   const k = new Set(rules.map((r) => r.k));
   const steals = eff.some((e) => e?.k === 'steal' || (e?.tgt === 'self' && /heal/.test(e.k)));
   const out = [];
   if (k.has('curse') && steals && !adding) out.push('vols de vie / soins : te blessent sous Malédiction des soins');
-  if (eff.some((e) => /shield/.test(e?.k || ''))) out.push(k.has('shield') ? 'bouclier : indispensable contre Peau dure' : 'bouclier : encaisse les attaques des boss');
+  if (eff.some((e) => /shield/.test(e?.k || ''))) {
+    const sh = p ? shieldOf(c, p) : null;
+    const amount = sh ? ` ≈ ${Math.round(sh.v).toLocaleString('fr-FR')} PV (${Math.round(sh.v / (+c.ap || 1)).toLocaleString('fr-FR')} par PA, ${sh.dur} tour${sh.dur > 1 ? 's' : ''})` : '';
+    out.push(`bouclier${amount}${k.has('shield') ? ' : indispensable contre Peau dure' : ''}`);
+  }
   if (eff.some((e) => e?.k === 'apGain')) out.push(`+${apGainOf(c)} PA : plus de cartes jouées par tour`);
   if (eff.some((e) => e?.k === 'apRemove' && e.tgt === 'enemy')) out.push('retire des PA : affaiblit la prochaine attaque');
   if (k.has('mirror') && eff.some((e) => e?.zone) && !adding) out.push('sort de zone : touche le boss sous Miroir');
