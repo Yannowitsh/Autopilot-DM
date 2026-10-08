@@ -158,7 +158,13 @@ async function weightedFight(manual = null) {
     // Ascension : mécaniques des boss présents à l'étage en cours (bestiaire), respectées par le plan du tour
     let rules = null;
     if (isAsc() && st.kind === 'boss') {
-      rules = fightMechanics(st, await bossMechanics(), +cfg.ascFloor || null, cfg.ascDiff || null);
+      const list = await bossMechanics();
+      rules = fightMechanics(st, list, +cfg.ascFloor || null, cfg.ascDiff || null);
+      // mécaniques vues aux essais précédents de cet étage (les nôtres et celles des amis) : complètent le bestiaire
+      if (cfg.ascFloor) {
+        const seen = await Promise.race([ascSeenAll(+cfg.ascFloor), sleep(4000).then(() => [])]).catch(() => []);
+        rules = mergeObserved(rules, st, seen.flatMap((a) => a.seen || []), list);
+      }
       planTurn.lastEl = null;
       DM.log(`ascension${cfg.ascFloor ? ` étage ${cfg.ascFloor}` : ' (étage inconnu)'}${cfg.ascDiff ? ` (${cfg.ascDiff})` : ''} : ${rules.map((r) => `${r.bossName} — ${r.name}`).join(' ; ') || 'aucune mécanique connue'}`);
     }

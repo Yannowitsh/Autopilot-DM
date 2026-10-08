@@ -50,7 +50,18 @@ function combatOnEnd(st, rewards) {
     const seen = lsGet(COMBAT_SEEN_KEY, []);
     if (seen.includes(id)) return;
     lsSet(COMBAT_SEEN_KEY, [...seen, id].slice(-30));
-    const rec = { v: 1, id, at: Date.now(), player: myName() || null, acct: fightAcct(), ext: chrome.runtime.getManifest().version, page: location.pathname,
+    // Ascension : étage, boss, mécaniques vues dans le journal et cause d'une défaite (gardés aussi pour l'étage, ascmech.js)
+    const ids = Object.values(st.fighters).filter((f) => f.team !== st.fighters.p.team && f.isBoss).map((f) => +f.monsterId);
+    const onAsc = st.kind === 'boss' && cfg.ascFloor && ids.length
+      && (cfg.ascBosses?.length ? ids.every((m) => cfg.ascBosses.includes(m)) : isAsc());
+    const asc = onAsc ? { floor: +cfg.ascFloor, diff: cfg.ascDiff || null, at: Date.now(), status: st.status, rounds: +st.round || 0,
+      bosses: Object.values(st.fighters).filter((f) => f.team !== st.fighters.p.team && f.isBoss).map((f) => ({ id: +f.monsterId, name: f.name })),
+      seen: observedMechanics(st), cause: st.status === 'lost' ? ascFailCause(st) : null } : null;
+    if (asc) {
+      ascRemember(asc);
+      if (asc.cause) DM.log(`ascension étage ${asc.floor} perdue — ${asc.cause} ; vu : ${asc.seen.map((o) => `${o.bossName} ${o.name || '?'} (t${o.round})`).join(', ') || 'rien'}`);
+    }
+    const rec = { v: 1, id, at: Date.now(), asc, player: myName() || null, acct: fightAcct(), ext: chrome.runtime.getManifest().version, page: location.pathname,
       kind: st.kind, status: st.status, state: st, rewards: rewards || null };
     const pending = lsGet(COMBAT_PENDING_KEY, []);
     pending.push(rec);

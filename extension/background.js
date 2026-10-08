@@ -336,6 +336,18 @@ function combatPush() {
   });
 }
 
+// Tentatives d'Ascension partagées (Worker /asc) : mécaniques vues à un étage par tous les joueurs de la synchro.
+async function ascShared(floor) {
+  const s = await DM.getAll();
+  const url = (s.syncUrl || '').trim().replace(/\/+$/, '');
+  if (!url || !s.syncKey || !(+floor > 0)) return { ok: false, rows: [] };
+  try {
+    const r = await DM.fetchT(`${url}/asc?floor=${+floor}`, { headers: { Authorization: `Bearer ${s.syncKey}` }, cache: 'no-store' });
+    if (!r.ok) return { ok: false, rows: [], error: `HTTP ${r.status}` };
+    return { ok: true, rows: (await r.json()).rows || [] };
+  } catch (e) { return { ok: false, rows: [], error: e.message }; }
+}
+
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   ensureAlarm();
   checkUpdate(true);
@@ -390,6 +402,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       case 'refreshBoss': await refreshBoss(); return true;
       case 'farmSync': return farmSync(true);
+      case 'ascShared': return ascShared(msg.floor);
       case 'combatRec': await combatEnqueue({ ...msg.rec, player: msg.rec.player || msg.rec.acct }); combatPush(); return { ok: true };
       case 'checkUpdate': {   // msg.force : bouton « Vérifier maintenant » ; sinon (ouverture de la popup) seulement si la vérif auto est active
         const { updateCheckMin } = await DM.getAll();

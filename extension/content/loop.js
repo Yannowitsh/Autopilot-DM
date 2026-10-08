@@ -117,7 +117,7 @@ async function step() {
       const autoNext = weightsOn() ? null : findBtn(AUTO_NEXT);
       const next = autoNext || findBtn(isHunt() ? HUNT_RETRY : isAsc() ? /^Étage suivant$/ : /^Étape suivante$/);
       if (!next) return;
-      await save({ botFight: true, ...(isAsc() && cfg.ascFloor ? { ascFloor: cfg.ascFloor + 1, ascDiff: null } : {}) });   // difficulté de l'étage suivant : inconnue
+      await save({ botFight: true, ...(isAsc() && cfg.ascFloor ? { ascFloor: cfg.ascFloor + 1, ascDiff: null, ascBosses: null } : {}) });   // difficulté de l'étage suivant : inconnue
       spendEnergy();
       lastAutoClick = autoNext ? Date.now() : 0;
       markLaunch();

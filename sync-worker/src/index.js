@@ -5,6 +5,7 @@
 //   GET  /fights?since=<seq>                  → { fights: [{ p, r }], next }
 //   POST /combats { player, combat: rec }     → { ok, added }  combat complet (stats, build, journal) pour l'analyse des dégâts
 //   GET  /combats?since=<seq>&limit=<n>&full=1 → { combats: [{ seq, p, at, kind, status, r? }], next }  (r seulement avec full=1)
+//   GET  /asc?floor=<n>                       → { rows: [{ p, at, status, d }] }  tentatives d'Ascension à cet étage (mécaniques vues)
 //   GET  /health                              → ok (sans clé)
 
 const PAGE = 1000;          // combats renvoyés au plus par requête
@@ -17,6 +18,8 @@ async function init(db) {
   if (ready) return;
   await db.exec('CREATE TABLE IF NOT EXISTS fights (seq INTEGER PRIMARY KEY AUTOINCREMENT, player TEXT NOT NULL, at INTEGER NOT NULL, rec TEXT NOT NULL, UNIQUE(player, at))');
   await db.exec('CREATE TABLE IF NOT EXISTS combats (seq INTEGER PRIMARY KEY AUTOINCREMENT, player TEXT NOT NULL, id TEXT NOT NULL, at INTEGER NOT NULL, kind TEXT, status TEXT, rec TEXT NOT NULL, UNIQUE(player, id))');
+  await db.exec('CREATE TABLE IF NOT EXISTS asc_seen (floor INTEGER NOT NULL, player TEXT NOT NULL, at INTEGER NOT NULL, status TEXT, data TEXT NOT NULL, UNIQUE(player, at))');
+  await db.exec('CREATE INDEX IF NOT EXISTS asc_seen_floor ON asc_seen (floor, at)');
   ready = true;
 }
 
@@ -64,6 +67,13 @@ async function pushCombat(req, db) {
   if (rec.length > COMBAT_MAX) return json({ error: 'combat trop gros' }, 413);
   const res = await db.prepare('INSERT OR IGNORE INTO combats (player, id, at, kind, status, rec) VALUES (?, ?, ?, ?, ?, ?)')
     .bind(player, c.id, Number(c.at), String(c.kind ?? ''), String(c.status ?? ''), rec).run();
+  // Ascension : résumé de la tentative (étage, boss, mécaniques vues, cause d'une défaite), partagé par étage
+  const a = c.asc;
+  if (a && Number.isSafeInteger(Number(a.floor)) && Number(a.floor) > 0) {
+    const data = JSON.stringify({ floor: a.floor, diff: a.diff ?? null, rounds: a.rounds ?? null, bosses: a.bosses ?? [], seen: a.seen ?? [], cause: a.cause ?? null });
+    if (data.length < 20000) await db.prepare('INSERT OR IGNORE INTO asc_seen (floor, player, at, status, data) VALUES (?, ?, ?, ?, ?)')
+      .bind(Number(a.floor), player, Number(c.at), String(c.status ?? ''), data).run();
+  }
   return json({ ok: true, added: res.meta?.changes || 0 });
 }
 
@@ -77,13 +87,21 @@ async function pullCombats(url, db) {
     next: results.length ? results[results.length - 1].seq : since });
 }
 
+async function pullAsc(url, db) {
+  const floor = Number(url.searchParams.get('floor'));
+  if (!Number.isSafeInteger(floor) || floor <= 0) return json({ error: 'floor attendu' }, 400);
+  const { results } = await db.prepare('SELECT player, at, status, data FROM asc_seen WHERE floor = ? ORDER BY at DESC LIMIT 30').bind(floor).all();
+  return json({ rows: results.map((x) => ({ p: x.player, at: x.at, status: x.status, d: JSON.parse(x.data) })) });
+}
+
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
     if (url.pathname === '/health') return new Response('ok');
-    if (url.pathname !== '/fights' && url.pathname !== '/combats') return json({ error: 'introuvable' }, 404);
+    if (!['/fights', '/combats', '/asc'].includes(url.pathname)) return json({ error: 'introuvable' }, 404);
     if (!authorized(req, env.SYNC_KEY)) return json({ error: 'clé invalide' }, 401);
     await init(env.DB);
+    if (url.pathname === '/asc') return req.method === 'GET' ? pullAsc(url, env.DB) : json({ error: 'méthode non gérée' }, 405);
     if (url.pathname === '/combats') {
       if (req.method === 'POST') return pushCombat(req, env.DB);
       if (req.method === 'GET') return pullCombats(url, env.DB);

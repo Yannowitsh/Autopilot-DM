@@ -81,7 +81,8 @@ async function adviseAscDeck(page, say = () => {}) {
   const { cards, chunks } = await fetchCollection();
   const list = await bossMechanics();
   const fake = { fighters: { p: { team: 0 }, ...Object.fromEntries(page.bosses.map((b, i) => [`b${i}`, { id: `b${i}`, team: 1, isBoss: true, monsterId: b.id, name: b.name }])) } };
-  const rules = fightMechanics(fake, list, page.floor, page.diff);
+  const attempts = page.floor ? await ascSeenAll(page.floor).catch(() => []) : [];
+  const rules = mergeObserved(fightMechanics(fake, list, page.floor, page.diff), fake, attempts.flatMap((a) => a.seen || []), list);
   const sim = { p: { ...p, _fx: new Map() }, bosses: page.bosses, rules };   // _fx : estimations partagées entre les simulations
   const byName = new Map(cards.map((c) => [c.n, c]));
   const current = (page.decks[page.active]?.names || []).map((n) => byName.get(n)).filter(Boolean);
@@ -109,6 +110,9 @@ async function adviseAscDeck(page, say = () => {}) {
   const evCur = current.length ? evalAscDeck(current, sim) : null, evNew = evalAscDeck(deck, sim);
   return { rules, current, deck, evCur, evNew, add: deck.filter((c) => !current.includes(c)), remove: current.filter((c) => !deck.includes(c)), chunks };
 }
+
+// Tour d'application d'une règle (après observation), affiché à côté du texte du bestiaire.
+const ascRuleTiming = (r) => (!r.seenRound ? '' : r.k === 'mirror' ? ` <b>[tours ${r.from}–${r.to}]</b>` : r.k === 'apExact' || r.k === 'swap' ? ` <b>[tour ${r.turn}]</b>` : '');
 
 // Raison courte d'un ajout / retrait, selon les mécaniques en jeu.
 function ascCardReason(c, rules, adding) {
@@ -181,14 +185,18 @@ async function renderAscPanel(el) {
   const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
   const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:5px 10px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
   const page = await readAscPage();
-  if (page.floor) save({ ascFloor: page.floor, ascDiff: page.diff || null });
+  if (page.floor) save({ ascFloor: page.floor, ascDiff: page.diff || null, ascBosses: page.bosses.map((b) => b.id) });
   const list = await bossMechanics();
   const fake = { fighters: { p: { team: 0 }, ...Object.fromEntries(page.bosses.map((b, i) => [`b${i}`, { id: `b${i}`, team: 1, isBoss: true, monsterId: b.id, name: b.name }])) } };
-  const rules = fightMechanics(fake, list, page.floor, page.diff);
+  const attempts = page.floor ? await ascSeenAll(page.floor).catch(() => []) : [];
+  const rules = mergeObserved(fightMechanics(fake, list, page.floor, page.diff), fake, attempts.flatMap((a) => a.seen || []), list);
   const head = `<div style="padding-right:44px"><b style="font-size:15px">🧠 Étage ${page.floor ?? '?'}${page.diff ? ` · ${esc(page.diff)}` : ''}</b><div style="font-size:11px;color:#8a7d66">Mécaniques du premier boss encore debout ; à sa chute, le suivant prend le relais.</div></div>`;
-  const mech = page.bosses.map((b, i) => `<div style="margin-top:6px"><b>${i + 1}. ${esc(b.name)}</b>${rules.filter((r) => r.boss === `b${i}`).map((r) => `<div style="font-size:12px;color:#d8cbb3">• <b>${esc(r.name)}</b> — ${esc(r.text)}</div>`).join('') || '<div style="font-size:12px;color:#8a7d66">aucune mécanique connue</div>'}</div>`).join('');
+  const mech = page.bosses.map((b, i) => `<div style="margin-top:6px"><b>${i + 1}. ${esc(b.name)}</b>${rules.filter((r) => r.boss === `b${i}`).map((r) => `<div style="font-size:12px;color:#d8cbb3">• <b>${esc(r.name)}</b>${r.learned ? ' <span style="color:#8fd4ee" title="Absente du bestiaire pour cette difficulté, mais vue en combat à cet étage">(vue en combat)</span>' : r.seenRound ? ' <span style="color:#8fd4ee" title="Tour confirmé par un combat à cet étage">(tour confirmé)</span>' : ''} — ${esc(r.text)}${ascRuleTiming(r)}</div>`).join('') || '<div style="font-size:12px;color:#8a7d66">aucune mécanique connue</div>'}</div>`).join('');
   const deckNow = page.decks[page.active];
+  const fmtAt = (t) => new Date(t).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const hist = attempts.slice(0, 6).map((a) => `<div style="font-size:12px;margin-top:3px"><span style="color:${a.status === 'won' ? '#6fcf7a' : '#ff7b6b'}">${a.status === 'won' ? '✔' : '✖'}</span> <b>${esc(a.player)}</b> <span style="color:#8a7d66">${fmtAt(a.at)}${a.rounds ? `, ${a.rounds} tours` : ''}</span>${a.cause ? ` — ${esc(a.cause)}` : ''}${(a.seen || []).length ? `<div style="color:#b9a98c;padding-left:14px">vu : ${a.seen.map((o) => `${esc(o.bossName)} ${esc(o.name || o.text)} (t${o.round})`).join(' · ')}</div>` : ''}</div>`).join('');
   el.innerHTML = `${head}${mech}
+    ${hist ? `<div style="margin-top:8px"><b style="font-size:12px">📜 Essais à cet étage</b>${hist}</div>` : ''}
     <div style="margin-top:8px;font-size:12px;color:#b9a98c">Deck actif : <b>${esc(deckNow?.label || '?')}</b> — ${esc((deckNow?.names || []).join(', ') || 'vide')}</div>
     <div style="margin-top:8px"><button data-a="advise" style="${btn};background:#2e6fbf">🃏 Conseiller un deck (${ASC_DECK_SIZE} cartes)</button></div>
     <div data-k="out" style="margin-top:8px"></div>`;

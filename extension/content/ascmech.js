@@ -253,3 +253,100 @@ planTurn.lastEl = null;   // élément de la dernière ligne du dernier sort jou
 
 // Étage d'Ascension lu sur un bouton (« Affronter l’étage 12 »).
 const floorOf = (label) => +(label || '').match(/étage (\d+)/i)?.[1] || null;
+
+// ---------- Mécaniques observées dans les combats (les nôtres et ceux des amis, via le Worker) ----------
+// Le combat ne liste pas les mécaniques actives, mais le journal les annonce quand elles se déclenchent (t: 'mechanic').
+// On garde ces observations par étage : au prochain essai (ou quand on atteint l'étage d'un ami), elles complètent les
+// règles du bestiaire (mécanique manquante, tour exact du Miroir / des PA comptés / de l'Échange de vie).
+const MECH_TEXTS = [
+  [/vous vole \d+ PA/i, 'Vol de PA'],
+  [/soins vous blessent|soins sont divisés/i, 'Malédiction des soins'],
+  [/se relève/i, 'Deuxième souffle'],
+  [/renvoie le coup/i, 'Miroir'],
+  [/scelle .* pour ce tour/i, 'Sceau'],
+  [/échange sa vie/i, 'Échange de vie'],
+  [/onde de choc/i, 'Onde de choc'],
+  [/fureur/i, 'Fureur'],
+  [/peau dure|sans bouclier/i, 'Peau dure'],
+  [/perd patience|t.achève/i, 'Rage'],
+  [/pulvérise .* d.un seul coup/i, 'PA comptés|Rage'],
+];
+// [{ monsterId, bossName, name (ou null : texte inconnu), round, text }]
+function observedMechanics(st) {
+  const out = [];
+  let round = 0;
+  for (const L of st.log || []) {
+    if (L.t === 'round') round = +L.round || round;
+    if (L.t !== 'mechanic' || !L.who || L.who === 'p') continue;
+    const f = st.fighters?.[L.who];
+    if (!f || f.team === st.fighters.p?.team) continue;
+    const name = MECH_TEXTS.find(([re]) => re.test(L.text || ''))?.[1] || null;
+    if (!out.some((o) => o.monsterId === +f.monsterId && o.name === name && o.round === round)) {
+      out.push({ monsterId: +f.monsterId, bossName: f.name, name, round, text: L.text });
+    }
+  }
+  return out;
+}
+// Cause probable d'une défaite : mécanique qui nous a achevés, sinon l'attaque d'un boss (et nos auto-dégâts du combat).
+function ascFailCause(st) {
+  const log = st.log || [];
+  let round = 0, self = 0, last = null;
+  for (let i = 0; i < log.length; i++) {
+    const L = log[i];
+    if (L.t === 'round') round = +L.round || round;
+    if (L.t === 'dmg' && L.who === 'p' && L.el === 0) self += +L.v || 0;   // onde, soins maudits, coups renvoyés
+    if (L.t === 'mechanic' && /pulvérise|achève|perd patience/i.test(L.text || '')) last = { round, text: L.text };
+  }
+  if (last) return `tour ${last.round} : ${last.text}`;
+  if (log.some((L) => L.t === 'end' && L.reason === 'flee')) return `abandon au tour ${round}`;
+  const boss = Object.values(st.fighters || {}).find((f) => f.team !== st.fighters.p?.team && f.alive);
+  return `PV à zéro au tour ${round}${boss ? ` (${boss.name} encore debout)` : ''}${self ? ` — ${Math.round(self)} PV perdus par nos propres sorts` : ''}`;
+}
+// Règles du bestiaire + observations [{ monsterId, name, round }] : mécanique observée absente des règles → ajoutée (texte
+// du bestiaire pour ce boss) ; Miroir / PA comptés / Échange de vie → au(x) tour(s) observé(s).
+function mergeObserved(rules, st, seen, list) {
+  const out = rules.map((r) => ({ ...r }));
+  for (const f of Object.values(st.fighters || {})) {
+    if (f.team === st.fighters.p?.team || !f.isBoss) continue;
+    const obs = (seen || []).filter((o) => +o.monsterId === +f.monsterId && o.name);
+    if (!obs.length) continue;
+    const b = list.find((x) => +x.id === +f.monsterId);
+    for (const o of obs) {
+      let name = o.name;
+      if (name === 'PA comptés|Rage') name = b?.m.some((m) => m.n === 'PA comptés') ? 'PA comptés' : 'Rage';
+      let r = out.find((x) => x.boss === f.id && x.name === name);
+      if (!r) {
+        const m = b?.m.filter((x) => x.n === name).at(-1);
+        if (!m) continue;
+        r = { boss: f.id, bossName: f.name, name, text: m.x, ...parseMechanic(m), learned: true };
+        out.push(r);
+      }
+      if (r.k === 'mirror' && o.round) { r.from = Math.min(r.from, o.round); r.to = Math.max(r.to, o.round); r.seenRound = true; }
+      if (r.k === 'apExact' && o.round) { r.turn = o.round; r.seenRound = true; }
+      if (r.k === 'swap' && o.round) { r.turn = o.round; r.seenRound = true; }
+    }
+  }
+  return out;
+}
+// Observations gardées pour l'étage (les nôtres, localStorage) : { étage: [{ at, status, diff, seen, cause }] }.
+const ASC_SEEN_KEY = 'dmAscSeen';
+function ascSeenOwn(floor) { try { return JSON.parse(localStorage.getItem(ASC_SEEN_KEY) || '{}')[floor] || []; } catch { return []; } }
+function ascRemember(asc) {
+  try {
+    const all = JSON.parse(localStorage.getItem(ASC_SEEN_KEY) || '{}');
+    all[asc.floor] = [...(all[asc.floor] || []), asc].slice(-10);
+    localStorage.setItem(ASC_SEEN_KEY, JSON.stringify(all));
+  } catch { /* stockage plein */ }
+}
+// Observations d'un étage : les nôtres + celles des amis (Worker, via le service worker ; 5 min de cache).
+const ascSharedCache = {};
+async function ascSeenAll(floor) {
+  const own = ascSeenOwn(floor).map((a) => ({ ...a, player: 'toi' }));
+  let shared = ascSharedCache[floor];
+  if (!shared || Date.now() - shared.at > 5 * 60000) {
+    const r = await send({ type: 'ascShared', floor }).catch(() => null);
+    shared = ascSharedCache[floor] = { at: Date.now(), rows: r?.ok ? r.rows : [] };
+  }
+  const me = myName();
+  return [...own, ...shared.rows.filter((x) => x.p !== me).map((x) => ({ ...x.d, at: x.at, status: x.status, player: x.p }))];
+}
