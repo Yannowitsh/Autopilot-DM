@@ -454,6 +454,7 @@ function scanModules() {
   scanUnequipAllButton();
   scanCancelAllButton();
   scanManualWeightsButton();
+  scanAscPanel();
   scanDeckButton();
 }
 

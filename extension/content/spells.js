@@ -80,7 +80,7 @@ window.addEventListener('message', (e) => {
     if (!st?.fighters?.p?.stats || !st.log?.some((L) => L.t === 'play' && L.who === 'p')) return;
     const fighters = Object.fromEntries(Object.entries(st.fighters).map(([id, f]) => [id,
       { id, name: f.name, kind: f.kind, team: f.team, level: f.level, maxHp: f.maxHp, stats: f.stats, resCap: f.resCap, buffs: f.buffs,
-        ...(id === 'p' ? { cards: f.cards, weaponCard: f.weaponCard } : {}) }]));
+        ...(id === 'p' ? { cards: f.cards, weaponCard: f.weaponCard, basePa: f.basePa } : {}) }]));
     const all = JSON.parse(localStorage.getItem(LAST_FIGHT_KEY) || '{}');
     all[fightAcct()] = { at: Date.now(), kind: st.kind, status: st.status, fighters, log: st.log, logFrom: st.logFrom || 0 };
     localStorage.setItem(LAST_FIGHT_KEY, JSON.stringify(all));

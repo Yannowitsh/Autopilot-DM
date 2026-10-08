@@ -117,7 +117,7 @@ async function step() {
       const autoNext = weightsOn() ? null : findBtn(AUTO_NEXT);
       const next = autoNext || findBtn(isHunt() ? HUNT_RETRY : isAsc() ? /^Étage suivant$/ : /^Étape suivante$/);
       if (!next) return;
-      await save({ botFight: true, ...(isAsc() && cfg.ascFloor ? { ascFloor: cfg.ascFloor + 1 } : {}) });
+      await save({ botFight: true, ...(isAsc() && cfg.ascFloor ? { ascFloor: cfg.ascFloor + 1, ascDiff: null } : {}) });   // difficulté de l'étage suivant : inconnue
       spendEnergy();
       lastAutoClick = autoNext ? Date.now() : 0;
       markLaunch();
@@ -226,7 +226,9 @@ async function step() {
     await sleep(humanDelay());
     const btn = isOwner() && start();
     if (!btn) return;
-    await save({ botFight: true, ascFloor: floorOf(label) });   // étage : mécaniques des boss (ascmech.js)
+    // difficulté affichée (« difficulté Cauchemar ») : choisit les mécaniques des boss
+    const ascDiff = document.body.innerText.match(/difficulté\s+(Initiation|Facile|Normale|Difficile|Cauchemar)/)?.[1] || null;
+    await save({ botFight: true, ascFloor: floorOf(label), ascDiff });   // étage : mécaniques des boss (ascmech.js)
     spendEnergy();
     lastAutoClick = 0;   // le combat démarre en manuel : le mode Auto sera activé au tick suivant
     markLaunch();

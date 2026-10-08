@@ -60,17 +60,19 @@ function ascRanges(w) {
   return out;
 }
 // Mécaniques actives d'un combat : [{ boss: id du combattant, name, text, ...règle }].
-function fightMechanics(st, list, floor) {
+// diff : difficulté affichée sur la page Ascension (« Cauchemar »…), prioritaire ; sinon déduite de l'étage.
+function fightMechanics(st, list, floor, diff = null) {
   const out = [];
   for (const f of Object.values(st.fighters || {})) {
     if (f.team === st.fighters.p?.team || !f.isBoss) continue;
     const b = list.find((x) => +x.id === +f.monsterId) || list.find((x) => x.n === f.name);
     if (!b) continue;
     const asc = b.m.filter((m) => ascRanges(m.w).length);
-    let picked = floor ? asc.filter((m) => ascRanges(m.w).some(([a, z]) => floor >= a && floor <= z)) : asc;
+    let picked = diff ? asc.filter((m) => m.w.split(' · ')[0].split(' et ').includes(diff))
+      : floor ? asc.filter((m) => ascRanges(m.w).some(([a, z]) => floor >= a && floor <= z)) : asc;
     // Cauchemar : la deuxième mécanique s'ajoute
-    const nightmare = picked.some((m) => ascRanges(m.w).some(([a, z]) => z === Infinity && floor >= a));
-    if (nightmare || !floor) picked = [...picked, ...b.m.filter((m) => /deuxième mécanique/.test(m.w))];
+    const nightmare = diff ? diff === 'Cauchemar' : picked.some((m) => ascRanges(m.w).some(([a, z]) => z === Infinity && floor >= a));
+    if (nightmare || (!diff && !floor)) picked = [...picked, ...b.m.filter((m) => /deuxième mécanique/.test(m.w))];
     for (const m of picked) out.push({ boss: f.id, bossName: f.name, name: m.n, text: m.x, ...parseMechanic(m) });
   }
   return out;
@@ -80,6 +82,14 @@ function fightMechanics(st, list, floor) {
 const fighterStat = (f) => (k) => (+f.stats?.[k] || 0) + (f.buffs || []).reduce((s, b) => s + (b.stat === k ? +b.value || 0 : 0), 0);
 // Dégâts moyens d'une carte sur une cible (résistances comprises), et ce qu'elle rend en PV au lanceur (vols, soins).
 function cardEffect(card, p, tgt) {
+  // mémorisé par combattant (mêmes stats) : le plan du tour et le conseiller de deck l'appellent des milliers de fois
+  const memo = p._fx || (p._fx = new Map()), mk = `${card.id}|${card.uid || ''}|${tgt?.id || ''}`;
+  if (memo.has(mk)) return memo.get(mk);
+  const r = cardEffectRaw(card, p, tgt);
+  memo.set(mk, r);
+  return r;
+}
+function cardEffectRaw(card, p, tgt) {
   const S = fighterStat(p);
   const lines = damageLines(card, S);
   const critP = +card.cc > 0 ? Math.min(1, Math.max(0, (+card.cc + S('critique')) / 100)) : 0;
@@ -108,6 +118,20 @@ function cardEffect(card, p, tgt) {
   }
   return { dmg, self: steal + heal };
 }
+
+// Bouclier posé par une carte (PV) : shieldHp = % des PV max (Vertu : « 20 % de tes PV max ») ; shieldLvl = selon le
+// niveau (estimation : valeur × niveau / 20, à vérifier sur les combats enregistrés).
+function shieldOf(card, p) {
+  let v = 0;
+  for (const e of card.eff || []) {
+    if (e?.tgt !== 'self') continue;
+    if (e.k === 'shieldHp') v += (+e.min || 0) / 100 * (+p.maxHp || 0);
+    else if (e.k === 'shieldLvl') v += (+e.min || 0) * (+p.level || 200) / 20;
+  }
+  return v;
+}
+const apGainOf = (card) => (card.eff || []).reduce((t, e) => t + (e?.k === 'apGain' && e.tgt === 'self' ? +e.min || 0 : 0), 0);
+const AP_REMOVE_CUT = 0.3;   // PA retirés à l'ennemi : sa prochaine attaque est affaiblie (~30 %, estimation)
 
 // ---------- Plan du tour ----------
 // cand : cartes jouables [{ c, key, weapon, w, ap }] ; rules : fightMechanics(...). Renvoie la 1re carte de la meilleure
@@ -200,11 +224,13 @@ function planTurn(st, cand, rules) {
         const eff = hit(target, 1);
         if (x.zone) for (const f of enemies) if (f !== target && (nh[f.id] > 0 || mirrored.has(f.id))) hit(f, ZONE_FALLOFF);
         if (curse) self += eff.self;   // vols et soins blessent
-        else if (!x.isDmg) gain += x.w * 5;
+        if ((x.c.eff || []).some((e) => e?.k === 'apRemove' && e.tgt === 'enemy')) gain += AP_REMOVE_CUT * incomingOf(target);
       } else if (cardKind(x.c) === 'heal') {
         if (curse) continue;
         gain += Math.min(maxHp - hp, x.w * 20);
-      } else gain += x.w * 5;   // buff, bouclier… : valeur tirée de son poids
+      } else if (!x.shield && !apGainOf(x.c)) gain += x.w * 5;   // buff… : valeur tirée de son poids
+      // bouclier : PV épargnés sur les attaques à venir (une seule fois par tour)
+      if (x.shield && !seq.some((q) => q.x.shield)) gain += Math.min(shieldOf(x.c, p), safety);
       if (x.shield && shieldRule && !shieldUp) gain += 5000;   // Peau dure : le bouclier d'abord
       const wave = ondePct > 0 && x.isDmg && !x.weapon && lastEl != null && x.firstEl === lastEl;
       if (wave) self += maxHp * ondePct / 100;
@@ -212,13 +238,13 @@ function planTurn(st, cand, rules) {
       const left = hp - self;
       const killsAll = enemies.every((f) => nh[f.id] <= 0);
       if (self > 0 && left < safety && !(killsAll && left > 0)) continue;
-      dfs([...seq, { x, target }], used | (1 << i), ap - x.ap, x.isDmg && !x.weapon ? x.lastEl : lastEl, count + (x.weapon ? 0 : 1),
+      dfs([...seq, { x, target }], used | (1 << i), ap - x.ap + apGainOf(x.c), x.isDmg && !x.weapon ? x.lastEl : lastEl, count + (x.weapon ? 0 : 1),
         left, nh, shieldUp || x.shield, score + gain - SELF_W * self);
     }
   };
   dfs([], 0, +p.ap || 0, startLast, cardsDone, +p.hp || 0, Object.fromEntries(enemies.map((f) => [f.id, +f.hp || 0])), shieldUp0, 0);
   const first = best?.seq[0];
-  return { pick: first?.x || null, target: first?.target || null, plan: best?.seq || [], notes };
+  return { pick: first?.x || null, target: first?.target || null, plan: best?.seq || [], notes, score: best?.s || 0 };
 }
 planTurn.lastEl = null;   // élément de la dernière ligne du dernier sort joué (si le jeu ne le donne pas)
 

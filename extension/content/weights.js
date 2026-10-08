@@ -158,9 +158,9 @@ async function weightedFight(manual = null) {
     // Ascension : mécaniques des boss présents à l'étage en cours (bestiaire), respectées par le plan du tour
     let rules = null;
     if (isAsc() && st.kind === 'boss') {
-      rules = fightMechanics(st, await bossMechanics(), +cfg.ascFloor || null);
+      rules = fightMechanics(st, await bossMechanics(), +cfg.ascFloor || null, cfg.ascDiff || null);
       planTurn.lastEl = null;
-      DM.log(`ascension${cfg.ascFloor ? ` étage ${cfg.ascFloor}` : ' (étage inconnu)'} : ${rules.map((r) => `${r.bossName} — ${r.name}`).join(' ; ') || 'aucune mécanique connue'}`);
+      DM.log(`ascension${cfg.ascFloor ? ` étage ${cfg.ascFloor}` : ' (étage inconnu)'}${cfg.ascDiff ? ` (${cfg.ascDiff})` : ''} : ${rules.map((r) => `${r.bossName} — ${r.name}`).join(' ; ') || 'aucune mécanique connue'}`);
     }
     let blocked = new Set(), blockedTurn = null, errors = 0;
     for (let i = 0; i < 400 && st.status === 'ongoing'; i++) {
