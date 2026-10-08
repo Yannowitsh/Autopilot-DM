@@ -75,7 +75,7 @@ function chooseFightAction(st, casts, blocked, rules = null) {
     const ap = +x.c.ap || 0;
     if (!(w > 0) || ap > p.ap || p.sealed?.includes(x.c.uid) || blocked.has(x.c.uid)) continue;
     if (needsTarget(x.c) && !target) continue;
-    if (cardKind(x.c) === 'heal' && !lowHp) continue;
+    if (cardKind(x.c) === 'heal' && !lowHp && !rules) continue;   // Ascension : le plan du tour pèse le soin réel
     if (every > 0 && casts[x.key] != null && p.turnNo - casts[x.key] < every) continue;
     cand.push({ ...x, w, ap });
   }
@@ -208,6 +208,7 @@ async function weightedFight(manual = null) {
       }
       st = withFullLog(res.state);
       learnCardCrits(st);
+      learnCardHeals(st);
       if (res.rewards && st.status !== 'ongoing') { dropOnRewards(res.rewards, `${st.kind}|${st.logCount}`); farmOnRewards(st, res.rewards); }
       if (st.status !== 'ongoing') combatOnEnd(st, res.rewards);
     }

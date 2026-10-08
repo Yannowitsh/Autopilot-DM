@@ -47,6 +47,45 @@ function learnCardCrits(st) {
   }
   if (changed) { try { localStorage.setItem(CARD_CRIT_KEY, JSON.stringify(known)); } catch { /* stockage plein */ } }
 }
+// Soins des cartes, appris en combat : { idCarte: { r: soin moyen / PV max, n } }. Le texte des cartes ne suffit pas
+// (Évolution « 53 % » rend ~25 % des PV max ; Runification 6 % des PV max) — on mesure les « heal » qui suivent le lancer.
+const CARD_HEAL_KEY = 'dmCardHeal';
+let cardHealCache = null;
+const cardHeals = () => {
+  if (!cardHealCache) { try { cardHealCache = JSON.parse(localStorage.getItem(CARD_HEAL_KEY) || '{}'); } catch { cardHealCache = {}; } }
+  return cardHealCache;
+};
+const healSeen = new Set();   // lancers déjà comptés (le même journal revient à chaque état)
+function learnCardHeals(st) {
+  const p = st?.fighters?.p, log = st?.log;
+  if (!p || !Array.isArray(log) || !(+p.maxHp)) return;
+  const byName = new Map(Object.values(p.cards || {}).map((c) => [c.name, c]));
+  const known = cardHeals();
+  const base = (+st.logCount || log.length) - log.length;
+  let changed = false;
+  for (let i = 0; i < log.length; i++) {
+    const L = log[i];
+    if (L.t !== 'play' || L.who !== 'p') continue;
+    const c = byName.get(L.card);
+    // seulement les soins « propres » (pas les vols de vie, qui dépendent des dégâts)
+    if (!c?.id || !(c.eff || []).some((e) => e?.tgt === 'self' && /heal/i.test(e.k)) || (c.eff || []).some((e) => e?.k === 'steal')) continue;
+    const key = `${c.id}|${base + i}|${p.maxHp}`;
+    if (healSeen.has(key)) continue;
+    let sum = 0, done = false;
+    for (let j = i + 1; j < log.length; j++) {
+      const D = log[j];
+      if (['play', 'turn', 'round'].includes(D.t)) { done = true; break; }
+      if (D.t === 'heal' && D.who === 'p') sum += +D.v || 0;
+    }
+    if (!done || !sum) continue;   // lancer pas terminé dans ce journal, ou soin nul (PV pleins / malédiction)
+    healSeen.add(key);
+    const k = known[c.id] || { r: 0, n: 0 };
+    k.r = (k.r * k.n + sum / p.maxHp) / (k.n + 1); k.n = Math.min(20, k.n + 1);
+    known[c.id] = k;
+    changed = true;
+  }
+  if (changed) { try { localStorage.setItem(CARD_HEAL_KEY, JSON.stringify(known)); } catch { /* stockage plein */ } }
+}
 const critLinesOf = (card) => (Array.isArray(card?.crit) ? card.crit : cardCrits()[card?.id]) || null;
 // Élément « best » (armes…) : celui de la meilleure caractéristique (Terre, Feu, Eau, Air) ; statOf(clé) → valeur.
 const bestEl = (statOf) => (statOf ? [1, 2, 3, 4].reduce((b, el) => (statOf(EL_STAT[el]) > statOf(EL_STAT[b]) ? el : b), 1) : 0);
@@ -75,6 +114,7 @@ window.addEventListener('message', (e) => {
     const obj = JSON.parse(e.data.line);
     const st = withFullLog(obj.state);
     learnCardCrits(st);
+    learnCardHeals(st);
     if (obj.rewards && st?.status && st.status !== 'ongoing') { dropOnRewards(obj.rewards, `${st.kind}|${st.logCount}`); farmOnRewards(st, obj.rewards); }
     if (st?.status && st.status !== 'ongoing') combatOnEnd(st, obj.rewards);
     if (!st?.fighters?.p?.stats || !st.log?.some((L) => L.t === 'play' && L.who === 'p')) return;

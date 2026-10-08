@@ -110,7 +110,9 @@ function cardEffectRaw(card, p, tgt) {
     if (e.k === 'steal') steal += d * STEAL_HEAL_PART;
   }
   let heal = 0;
-  for (const e of card.eff || []) {
+  const learned = cardHeals()[card.id];
+  if (learned?.n) heal = learned.r * (+p.maxHp || 0);   // soin mesuré en combat
+  else for (const e of card.eff || []) {
     if (e?.tgt !== 'self') continue;
     if (e.k === 'healPct') heal += (+e.min || 0) / 100 * (+p.maxHp || 0);
     else if (e.k === 'heal') {
@@ -118,7 +120,7 @@ function cardEffectRaw(card, p, tgt) {
       heal += ((+e.min || 0) + (+(e.max ?? e.min) || 0)) / 2 * (1 + (S(EL_STAT[el]) + S('puissance')) / 100);
     }
   }
-  return { dmg, self: steal + heal };
+  return { dmg, self: steal + heal, steal, heal };
 }
 
 // Bouclier posé par une carte (PV) : shieldHp = % des PV max (Vertu 26 → 26 % des PV max) ; shieldLvl = % du niveau
@@ -156,6 +158,7 @@ function planTurn(st, cand, rules) {
   const onde = has('onde').length > 0;
   if (onde) notes.push('Onde : alterner');
   const curse = has('curse').some((r) => round >= r.from && !r.half);
+  const halfHeal = has('curse').some((r) => round >= r.from && r.half);   // « tes soins sont divisés par deux »
   if (curse) notes.push('soins = dégâts');
   const shieldRule = has('shield')[0];
   const shieldUp0 = (p.shields || []).some((s) => (+s.v || +s.value || +s.amount || 1) > 0);
@@ -230,7 +233,7 @@ function planTurn(st, cand, rules) {
       if (used & (1 << i)) continue;
       const x = info[i];
       if (x.ap > ap) continue;
-      let target = null, gain = 0, self = 0;
+      let target = null, gain = 0, self = 0, healed = 0;
       const nh = { ...ehp };
       if (x.isDmg || needsTarget(x.c)) {
         // cible : vivante, pas sous Miroir, et pas à ménager (Échange de vie) si le coup la fait passer sous nos PV %
@@ -268,10 +271,11 @@ function planTurn(st, cand, rules) {
         const eff = hit(target, 1);
         if (x.zone) for (const f of enemies) if (f !== target && (nh[f.id] > 0 || mirrored.has(f.id))) hit(f, ZONE_FALLOFF);
         if (curse) self += eff.self;   // vols et soins blessent
+        else healed += (eff.steal + eff.heal) * (halfHeal ? 0.5 : 1);   // vol de vie : 50 % des dégâts rendus
         if ((x.c.eff || []).some((e) => e?.k === 'apRemove' && e.tgt === 'enemy')) gain += AP_REMOVE_CUT * incomingOf(target);
       } else if (cardKind(x.c) === 'heal') {
-        if (curse) continue;
-        gain += Math.min(maxHp - hp, x.w * 20);
+        const h = cardEffect(x.c, p, null).heal;
+        if (curse) self += h; else healed += h * (halfHeal ? 0.5 : 1);
       } else if (!x.shield && !apGainOf(x.c)) gain += x.w * 5;   // buff… : valeur tirée de son poids
       // bouclier : PV épargnés sur les attaques à venir (une seule fois par tour)
       // bouclier : PV épargnés, comptés comme nos PV (× SELF_W, comme les PV perdus) ; relancé, il remplace ce qui reste
@@ -284,7 +288,10 @@ function planTurn(st, cand, rules) {
       const wave = ondePct > 0 && x.isDmg && !x.weapon && lastEl != null && x.firstEl === lastEl;
       if (wave) self += maxHp * ondePct / 100;
       // jamais en dessous de ce que les boss vont nous infliger à leur tour (sauf si la suite les tue tous)
-      const left = hp - self;
+      // soins (vols de vie compris) : PV rendus, plafonnés à ce qui manque, comptés comme nos PV (× SELF_W)
+      const healUse = Math.max(0, Math.min(healed, maxHp - (hp - self)));
+      gain += SELF_W * healUse;
+      const left = hp - self + healUse;
       const killsAll = enemies.every((f) => nh[f.id] <= 0);
       if (self > 0 && left < safety && !(killsAll && left > 0)) continue;
       dfs([...seq, { x, target }], used | (1 << i), ap - x.ap + apGainOf(x.c), x.isDmg && !x.weapon ? x.lastEl : lastEl, count + (x.weapon ? 0 : 1),
