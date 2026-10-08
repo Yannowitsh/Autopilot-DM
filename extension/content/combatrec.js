@@ -52,10 +52,12 @@ function combatOnEnd(st, rewards) {
     lsSet(COMBAT_SEEN_KEY, [...seen, id].slice(-30));
     // Ascension : étage, boss, mécaniques vues dans le journal et cause d'une défaite (gardés aussi pour l'étage, ascmech.js)
     const ids = Object.values(st.fighters).filter((f) => f.team !== st.fighters.p.team && f.isBoss).map((f) => +f.monsterId);
-    const onAsc = st.kind === 'boss' && cfg.ascFloor && ids.length
+    const ascBossN = (f) => (f >= 7 ? 3 : f >= 4 ? 2 : 1);   // « Étages 1 à 3 : un boss, 4 à 6 : 2, dès 7 : 3 »
+    const onAsc = st.kind === 'boss' && cfg.ascFloor && ids.length === ascBossN(+cfg.ascFloor)
       && (cfg.ascBosses?.length ? ids.every((m) => cfg.ascBosses.includes(m)) : isAsc());
     const asc = onAsc ? { floor: +cfg.ascFloor, diff: cfg.ascDiff || null, at: Date.now(), status: st.status, rounds: +st.round || 0,
-      bosses: Object.values(st.fighters).filter((f) => f.team !== st.fighters.p.team && f.isBoss).map((f) => ({ id: +f.monsterId, name: f.name })),
+      bosses: Object.values(st.fighters).filter((f) => f.team !== st.fighters.p.team && f.isBoss).map((f) => ({ id: +f.monsterId, name: f.name, maxHp: +f.maxHp || 0, atk: +f.atk || 0, element: f.element ?? null,
+        res: EL_RES_PCT.map((k) => +f.stats?.[k] || 0), resCap: +f.resCap || 100 })),
       seen: observedMechanics(st), cause: st.status === 'lost' ? ascFailCause(st) : null } : null;
     if (asc) {
       ascRemember(asc);

@@ -39,7 +39,7 @@ function parseMechanic(m) {
     case 'Peau dure': return { k: 'shield', pass: num(/seuls (\d+) ?%/) ?? 50 };
     case 'Onde de choc': return { k: 'onde', pct: num(/(\d+) ?% de tes PV/) ?? 25 };
     case 'Malédiction des soins': return { k: 'curse', from: num(/tour (\d+)/) ?? 1, half: /divisés par deux/.test(x) };
-    case 'Sceau': return { k: 'seal' };
+    case 'Sceau': return { k: 'seal', every: /chaque tour/.test(x) ? 1 : num(/Tous les (\d+) tours/) ?? 3 };
     case 'Deuxième souffle': return { k: 'revive', pct: num(/(\d+) ?% de ses PV/) ?? 30 };
     case 'Miroir': {
       const r = x.match(/tours? (\d+)(?: à (\d+))?/);
@@ -211,7 +211,15 @@ function planTurn(st, cand, rules) {
           return (nh[f.id] - cardEffect(x.c, p, f).dmg) / (+f.maxHp || 1) >= myPct + 0.05;
         });
         if (!ok.length) continue;
-        target = ok.sort((a, b) => nh[a.id] - nh[b.id])[0];
+        // cible : celle qu'on achève, sinon la plus menaçante par PV effectif (attaque × dégâts du coup / PV restants, un
+        // boss qui se relèvera compte ses PV de résurrection en plus) — pas simplement la moins entamée
+        const threat = (f) => {
+          const d = cardEffect(x.c, p, f).dmg;
+          if (d >= nh[f.id] && !(reviveAt[f.id] && !nh[`r:${f.id}`])) return 1e12 + d;   // coup fatal
+          const extra = reviveAt[f.id] && !nh[`r:${f.id}`] ? (+f.maxHp || 0) * reviveAt[f.id] / 100 : 0;
+          return Math.max(1, +f.atk || incomingOf(f) || 1) * d / Math.max(1, nh[f.id] + extra);
+        };
+        target = ok.sort((a, b) => threat(b) - threat(a))[0];
         const pass = shieldRule && !shieldUp ? shieldRule.pass / 100 : 1;
         const hit = (f, part) => {
           const e = cardEffect(x.c, p, f);

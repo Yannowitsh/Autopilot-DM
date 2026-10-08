@@ -58,12 +58,21 @@ function evalAscDeck(deck, sim) {
     const fighters = { p };
     sim.bosses.forEach((b, i) => {
       if (i < lead) return;   // déjà tombé
-      const res = Object.fromEntries(EL_RES_PCT.map((k) => [k, ASC_SIM.bossRes]));
-      fighters[`b${i}`] = { id: `b${i}`, team: 1, isBoss: true, alive: true, monsterId: b.id, name: b.name, stats: res, resCap: 100,
-        hp: ASC_SIM.bossHp, maxHp: ASC_SIM.bossHp, atk: ASC_SIM.bossAtk, intent: { k: 'attack', value: ASC_SIM.bossAtk } };
+      // stats vues lors d'un essai à cet étage, sinon valeurs types
+      const k = b.known;
+      const res = Object.fromEntries(EL_RES_PCT.map((key, j) => [key, k?.res ? k.res[j] : ASC_SIM.bossRes]));
+      const hp = k?.maxHp || ASC_SIM.bossHp, atk = k?.atk || ASC_SIM.bossAtk;
+      fighters[`b${i}`] = { id: `b${i}`, team: 1, isBoss: true, alive: true, monsterId: b.id, name: b.name, stats: res, resCap: k?.resCap || 100,
+        hp, maxHp: hp, atk, intent: { k: 'attack', value: atk } };
     });
+    // Sceau du boss en tête : sa carte la plus chère est scellée les tours concernés
+    const seal = sim.rules.find((r) => r.k === 'seal' && r.boss === `b${lead}`);
+    if (seal && (round - 1) % (seal.every || 1) === 0) {
+      const top = Object.values(cards).sort((a, b) => (+b.ap || 0) - (+a.ap || 0))[0];
+      if (top) p.sealed = [top.uid];
+    }
     const st = { round, fighters, log: [], order: ['p', ...sim.bosses.map((_, i) => `b${i}`)] };
-    const cand = Object.values(cards).map((c) => ({ c, key: c.id, weapon: false, w: weightOf(c).w, ap: +c.ap || 0 }));
+    const cand = Object.values(cards).filter((c) => !p.sealed?.includes(c.uid)).map((c) => ({ c, key: c.id, weapon: false, w: weightOf(c).w, ap: +c.ap || 0 }));
     if (p.weaponCard) cand.push({ c: p.weaponCard, key: WEAPON_KEY, weapon: true, w: weightOf(p.weaponCard, true).w, ap: +p.weaponCard.ap || 0 });
     planTurn.lastEl = null;
     const plan = planTurn(st, cand, sim.rules);
@@ -83,7 +92,9 @@ async function adviseAscDeck(page, say = () => {}) {
   const fake = { fighters: { p: { team: 0 }, ...Object.fromEntries(page.bosses.map((b, i) => [`b${i}`, { id: `b${i}`, team: 1, isBoss: true, monsterId: b.id, name: b.name }])) } };
   const attempts = page.floor ? await ascSeenAll(page.floor).catch(() => []) : [];
   const rules = mergeObserved(fightMechanics(fake, list, page.floor, page.diff), fake, attempts.flatMap((a) => a.seen || []), list);
-  const sim = { p: { ...p, _fx: new Map() }, bosses: page.bosses, rules };   // _fx : estimations partagées entre les simulations
+  // boss : stats vues au dernier essai à cet étage (PV, attaque, résistances), sinon valeurs types
+  const known = (id) => attempts.flatMap((a) => a.bosses || []).find((b) => +b.id === +id && b.maxHp);
+  const sim = { p: { ...p, _fx: new Map() }, bosses: page.bosses.map((b) => ({ ...b, known: known(b.id) })), rules };   // _fx : estimations partagées entre les simulations
   const byName = new Map(cards.map((c) => [c.n, c]));
   const current = (page.decks[page.active]?.names || []).map((n) => byName.get(n)).filter(Boolean);
   say('Classement des cartes…');
@@ -108,7 +119,7 @@ async function adviseAscDeck(page, say = () => {}) {
     deck = move.d; best = move.v;
   }
   const evCur = current.length ? evalAscDeck(current, sim) : null, evNew = evalAscDeck(deck, sim);
-  return { rules, current, deck, evCur, evNew, add: deck.filter((c) => !current.includes(c)), remove: current.filter((c) => !deck.includes(c)), chunks };
+  return { knownBosses: sim.bosses.some((b) => b.known), rules, current, deck, evCur, evNew, add: deck.filter((c) => !current.includes(c)), remove: current.filter((c) => !deck.includes(c)), chunks };
 }
 
 // Tour d'application d'une règle (après observation), affiché à côté du texte du bestiaire.
@@ -220,7 +231,7 @@ async function renderAscPanel(el) {
         ${advice.add.map((c) => `<div style="font-size:12px;margin-top:4px;color:#8fe39a">+ ${esc(c.n)} (${c.ap} PA) <span style="color:#b9a98c">(${esc(ascCardReason(c, advice.rules, true))})</span></div>`).join('')}`}
         <div style="font-size:12px;margin-top:6px">Deck conseillé : <b>${advice.deck.map((c) => esc(c.n)).join(', ')}</b></div>
         ${same ? '' : `<div style="margin-top:6px"><button data-a="apply" style="${btn};background:#2e7d32">✔ Enregistrer dans le Deck ${ASC_DECK_SLOT + 1} et l’activer</button></div>`}
-        <div style="font-size:11px;color:#8a7d66;margin-top:6px">Simulation : 3 boss à ${fmt(ASC_SIM.bossHp)} PV, ${ASC_SIM.bossRes} % de résistances, attaques de ${fmt(ASC_SIM.bossAtk)} (inconnus avant le combat) ; boucliers en PV épargnés (ceux « selon le niveau » estimés, à vérifier), gain de PA compris.</div>`;
+        <div style="font-size:11px;color:#8a7d66;margin-top:6px">Simulation : ${advice.knownBosses ? 'PV, attaques et résistances des boss vus au dernier essai' : `boss à ${fmt(ASC_SIM.bossHp)} PV, ${ASC_SIM.bossRes} % de résistances, attaques de ${fmt(ASC_SIM.bossAtk)} (pas encore d’essai à cet étage)`} ; Sceau simulé ; boucliers en PV épargnés (ceux « selon le niveau » estimés, à vérifier), gain de PA compris.</div>`;
       const ap = out.querySelector('[data-a="apply"]');
       if (ap) ap.onclick = async () => {
         ap.disabled = true; ap.textContent = 'Enregistrement…';
