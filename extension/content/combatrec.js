@@ -57,7 +57,9 @@ function combatOnEnd(st, rewards) {
       && (cfg.ascBosses?.length ? ids.every((m) => cfg.ascBosses.includes(m)) : isAsc());
     const asc = onAsc ? { floor: +cfg.ascFloor, diff: cfg.ascDiff || null, at: Date.now(), status: st.status, rounds: +st.round || 0,
       bosses: Object.values(st.fighters).filter((f) => f.team !== st.fighters.p.team && f.isBoss).map((f) => ({ id: +f.monsterId, name: f.name, maxHp: +f.maxHp || 0, atk: +f.atk || 0, element: f.element ?? null,
-        res: EL_RES_PCT.map((k) => +f.stats?.[k] || 0), resCap: +f.resCap || 100 })),
+        res: EL_RES_PCT.map((k) => +f.stats?.[k] || 0), resCap: +f.resCap || 100,
+        // motif d'intentions (« $1:state:fighters:b0:pattern » = celui d'un autre boss)
+        pattern: Array.isArray(f.pattern) ? f.pattern : st.fighters[String(f.pattern || '').split(':')[3]]?.pattern || null })),
       seen: observedMechanics(st), cause: st.status === 'lost' ? ascFailCause(st) : null } : null;
     if (asc) {
       ascRemember(asc);

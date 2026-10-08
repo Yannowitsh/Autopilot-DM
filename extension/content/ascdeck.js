@@ -155,6 +155,56 @@ async function applyAscDeck(deck, page) {
   await callAction('ascension', selId, [ASC_DECK_SLOT]);
 }
 
+// ---------- Optimiseur de build, objectif « 🏔️ Ascension » ----------
+// Attaque des boss mesurée sur les coups reçus (ramenés avant nos résistances, plafonnées à PLAYER_RES_CAP) :
+// attaque ×1, lourde ×1,7, drain ×0,8, garde / rage 0 ; la rage multiplie ensuite (×1,3 puis ×1,6) au fil du combat.
+const PLAYER_RES_CAP = 50;
+const BOSS_INTENT_MULT = { attack: 1, heavy: 1.7, drain: 0.8, guard: 0, rage: 0 };
+const BOSS_RAGE_AVG = 1.2;
+const bossTurnFactor = (pattern) => (Array.isArray(pattern) && pattern.length
+  ? pattern.reduce((t, k) => t + (BOSS_INTENT_MULT[k] ?? 1), 0) / pattern.length : 0.9) * BOSS_RAGE_AVG;
+// Boss d'un étage (dernier essai connu, le nôtre ou celui d'un ami) + mécaniques (résurrection) + boucliers du deck actif.
+async function ascOptimizerData(floor) {
+  if (!(+floor > 0)) throw new Error('étage d’Ascension inconnu : ouvre la page Ascension ou saisis l’étage');
+  const attempts = await ascSeenAll(+floor);
+  const att = attempts.filter((a) => (a.bosses || []).some((b) => b.maxHp)).sort((a, b) => b.at - a.at)[0];
+  if (!att) throw new Error(`aucun essai connu à l’étage ${floor} (PV et attaques des boss inconnus) : lance-le une fois, ou attends qu’un ami de la synchro l’ait fait`);
+  const list = await bossMechanics();
+  const fake = { fighters: { p: { team: 0 }, ...Object.fromEntries(att.bosses.map((b, i) => [`b${i}`, { id: `b${i}`, team: 1, isBoss: true, monsterId: b.id, name: b.name }])) } };
+  const rules = mergeObserved(fightMechanics(fake, list, +floor, att.diff || null), fake, attempts.flatMap((a) => a.seen || []), list);
+  const bosses = att.bosses.map((b, i) => ({ ...b, revive: rules.find((r) => r.boss === `b${i}` && r.k === 'revive')?.pct || 0,
+    factor: bossTurnFactor(b.pattern), element: b.element ?? 1, res: b.res || [0, 0, 0, 0, 0] }));
+  // boucliers en % des PV max du deck actif (Vertu…) : ils grandissent avec les PV
+  let shieldPct = 0;
+  try {
+    const { cards } = await fetchCollection();
+    const page = await readAscPage().catch(() => null);
+    const names = new Set(page?.decks?.[page.active]?.names || []);
+    for (const c of cards) if (names.has(c.n)) for (const e of c.eff || []) if (e?.k === 'shieldHp' && e.tgt === 'self') shieldPct = Math.max(shieldPct, (+e.min || 0) / Math.max(1, +e.dur || 1));
+  } catch { /* sans boucliers */ }
+  return { floor: +floor, diff: att.diff || null, from: att.player, at: att.at, bosses, shieldPct, rules };
+}
+// Marge de survie d'un build : PV effectifs ÷ dégâts encaissés le temps de tout tuer (> 1 : on gagne).
+// Boss tués dans l'ordre de menace ; chacun frappe (son élément, nos rés. plafonnées) jusqu'à sa mort.
+function ascSurvival(S, pv, dpt, asc, avgRes) {
+  const order = [...asc.bosses].sort((a, b) => (b.atk * b.factor) / (b.maxHp * (1 + b.revive / 100)) - (a.atk * a.factor) / (a.maxHp * (1 + a.revive / 100)));
+  let T = 0, taken = 0;
+  const per = [];
+  for (const b of order) {
+    const r = b.res.reduce((t, x) => t + x, 0) / 5 / 100;
+    const eff = b.maxHp * (1 + b.revive / 100) * (1 - avgRes) / Math.max(0.05, 1 - r);   // dégâts « contre la moyenne » à fournir
+    const t = eff / Math.max(1, dpt);
+    T += t;
+    const el = b.element ?? 1;
+    const rp = Math.min(PLAYER_RES_CAP, S[EL_RES_PCT[el]] || 0), rf = S[EL_RES[el]] || 0;
+    const hit = Math.max(0, b.atk * b.factor - rf) * (1 - rp / 100);
+    taken += hit * T;
+    per.push({ name: b.name, turns: t, hit });
+  }
+  const ehp = pv * (1 + (asc.shieldPct / 100) * T);
+  return { ratio: ehp / Math.max(1, taken), turns: T, taken, ehp, per };
+}
+
 // ---------- Deck automatique (pilote) ----------
 // cfg.ascAutoDeck : avant de lancer un étage, le deck conseillé est enregistré dans le Deck 6 et activé s'il diffère du
 // deck actif. Un seul calcul par étage, boss et nombre d'essais connus (une défaite apporte des infos : on recalcule).

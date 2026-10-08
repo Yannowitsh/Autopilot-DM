@@ -28,7 +28,10 @@ const BUILD_GOALS = {
   prospection: { label: '💰 Prospection', stat: 'prospection', points: 'chance', also: ['chance'],
     value: (S) => 100 + (S.prospection || 0) + Math.floor((S.chance || 0) / 10) },
   sagesse: { label: '📚 Sagesse', stat: 'sagesse', points: 'sagesse', value: (S) => S.sagesse || 0 },
+  asc: { label: '🏔️ Ascension (survie)', asc: true },   // marge de survie contre les boss d'un étage (ascOptimizerData)
 };
+// Ascension : stats qui comptent pour la survie (en plus des dégâts)
+const SURVIVAL_KEYS = ['vitalite', 'pv', 'resPctNeutre', 'resPctTerre', 'resPctFeu', 'resPctEau', 'resPctAir', 'resNeutre', 'resTerre', 'resFeu', 'resEau', 'resAir'];
 const PRESTIGE_EXCLUDED = new Set(['pa', 'pm', 'po', 'invocations']);
 const SET_CACHE_KEY = 'dmSetBonuses';
 const SET_CACHE_MS = 7 * 24 * 3600 * 1000;

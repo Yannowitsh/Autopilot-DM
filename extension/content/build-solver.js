@@ -107,7 +107,16 @@ async function optimizeBuild(opts, say) {
   const goal = BUILD_GOALS[opts.goal] || (opts.krala ? BUILD_GOALS.krala : BUILD_GOALS.dps);   // opts.krala : ancienne case à cocher
   // objectif « cible » : % rés. (plafonnés à 100), rés. fixes par élément et PV saisis dans l'optimiseur
   const tg = opts.tgt || {};
-  const target = goal.custom ? { name: tg.name || 'la cible', resPct: [0, 1, 2, 3, 4].map((i) => Math.min(100, +tg.rp?.[i] || 0)),
+  // Ascension : boss de l'étage (dernier essai connu) ; cible = leurs résistances moyennes pondérées par les PV
+  let asc = null;
+  if (goal.asc) {
+    say('Boss de l’étage (essais enregistrés)…');
+    asc = await ascOptimizerData(+opts.ascFloor || +cfg.ascFloor);
+    const tot = asc.bosses.reduce((t, b) => t + b.maxHp, 0) || 1;
+    asc.target = { name: `étage ${asc.floor}`, resPct: [0, 1, 2, 3, 4].map((i) => asc.bosses.reduce((t, b) => t + b.res[i] * b.maxHp, 0) / tot), rf: [0, 0, 0, 0, 0] };
+    asc.avgRes = asc.target.resPct.reduce((t, x) => t + x, 0) / 5 / 100;
+  }
+  const target = asc ? asc.target : goal.custom ? { name: tg.name || 'la cible', resPct: [0, 1, 2, 3, 4].map((i) => Math.min(100, +tg.rp?.[i] || 0)),
     rf: [0, 1, 2, 3, 4].map((i) => +tg.rf?.[i] || 0), pv: Math.max(0, +tg.pv || 0) } : goal.target || null;
   const goalStat = goal.stat || null;
   const goalKeys = goalStat ? [goalStat, ...(goal.also || [])] : [];
@@ -128,7 +137,8 @@ async function optimizeBuild(opts, say) {
 
   // utile = stats offensives, PA/PO, vitalité si PV minimum, ou panoplie
   const useful = (c) => c.src === 'worn' || c.setName || OFFENSE_KEYS.some((k) => (c.eff[k] || 0) > 0)
-    || (pvMin && ((c.eff.vitalite || 0) > 0 || (c.eff.pv || 0) > 0)) || goalKeys.some((k) => (c.eff[k] || 0) > 0);
+    || (pvMin && ((c.eff.vitalite || 0) > 0 || (c.eff.pv || 0) > 0)) || goalKeys.some((k) => (c.eff[k] || 0) > 0)
+    || (asc && SURVIVAL_KEYS.some((k) => (c.eff[k] || 0) > 0));
   const cands = {};
   for (const s of slots) cands[s.accepts] ||= pool.filter((c) => c.type === s.accepts && useful(c) && !banned.has(c.id) && !(budget && c.price > budget));
 
@@ -164,7 +174,8 @@ async function optimizeBuild(opts, say) {
   };
   // Répartition des points (option « redistribuer ») : Vitalité pour le PV minimum, puis chaque point là où il rapporte
   // le plus de dégâts par point dépensé (paliers de coût compris) ; recalcul des sorts du tour jusqu'à stabilité.
-  const allocate = (gear) => {
+  // vitShare (Ascension) : part du capital mise d'abord en Vitalité, avant la répartition pour les dégâts
+  const allocate = (gear, vitShare = 0) => {
     const alloc = Object.fromEntries(POINT_STATS.map((k) => [k, 0]));
     const S0 = { ...gear };
     let R0 = planCapital;
@@ -181,6 +192,7 @@ async function optimizeBuild(opts, say) {
       return R;
     };
     if (pvMin && pvOf(S0) < pvMin) R0 = buy(S0, alloc, 'vitalite', R0, pvMin - pvOf(S0));   // 1 point de Vitalité = 1 PV
+    if (vitShare > 0) R0 = buy(S0, alloc, 'vitalite', R0, Math.floor(R0 * vitShare));
     if (goal.points) {   // objectif Sagesse, Prospection : tout le reste du capital dans la stat qui la donne
       const R = buy(S0, alloc, goal.points, R0);
       buy(S0, alloc, 'vitalite', R);
@@ -219,6 +231,15 @@ async function optimizeBuild(opts, say) {
       return { S: st.S, active: st.active, alloc: { ...sheet.base }, turn: turnOf(st.S) };
     }
     const st = statsOf(build, {});
+    if (asc) {   // Ascension : plus ou moins de Vitalité, on garde la meilleure marge de survie
+      let best = null;
+      for (const share of [0, 0.25, 0.5, 0.75, 1]) {
+        const a = allocate(st.S, share);
+        const v = ascSurvival(a.S, pvOf(a.S), a.turn.dmg, asc, asc.avgRes).ratio;
+        if (!best || v > best.v) best = { a, v };
+      }
+      return { S: best.a.S, active: st.active, alloc: best.a.alloc, turn: best.a.turn };
+    }
     const a = allocate(st.S);
     return { S: a.S, active: st.active, alloc: a.alloc, turn: a.turn };
   };
@@ -250,6 +271,8 @@ async function optimizeBuild(opts, say) {
       const kept = slots.reduce((n, s) => n + (build[s.slot] === current[s.slot] ? 1 : 0), 0);
       return goal.value(ev.S) + kept * 1e-6;
     }
+    // Ascension : marge de survie (PV effectifs ÷ dégâts encaissés pour tout tuer) ; à égalité, les dégâts
+    if (asc) return ascSurvival(ev.S, pv, ev.turn.dmg, asc, asc.avgRes).ratio * 1e6 + ev.turn.dmg * 1e-3;
     return ev.turn.dmg * paMult + pv * 1e-4;   // à dégâts égaux, le plus de PV
   };
   // contraintes : un même objet (id) une seule fois ; arme à deux mains → pas de bouclier ; un exemplaire possédé par objet
@@ -459,7 +482,8 @@ async function optimizeBuild(opts, say) {
   // cartes non offensives déjà dans le deck 3 (buffs, soins…) : conservées, c'est toi qui les choisis
   const dmgIds = new Set(sp.spells.map((x) => x.id));
   const keepCards = sp.deckIds(DECK_TARGET).filter((id) => !dmgIds.has(id) && !deck.some((x) => x.id === id)).slice(0, DECK_CARDS - deck.length);
-  return { simTier, gearMult, sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, hits, poolSize, poolKept: pool.length, paOff, deckN, planLevel, statLevel, planCapital, setFx, hdv: opts.hdv, target, goal, bestiary,
+  const ascRes = asc ? { ...asc, cur: ascSurvival(cur.S, pvOf(cur.S), curTurn.dmg, asc, asc.avgRes), nxt: ascSurvival(nxt.S, pvOf(nxt.S), nxtTurn.dmg, asc, asc.avgRes) } : null;
+  return { asc: ascRes, simTier, gearMult, sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, hits, poolSize, poolKept: pool.length, paOff, deckN, planLevel, statLevel, planCapital, setFx, hdv: opts.hdv, target, goal, bestiary,
     ownTol, ownKept, ownLoss: ownKept && bestFound > 0 ? (1 - top.best / bestFound) * 100 : 0,
     pvMin, pvShort: pvMin && pvOf(nxt.S) < pvMin, paMin, paShort: paMin && paOf(nxt.S) < paMin, bank, budget, hdvFailed, realloc: opts.realloc !== false, cost: costOf(final), deck: deck.map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })),
     deckChunks: sp.chunks, keepCards };
