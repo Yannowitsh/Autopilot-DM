@@ -205,6 +205,21 @@ function ascSurvival(S, pv, dpt, asc, avgRes) {
   return { ratio: ehp / Math.max(1, taken), turns: T, taken, ehp, per };
 }
 
+// ---------- Moteur de combat en Ascension (cfg.ascEngine : 'best' | 'game' | 'ours') ----------
+// « best » : celui qui gagne le plus à cet étage d'après les essais (les nôtres et ceux des amis), sinon d'après tous les
+// étages ; à égalité ou sans données, l'Auto du jeu (bilan 08/10 : Auto du jeu 4/5, notre moteur 6/29 aux étages 28-35).
+function ascPickEngine(attempts) {
+  if (cfg.ascEngine === 'game' || cfg.ascEngine === 'ours') return cfg.ascEngine;
+  const rate = (list, e) => { const a = list.filter((x) => x.engine === e); return { w: a.filter((x) => x.status === 'won').length, n: a.length }; };
+  const all = Object.values((() => { try { return JSON.parse(localStorage.getItem(ASC_SEEN_KEY) || '{}'); } catch { return {}; } })()).flat();
+  const score = (e) => {
+    const f = rate(attempts, e), g = rate(all, e);
+    const prior = g.n ? (g.w + 1) / (g.n + 2) : (e === 'game' ? 0.6 : 0.4);
+    return (f.w + 2 * prior) / (f.n + 2);
+  };
+  return score('ours') > score('game') ? 'ours' : 'game';
+}
+
 // ---------- Deck automatique (pilote) ----------
 // cfg.ascAutoDeck : avant de lancer un étage, le deck conseillé est enregistré dans le Deck 6 et activé s'il diffère du
 // deck actif. Un seul calcul par étage, boss et nombre d'essais connus (une défaite apporte des infos : on recalcule).
@@ -295,8 +310,11 @@ async function renderAscPanel(el) {
     <div style="margin-top:8px;font-size:12px;color:#b9a98c">Deck actif : <b>${esc(deckNow?.label || '?')}</b> — ${esc((deckNow?.names || []).join(', ') || 'vide')}</div>
     <div style="margin-top:8px"><button data-a="advise" style="${btn};background:#2e6fbf">🃏 Conseiller un deck (${ASC_DECK_SIZE} cartes)</button></div>
     <label style="display:flex;gap:6px;align-items:center;margin-top:6px;font-size:12px;color:#d8cbb3;cursor:pointer" title="Avec le pilote en Ascension : avant chaque étage, le deck conseillé est enregistré dans le Deck ${ASC_DECK_SLOT + 1} et activé s’il diffère du deck actif ; recalculé après une défaite. Après une victoire, le pilote repasse par cette page pour voir les boss suivants."><input type="checkbox" data-a="autodeck"${cfg.ascAutoDeck ? ' checked' : ''}> 🤖 Pilote : appliquer le deck conseillé avant chaque étage</label>
+    <label style="display:flex;gap:6px;align-items:center;margin-top:6px;font-size:12px;color:#d8cbb3" title="Moteur de combat du pilote en Ascension. « Le meilleur » : celui qui gagne le plus à cet étage d’après les essais (les tiens et ceux des amis), sinon sur tous les étages ; l’Auto du jeu sans données.">⚔️ Moteur <select data-a="engine" style="background:#2a231a;border:1px solid #5a4a33;border-radius:6px;color:#eee;font:12px system-ui,sans-serif">${[['best', 'le meilleur selon les essais'], ['game', 'Auto du jeu'], ['ours', 'notre moteur (mécaniques)']].map(([v, l]) => `<option value="${v}"${(cfg.ascEngine || 'best') === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
+      <span style="color:#8a7d66">${(() => { const r = (e) => { const a = attempts.filter((x) => x.engine === e); return a.length ? `${a.filter((x) => x.status === 'won').length}/${a.length}` : '—'; }; return `ici : Auto du jeu ${r('game')} · notre moteur ${r('ours')} → ${ascPickEngine(attempts) === 'ours' ? 'notre moteur' : 'Auto du jeu'}`; })()}</span></label>
     <div data-k="out" style="margin-top:8px"></div>`;
   el.querySelector('[data-a="autodeck"]').onchange = (e) => save({ ascAutoDeck: e.target.checked, ascDeckSig: null });
+  el.querySelector('[data-a="engine"]').onchange = (e) => save({ ascEngine: e.target.value });
   const out = el.querySelector('[data-k="out"]');
   let advice = null;
   el.querySelector('[data-a="advise"]').onclick = async (e) => {

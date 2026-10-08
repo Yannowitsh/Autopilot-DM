@@ -70,7 +70,7 @@ async function pushCombat(req, db) {
   // Ascension : résumé de la tentative (étage, boss, mécaniques vues, cause d'une défaite), partagé par étage
   const a = c.asc;
   if (a && Number.isSafeInteger(Number(a.floor)) && Number(a.floor) > 0) {
-    const data = JSON.stringify({ floor: a.floor, diff: a.diff ?? null, rounds: a.rounds ?? null, bosses: a.bosses ?? [], seen: a.seen ?? [], cause: a.cause ?? null });
+    const data = JSON.stringify({ floor: a.floor, diff: a.diff ?? null, engine: a.engine ?? null, rounds: a.rounds ?? null, bosses: a.bosses ?? [], seen: a.seen ?? [], cause: a.cause ?? null });
     if (data.length < 20000) await db.prepare('INSERT OR IGNORE INTO asc_seen (floor, player, at, status, data) VALUES (?, ?, ?, ?, ?)')
       .bind(Number(a.floor), player, Number(c.at), String(c.status ?? ''), data).run();
   }

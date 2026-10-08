@@ -49,6 +49,11 @@ function learnCardCrits(st) {
 }
 // Soins des cartes, appris en combat : { idCarte: { r: soin moyen / PV max, n } }. Le texte des cartes ne suffit pas
 // (Évolution « 53 % » rend ~25 % des PV max ; Runification 6 % des PV max) — on mesure les « heal » qui suivent le lancer.
+// Passif de classe annoncé dans le journal (t: 'passive', who: 'p') : « Mots 5/5 : +20 % de dégâts, +25 % de soins. »
+// Il monte au fil du combat ; le dernier annoncé s'applique. → { dmg: %, heal: % }
+const passiveOf = (L) => ({ dmg: +(L?.text || '').match(/\+(\d+(?:[.,]\d+)?) ?% de dégâts/)?.[1]?.replace(',', '.') || 0,
+  heal: +(L?.text || '').match(/\+(\d+(?:[.,]\d+)?) ?% de soins/)?.[1]?.replace(',', '.') || 0 });
+const lastPassive = (log) => { const L = (log || []).filter((x) => x.t === 'passive' && x.who === 'p').at(-1); return L ? passiveOf(L) : { dmg: 0, heal: 0 }; };
 const CARD_HEAL_KEY = 'dmCardHeal';
 let cardHealCache = null;
 const cardHeals = () => {
@@ -278,7 +283,8 @@ function damageTest(fight, spells) {
   };
   let pTurn = 0;
   const S = (k) => (+stats[k] || 0) + buffs.reduce((s, b) => s + (b.stat === k && pTurn < b.from + b.turns ? b.v : 0), 0);
-  const pct = 1 + S('dmgPctSorts') / 100;
+  let passive = 0;   // % de dégâts du passif de classe, mis à jour au fil du journal
+  const pct = () => (1 + S('dmgPctSorts') / 100) * (1 + passive / 100);
   // cartes de l'état de combat (lignes critiques comprises), sinon celles de la collection
   const byName = new Map(spells.map((sp) => [sp.name, sp.card]));
   for (const c of [...Object.values(P.cards || {}), P.weaponCard]) if (c?.name) byName.set(c.name, { ...byName.get(c.name), ...c, n: c.name });
@@ -288,6 +294,7 @@ function damageTest(fight, spells) {
     const L = log[i];
     if (L.t === 'turn' && L.who === 'p') pTurn++;
     if (L.t === 'buff') addBuff(i, L);
+    if (L.t === 'passive' && L.who === 'p') passive = passiveOf(L).dmg;
     if (L.t !== 'play' || L.who !== 'p') continue;
     const card = byName.get(L.card);
     const lines = card ? damageLines(card, S).filter(({ e }) => !(e.chance != null && +e.chance < 100)) : [];
@@ -320,7 +327,7 @@ function damageTest(fight, spells) {
         const mult = 1 + (S(EL_STAT[D.el]) + S('puissance')) / 100;
         const fixed = ln.first ? S('dommages') + S(EL_DMG[D.el]) + (crit ? S('dommagesCritiques') : 0) : 0;
         const b = (x) => (crit ? (ln.c ? +x || 0 : (+x || 0) * CRIT_MULT) : +x || 0);
-        const val = (x) => (b(x) * mult + fixed) * pct;
+        const val = (x) => (b(x) * mult + fixed) * pct();
         const s2 = crit && ln.c ? ln.c : e;
         const zf = secondary && e.zone ? ZONE_FALLOFF : 1;   // zone : les autres cibles prennent 60 %
         row.lo = val(s2.min) * n * zf; row.hi = val(s2.max ?? s2.min) * n * zf;

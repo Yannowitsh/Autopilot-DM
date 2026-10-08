@@ -226,6 +226,13 @@ async function step() {
     if (!(await gate())) return progress();
     // option « deck auto » : deck conseillé enregistré et activé avant le lancement (la page est rechargée s'il change)
     if (!(await ascPrepareDeck())) return progress();
+    // moteur de cet étage : celui qui y gagne le plus (essais enregistrés), l'Auto du jeu par défaut
+    {
+      const fl = floorOf(start()?.textContent.trim());
+      const engine = ascPickEngine(fl ? await ascSeenAll(fl).catch(() => []) : []);
+      if ((engine === 'ours') !== (cfg.ascUseOurs === true)) DM.log(`ascension étage ${fl ?? '?'} : ${engine === 'ours' ? 'notre moteur' : 'Auto du jeu'}`);
+      await save({ ascUseOurs: engine === 'ours' });
+    }
     const label = start()?.textContent.trim();
     if (!label) return;
     setStatus(`Ascension : ${label.toLowerCase()}…`);

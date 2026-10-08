@@ -95,7 +95,7 @@ function cardEffectRaw(card, p, tgt) {
   const S = fighterStat(p);
   const lines = damageLines(card, S);
   const critP = +card.cc > 0 ? Math.min(1, Math.max(0, (+card.cc + S('critique')) / 100)) : 0;
-  const pct = 1 + S('dmgPctSorts') / 100;
+  const pct = (1 + S('dmgPctSorts') / 100) * (1 + (+p.passiveDmg || 0) / 100);   // passif de classe (« Mots »)
   let dmg = 0, steal = 0;
   for (const { e, c, el, first } of lines) {
     if (e.chance != null && +e.chance < 100) continue;
@@ -144,6 +144,7 @@ const AP_REMOVE_CUT = 0.3;   // PA retirés à l'ennemi : sa prochaine attaque e
 // cand : cartes jouables [{ c, key, weapon, w, ap }] ; rules : fightMechanics(...). Renvoie la 1re carte de la meilleure
 // suite { pick, target } (ou null = finir le tour) et les mécaniques en jeu ce tour (texte court).
 function planTurn(st, cand, rules) {
+  if (st.fighters?.p && st.log) { const pv = lastPassive(st.log); st.fighters.p.passiveDmg = pv.dmg; st.fighters.p.passiveHeal = pv.heal; }
   const p = st.fighters.p, round = +st.round || +p.turnNo || 1;
   const enemies = Object.values(st.fighters).filter((f) => f.team !== p.team && f.alive && f.id !== 'p');
   const alive = new Set(enemies.map((f) => f.id));

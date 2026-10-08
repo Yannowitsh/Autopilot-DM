@@ -56,7 +56,8 @@ const DM = {
     huntGroup: null,     // n° de groupe choisi à la main en jeu (null = le plus dur)
     huntZoneName: '',
     combatUpload: true,
-    ascAutoDeck: false,  // Ascension (pilote) : deck conseillé enregistré dans le Deck 6 et activé avant chaque étage  // enregistre chaque combat terminé (stats, build, journal des coups) sur le Worker de synchro
+    ascAutoDeck: false,
+    ascEngine: 'best',   // Ascension : 'best' (celui qui gagne le plus à l'étage), 'game' (Auto du jeu) ou 'ours' (notre moteur)  // Ascension (pilote) : deck conseillé enregistré dans le Deck 6 et activé avant chaque étage  // enregistre chaque combat terminé (stats, build, journal des coups) sur le Worker de synchro
     updateCheckMin: 180, // vérification d'une nouvelle version sur GitHub, en minutes (0 = jamais automatiquement)
     wins: 0,
     losses: 0,

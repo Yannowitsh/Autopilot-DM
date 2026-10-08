@@ -61,6 +61,7 @@ function combatOnEnd(st, rewards) {
         res: EL_RES_PCT.map((k) => +f.stats?.[k] || 0), resCap: +f.resCap || 100,
         // motif d'intentions (« $1:state:fighters:b0:pattern » = celui d'un autre boss)
         pattern: Array.isArray(f.pattern) ? f.pattern : st.fighters[String(f.pattern || '').split(':')[3]]?.pattern || null })),
+      engine: st.autoUsed ? 'game' : 'ours',   // Auto du jeu ou notre moteur (choix du moteur par étage)
       seen: observedMechanics(st), cause: st.status === 'lost' ? ascFailCause(st) : null } : null;
     if (asc) {
       ascRemember(asc);
