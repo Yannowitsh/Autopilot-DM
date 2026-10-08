@@ -48,7 +48,9 @@ const buildBlacklist = () => cfg.buildBlacklist || {};
 // Prestige : P1 +1 PA, P2 +2 PO, P3 +2 PM, P4 +1 PA, P5 +3 PO, P6 +3 PM, P7 +1 PA (cumulés).
 const prestigePa = (p) => [1, 4, 7].filter((n) => (p || 0) >= n).length;
 const prestigePo = (p) => ((p || 0) >= 2 ? 2 : 0) + ((p || 0) >= 5 ? 3 : 0);
-const buildPaOf = (level, prestige = 0) => (S) => Math.min(12, 6 + prestigePa(prestige) + (S.pa || 0));
+// Plafond de PA : 12, 13 dès le Prestige 2, 14 au P5, 15 au P8 (patch 2.3).
+const paCap = (p) => 12 + [2, 5, 8].filter((n) => (p || 0) >= n).length;
+const buildPaOf = (level, prestige = 0) => (S) => Math.min(paCap(prestige), 6 + prestigePa(prestige) + (S.pa || 0));
 const buildPvOf = (level) => (S) => 50 + 5 * level + (S.vitalite || 0) + (S.pv || 0);
 
 // Builds enregistrés (💾 dans l'optimiseur, aussi listés dans la bulle ❤️) : cfg.buildSaves = [{ id, name, who, at, data }].
@@ -247,9 +249,9 @@ async function fetchBestiary(say) {
 // 1 + 0,75 + 0,132 = ×1,882, relevé au point près sur la fiche). Contrôlé sur la fiche (bonus des points de
 // caractéristiques = Σ arrondi(stat × m) des objets portés et des panoplies actives) ; recalé seulement s'il ne colle pas.
 const FORGE = { maxLevel: 200 };
-const forgeBonusPct = (lvl) => {   // même calcul que le site : 200^((niv − 1) / 199) %, arrondi
+const forgeBonusPct = (lvl) => {   // même calcul que le site depuis le 08/10 : 150^((niv − 1) / 199) % (+150 % au niv. 200), arrondi
   if (!(lvl > 0)) return 0;
-  const v = 200 ** ((Math.min(FORGE.maxLevel, lvl) - 1) / (FORGE.maxLevel - 1));
+  const v = 150 ** ((Math.min(FORGE.maxLevel, lvl) - 1) / (FORGE.maxLevel - 1));
   return v < 10 ? Math.round(100 * v) / 100 : Math.round(10 * v) / 10;
 };
 // Niveau du Bouclier de forge (/forgemagie, props du ForgeView), relu à chaque recherche ; 0 = pas encore de bouclier.

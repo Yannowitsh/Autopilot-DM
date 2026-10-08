@@ -129,7 +129,7 @@ async function optimizeBuild(opts, say) {
   if (!spells.length) throw new Error(opts.deckOnly ? 'Aucun sort de dégâts dans ton deck actif' : 'Aucun sort de dégâts');
   // PA offensifs (option) : les PA du tour qui servent à taper, le reste allant aux buffs/shield. Vide = tous les PA.
   // Sorts conseillés (deckN) : affichage seulement, ne change pas les objets choisis.
-  const paOff = Math.max(0, Math.min(12, Math.round(+opts.paOff || 0)));
+  const paOff = Math.max(0, Math.min(15, Math.round(+opts.paOff || 0)));
   const deckN = Math.max(1, Math.min(8, +opts.deckN || 4));
   const pvMin = +opts.pvMin || 0;
   const paMin = +opts.paMin || 0;

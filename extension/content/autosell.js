@@ -174,7 +174,7 @@ async function autosell(dryRun) {
     if (why) kept[why]++; else toSell.push(e);
   }
   const count = toSell.reduce((n, e) => n + e.qty, 0);
-  const estimate = toSell.reduce((n, e) => n + 20 * (e.lvl || 0) * e.qty, 0);
+  const estimate = toSell.reduce((n, e) => n + Math.min(2000, 10 * (e.lvl || 0)) * e.qty, 0);
   const info = { level, keepAbove, skipped: kept.radiant, lockedCount: kept.locked, aboveCount: kept.above, slotCount: kept.slot, rarityCount: kept.rarity };
   if (dryRun || !count) return { ok: true, count, estimate, ...info, kamas: 0 };
 

@@ -366,20 +366,26 @@ function highlightWanted() {
 // ---------- Rentabilité des zones : XP et drops mesurés à chaque combat de chasse ----------
 // Le jeu n'affiche nulle part ce que rapporte un groupe : on l'enregistre à chaque victoire en chasse. Le groupe combattu
 // est cfg.huntTarget (zone, n° de groupe, noms des monstres), reconnu aux noms des monstres du combat (relances comprises).
-// XP : gain = Σ xp des monstres (champ « xp » de l'état du combat) × bonus de groupe × … × (1 + Sagesse / 100) — vérifié :
-// 2 Pikoleurs à 132 000 → 6 319 104 avec 988 de Sagesse (= 264 000 × 1,1 × 2 × 10,88). Ramenée à 0 de Sagesse pour comparer.
-// Drops : valeur de revente au marchand (sellPrice du jeu : min(4000, 20 × niveau), quel que soit le tier). Règle du jeu :
-// chance = chance de base × Prospection / 100, 90 % au plus par objet ; l'objet bonus de victoire et les coffres n'en
-// dépendent pas. Chaque objet lâché est gardé avec sa chance de base (bestiaire, monstres du combat ; 0 = bonus de victoire
-// ou inconnu → pas ajusté) pour être recalculé à la Prospection actuelle. Kamas : tels quels.
+// XP : gain = Σ xp des monstres (champ « xp » de l'état du combat) × bonus de groupe × bonus du joueur × (1 + Sagesse / 100).
+// Mesuré sur ~2 800 combats : bonus de groupe = 2 × (1 + 0,1 × (monstres − 1)) ; bonus du joueur = ×1,1 si le compte est lié à
+// Discord (patch du 08/10, aussi +10 % de butin), × les événements (« Week-end de folie » XP ×2…). Il change d'un joueur à
+// l'autre et dans le temps : il est appris par joueur (farmModel). Écart de niveau : l'XP fond (jusqu'à ×0,1) quand on dépasse
+// de loin les monstres — relevé sur tes propres combats récents de la zone. Ramenée à 0 de Sagesse pour comparer.
+// Drops : valeur de revente au marchand (prix du jeu depuis le 08/10 : min(2 000, 10 × niveau), quel que soit le tier ; avant :
+// min(4 000, 20 × niveau) → combats sans `sp` divisés par 2). Règle du jeu : chance = chance de base × Prospection / 100, 90 %
+// au plus par objet ; l'objet bonus de victoire et les coffres n'en dépendent pas. Chaque objet lâché est gardé avec sa chance
+// de base (bestiaire, monstres du combat ; 0 = bonus de victoire ou chance non publiée → pas ajusté) pour être recalculé à la
+// Prospection actuelle. En pratique le bestiaire ne publie aucune chance pour les objets lâchés à haut niveau (bonus de
+// victoire) : ils ne dépendent pas de la Prospection (mesuré : même butin à 322 et 1 564). Kamas : tels quels.
 // Tout est réaffiché à TA Sagesse / Prospection actuelles (dernier combat). Durée : écart avec le combat précédent dans la
 // même zone (relance, animation et délais compris), sinon depuis le lancement.
-// cfg.farmLog[perso] = [{ at, z, zn, g, m: [[nom, niveau, xp]], xp, sag, pp, k, v, it: [[prix, chance de base]], n, d }].
+// cfg.farmLog[perso] = [{ at, z, zn, g, m: [[nom, niveau, xp]], xp, sag, pp, k, v, it: [[prix, chance de base]], n, d, sp }].
 const FARM_LOG_MAX = 3000;
 const FARM_GAP_MS = 10 * 60000;
 const FARM_CHAR_KEY = 'dmFarmChar';   // Sagesse / Prospection du dernier combat, par personnage (localStorage de la page)
-const sellPrice = (lvl) => Math.min(4000, 20 * Math.max(1, +lvl || 0));
-const GROUP_COEF = [0, 1, 1.1, 1.5, 2.3, 3.1, 3.6, 4.2, 4.7];   // bonus de groupe de Dofus (1 à 8 monstres), ×2 observé en jeu
+const sellPrice = (lvl) => Math.min(2000, 10 * Math.max(1, +lvl || 0));
+const SELL_PRICE_V = 2;   // `sp` des combats : 2 = prix ci-dessus ; absent = ancien prix (×2)
+const groupCoef = (n) => 1 + 0.1 * (Math.max(1, n) - 1);   // bonus de groupe mesuré de 1 à 4 monstres (×2 en plus), extrapolé au-delà
 const DROP_CAP = 90;   // % de chance au plus par objet (Prospection comprise)
 const dropChance = (base, pp) => Math.min(DROP_CAP, base * (pp || 100) / 100);
 let farmLastSig = '', itemLvlMap = null, itemBaseMap = null, itemLvlLoading = false;
@@ -436,7 +442,7 @@ function farmOnRewards(st, rewards) {
       : cfg.lastLaunchAt && now - cfg.lastLaunchAt < FARM_GAP_MS ? now - cfg.lastLaunchAt : null;
     const rec = { at: now, z: t.zone, zn: cfg.huntZone === t.zone ? cfg.huntZoneName || '' : '', g: t.group,
       m: mobs.map((m) => [m.name, +m.level || 0, +m.xp || 0]), xp: +rewards.xp || 0, sag, pp,
-      k: (+rewards.kamas || 0) + (+rewards.cardKamas || 0), v: it.reduce((s, x) => s + x[0], 0), it, n: items.length, d };
+      k: (+rewards.kamas || 0) + (+rewards.cardKamas || 0), v: it.reduce((s, x) => s + x[0], 0), it, n: items.length, d, sp: SELL_PRICE_V };
     save({ farmLog: { ...(cfg.farmLog || {}), [me]: [...log, rec].slice(-FARM_LOG_MAX) } });
   } catch (e) {
     DM.log(`rentabilité : ${e.message}`);
@@ -447,18 +453,23 @@ const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y)
 
 // Valeur des objets d'un combat recalculée à la Prospection `pp` (chaque objet : chance actuelle / chance d'alors, plafond
 // 90 % ; objet bonus de victoire inchangé). Combats enregistrés sans détail (1.80.0) : proportionnel, sans plafond.
-const farmValueAt = (r, pp) => (r.it
+// Prix d'avant le 08/10 (pas de `sp`) : divisés par 2, la revente au marchand ayant été divisée par 2.
+const farmValueAt = (r, pp) => (r.sp >= SELL_PRICE_V ? 1 : 0.5) * (r.it
   ? r.it.reduce((s, [v, base]) => s + (base > 0 ? v * dropChance(base, pp) / dropChance(base, r.pp) : v), 0)
   : r.v * (pp || 100) / (r.pp || 100));
 
 // Modèle par monstre, appris de TOUS les combats (les tiens + ceux partagés par la synchro) :
 // - XP de base de chaque monstre (nom|niveau) et bonus de groupe réel par nombre de monstres ;
+// - bonus d'XP de chaque joueur (r.src : 'me' = toi, sinon pseudo de la synchro) : compte Discord lié, événements… ; pris sur
+//   ses 100 derniers combats, sans ceux amputés par l'écart de niveau. Le tien multiplie les prévisions ;
+// - écart de niveau : XP mesurée / prévue sur tes 20 derniers combats de chaque zone (appliquée si < 0,9) ;
 // - kamas par niveau de monstre (médiane, par zone si ≥ 3 combats, sinon toutes zones) ;
 // - drops : valeur moyenne par monstre d'après le bestiaire (à ta Prospection), recalée sur les drops réellement mesurés
 //   (Σ mesuré / Σ prévu, objets bonus de victoire compris) dès 5 combats.
 // → farmPredict(zone, monstres) = ce que rapporte une composition donnée, quel que soit le nombre de monstres.
 function farmModel(all, best, cur) {
-  const mobXp = new Map(), coefs = {}, kpl = { all: [] };
+  const mobXp = new Map(), kpl = { all: [] };
+  const xr = [];   // [joueur, nb de monstres, XP / (Σ xp des monstres × (1 + Sagesse / 100)), date, zone]
   let dropMeas = 0, dropPred = 0, nPred = 0;
   for (const r of all) {
     let sum = 0, lvl = 0, pred = 0;
@@ -468,13 +479,29 @@ function farmModel(all, best, cur) {
       lvl += +l || 0;
       pred += best?.get(normName(n)) || 0;
     }
-    if (sum && r.xp) (coefs[r.m.length] ||= []).push(r.xp / (sum * (1 + r.sag / 100)));
+    if (sum && r.xp) xr.push([r.src || 'me', r.m.length, r.xp / (sum * (1 + r.sag / 100)), r.at, r.z]);
     if (lvl) { kpl.all.push(r.k / lvl); (kpl[r.z] ||= []).push(r.k / lvl); }
     if (pred) { dropMeas += farmValueAt(r, cur.pp); dropPred += pred; nPred++; }
   }
-  const learned = Object.fromEntries(Object.entries(coefs).map(([n, a]) => [n, median(a)]));
-  const ratio = median(Object.entries(learned).map(([n, c]) => c / GROUP_COEF[Math.min(8, n)]).filter(Boolean)) || 2;
-  const coef = (n) => learned[n] || (GROUP_COEF[Math.min(8, n)] || 1) * ratio;
+  // Bonus de chaque joueur (×2 de base, ×1,1 Discord, événements…) = médiane de ses 50 derniers combats rapportés au bonus de
+  // groupe, sans ceux sous 90 % de son 3e quartile (écart de niveau). Le tien sert aux prévisions ; sans combat à toi, la
+  // médiane des autres joueurs.
+  const per = {};
+  for (const [s, n, x, at] of xr) (per[s] ||= []).push([at, x / groupCoef(n)]);
+  const mult = Object.fromEntries(Object.entries(per).map(([s, a]) => {
+    const recent = a.sort((p, q) => q[0] - p[0]).slice(0, 50).map((p) => p[1]);
+    const q3 = [...recent].sort((x, y) => x - y)[Math.floor(recent.length * 0.75)];
+    return [s, median(recent.filter((v) => v >= 0.9 * q3))];
+  }));
+  const myMult = mult.me || median(Object.values(mult)) || 2;
+  const coef = groupCoef;
+  // Écart de niveau : tes 20 derniers combats de chaque zone, XP réelle / XP prévue.
+  const penAcc = {};
+  for (const [s, n, x, at, z] of xr) if (s === 'me') (penAcc[z] ||= []).push([at, x / (coef(n) * myMult)]);
+  const pen = Object.fromEntries(Object.entries(penAcc).map(([z, a]) => {
+    const p = median(a.sort((u, v) => v[0] - u[0]).slice(0, 20).map((u) => u[1]));
+    return [z, p < 0.9 ? p : 1];
+  }));
   const dropCal = nPred >= 5 && dropPred ? Math.min(4, Math.max(0.25, dropMeas / dropPred)) : 1;
   const kamasPerLvl = (z) => median(kpl[z]?.length >= 3 ? kpl[z] : kpl.all) || 0;
   const sagMul = 1 + (cur.sag || 0) / 100;
@@ -483,11 +510,11 @@ function farmModel(all, best, cur) {
     const xs = mons.map((m) => mobXp.get(`${normName(m.name)}|${m.lvl}`));
     const lvl = mons.reduce((s, m) => s + (+m.lvl || 0), 0);
     return {
-      xp: mons.length && xs.every(Boolean) ? xs.reduce((a, b) => a + b, 0) * coef(mons.length) * sagMul : null,
+      xp: mons.length && xs.every(Boolean) ? xs.reduce((a, b) => a + b, 0) * coef(mons.length) * myMult * (pen[z] || 1) * sagMul : null,
       val: best ? mons.reduce((s, m) => s + (best.get(normName(m.name)) || 0), 0) * dropCal + kamasPerLvl(z) * lvl : null,
     };
   };
-  return { predict, learned, dropCal };
+  return { predict, dropCal, myMult, pen };
 }
 
 // Lignes du classement, par zone + n° de groupe (ce que farme ▶ : le groupe n° N, renouvelé toutes les ~3 min).
@@ -497,7 +524,7 @@ function farmModel(all, best, cur) {
 // Durée : tes combats seulement (elle dépend de ton build) — ce groupe, sinon la zone, sinon ta durée type.
 function farmRows(log, shared, scan, best, cur) {
   const all = [...log, ...shared];
-  const { predict, learned, dropCal } = farmModel(all, best, cur);
+  const { predict, dropCal, myMult, pen } = farmModel(all, best, cur);
   const sagMul = 1 + (cur.sag || 0) / 100;
   const cycle = median(log.map((r) => r.d).filter(Boolean)) || null;   // ta durée type d'un combat
   const zoneDur = {};
@@ -544,7 +571,8 @@ function farmRows(log, shared, scan, best, cur) {
     o.dur = median(m?.d || []) || median(zoneDur[o.z] || []) || cycle;
     o.estOnly = !m;
   }
-  return { rows: [...rows.values()], cycle, learned, dropCal };
+  for (const o of rows.values()) o.pen = pen[o.z] || 1;
+  return { rows: [...rows.values()], cycle, dropCal, myMult };
 }
 
 // Valeur de drop moyenne d'un monstre à la Prospection `pp` (bestiaire : chance de base par objet × pp / 100, 90 % au plus)
@@ -577,7 +605,7 @@ async function openFarmStats() {
   const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:4px 9px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
   const inp = 'background:#241e16;color:#eee;border:1px solid #5a4a33;border-radius:6px;padding:3px 6px;font:12px system-ui,sans-serif';
   ov.innerHTML = `<div style="width:min(900px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
-    <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📈 Rentabilité des zones${DM.tip('Chaque victoire en chasse est enregistrée (XP, kamas, objets lâchés au prix de revente marchand), ramenée à 0 de Sagesse et à ta Prospection actuelle : changer d’équipement ne fausse pas le classement.&#10;Le nombre de monstres compte : un n° de groupe change de composition à chaque renouvellement (2 monstres puis 6…). Pour chaque composition vue sous ce n° (combats + dernier scan), on calcule ce qu’elle rapporte monstre par monstre — XP de base × bonus de groupe appris en jeu, drops du bestiaire recalés sur tes drops réels, kamas par niveau de monstre — puis on fait la moyenne. La moyenne brute est en info-bulle.&#10;≈ : groupe jamais combattu (composition du dernier scan seulement ; XP si chaque monstre a déjà été combattu à ce niveau).&#10;Combats : les tiens, + ceux reçus par la synchro (en bleu). /min : avec TA durée réelle entre deux combats.&#10;▶ envoie le pilote farmer ce groupe en mode chasse.')}</b>
+    <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📈 Rentabilité des zones${DM.tip('Chaque victoire en chasse est enregistrée (XP, kamas, objets lâchés au prix de revente marchand), ramenée à 0 de Sagesse puis remise à ta Sagesse actuelle : changer d’équipement ne fausse pas le classement. Ton bonus d’XP personnel (compte Discord lié ×1,1, événements) est appris sur tes derniers combats, et la perte d’XP quand tu dépasses de loin le niveau des monstres sur tes derniers combats de la zone.&#10;Drops : revente au marchand (10 K × niveau, 2 000 K au plus ; anciens combats ramenés à ce prix). Le bestiaire ne publie pas de chance pour la plupart des objets lâchés (bonus de victoire) : ceux-là ne dépendent pas de ta Prospection et restent tels que mesurés.&#10;Le nombre de monstres compte : un n° de groupe change de composition à chaque renouvellement (2 monstres puis 6…). Pour chaque composition vue sous ce n° (combats + dernier scan), on calcule ce qu’elle rapporte monstre par monstre — XP de base × bonus de groupe appris en jeu, drops du bestiaire recalés sur tes drops réels, kamas par niveau de monstre — puis on fait la moyenne. La moyenne brute est en info-bulle.&#10;≈ : groupe jamais combattu (composition du dernier scan seulement ; XP si chaque monstre a déjà été combattu à ce niveau).&#10;Combats : les tiens, + ceux reçus par la synchro (en bleu). /min : avec TA durée réelle entre deux combats.&#10;▶ envoie le pilote farmer ce groupe en mode chasse.')}</b>
       <button data-a="x" style="${btn};background:transparent">✕</button></div>
     <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:12px">
       <label>Trier par <select data-f="sort" style="${inp}"><option value="xpMin">XP / min</option><option value="xp">XP / combat</option><option value="valMin">Kamas + drops / min</option><option value="val">Kamas + drops / combat</option></select></label>
@@ -613,8 +641,9 @@ async function openFarmStats() {
     const cur = farmChar() || (last ? { sag: last.sag, pp: last.pp } : { sag: 0, pp: 100 });
     $('[data-k="cur"]').textContent = `Sagesse ${fmt(cur.sag)} · Prospection ${fmt(cur.pp)}`;
     if (bc && bestPp !== cur.pp) { best = bestiaryMobValue(bc, cur.pp); bestPp = cur.pp; }
-    const shared = prefs.shared ? Object.values(cfg.farmShared || {}).flat() : [];
-    const { rows, cycle, dropCal } = farmRows(log, shared, cfg.wantedScan, best, cur);
+    // chaque combat partagé garde son joueur (src) : son bonus d'XP personnel est appris à part
+    const shared = prefs.shared ? Object.entries(cfg.farmShared || {}).flatMap(([p, l]) => l.map((r) => ({ ...r, src: p }))) : [];
+    const { rows, cycle, dropCal, myMult } = farmRows(log, shared, cfg.wantedScan, best, cur);
     const lvlMax = +prefs.lvl || 0;
     const zoneLvl = (z) => bz?.[z]?.[1];
     for (const r of rows) {
@@ -632,6 +661,7 @@ async function openFarmStats() {
         const tip = [r.meas && `${r.meas.mine} combat(s) à toi${r.meas.n > r.meas.mine ? ` + ${r.meas.n - r.meas.mine} partagé(s)` : ''}, dernier ${new Date(r.meas.last).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}`,
           `moyenne de ${r.comps} composition(s) vue(s) sous ce n° de groupe`,
           r.meas && `moyenne brute mesurée : ${fmt(r.measXp)} XP, ${fmt(r.measVal)} K`,
+          r.pen < 1 && `écart de niveau : tes derniers combats ici rapportent ×${r.pen.toFixed(2)} de l’XP normale (déjà compté)`,
           r.dur && `durée type ${Math.round(r.dur / 1000)} s`,
           r.now && `groupe du dernier scan : ${r.now.mons.join(', ')} → ≈ ${fmt(r.now.xp)} XP, ${fmt(r.now.val)} K`].filter(Boolean).join('\n');
         return `<tr title="${esc(tip)}" style="${r.estOnly ? 'color:#b9a98c;font-style:italic' : ''}"><td style="${td}">${i + 1}</td>
@@ -641,7 +671,7 @@ async function openFarmStats() {
           <td style="${td}"><button data-farm="${i}" style="${btn};background:#2e7d32" title="Farmer ce groupe (mode chasse, pilote démarré)">▶</button></td></tr>`;
       }).join('')
       : '<tr><td style="color:#b9a98c;padding:8px">Rien à classer : gagne des combats en chasse (ils sont enregistrés automatiquement), ou lance un scan des zones et coche « estimations ».</td></tr>';
-    $('[data-k="foot"]').textContent = `${log.length} combat(s) enregistré(s)${shared.length ? ` + ${shared.length} partagé(s)` : ''}${dropCal !== 1 ? ` · drops du bestiaire × ${dropCal.toFixed(2)} (recalage sur les mesures)` : ''}${cycle ? ` · durée type d’un combat ${Math.round(cycle / 1000)} s` : ''}`
+    $('[data-k="foot"]').textContent = `${log.length} combat(s) enregistré(s)${shared.length ? ` + ${shared.length} partagé(s)` : ''} · ton bonus d’XP ×${myMult.toFixed(2)} (×2 de base, Discord, événements…)${dropCal !== 1 ? ` · drops du bestiaire × ${dropCal.toFixed(2)} (recalage sur les mesures)` : ''}${cycle ? ` · durée type d’un combat ${Math.round(cycle / 1000)} s` : ''}`
       + `${cfg.wantedScan?.finishedAt ? ` · scan du ${new Date(cfg.wantedScan.finishedAt).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}` : ' · aucun scan'}`;
   };
   render();
