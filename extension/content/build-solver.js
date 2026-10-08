@@ -73,23 +73,32 @@ async function optimizeBuild(opts, say) {
   const fitSheet = { ...sheet, bonus: Object.fromEntries(Object.entries(sheet.bonus).map(([k, v]) => [k, v - (+state.scrolls?.[k] || 0)])) };
   gearMult = fitGearMult(pool.filter((c) => c.src === 'worn'), setFx, fitSheet, gearMult);
   DM.log(`optimiseur : panoplies — ${setsFromGame} connue(s) par la fiche du jeu, le reste via dofusdb ; parchemins ${JSON.stringify(fixedStats)}`);
-  // Tier simulé (option) : tous les objets, portés compris, comptés à ce tier de fusion (stats de base × fusion, puis
-  // prestige et forge) — compare les objets entre eux et pas leurs fusions actuelles. Vide = fusions réelles.
+  // Comparaison toujours en T1 : stats de base de chaque objet (+ prestige et forge), quel que soit le tier de ton
+  // exemplaire ou de l'annonce — un objet moyen déjà en T4 ne passe pas devant un meilleur objet encore en T1.
   // realEff = stats réelles (contrôle du modèle sur la fiche du jeu).
-  const simTier = Math.max(0, Math.min(FUSION_MAX + 1, Math.round(+opts.simTier || 0)));
-  const simFusion = simTier ? simTier - 1 : null;
-  pool = pool.map((c, i) => {
-    const realEff = withPrestige(c.eff);
-    if (simFusion == null) return { ...c, uid: i, eff: realEff };
+  const simTier = 1;
+  pool = pool.map((c) => {
     const base = c.baseEff || unfusedStats(c.eff, c.type, c.fusion || 0);
-    return { ...c, uid: i, realEff, eff: withPrestige(fusedStats(base, c.type, simFusion)) };
+    return { ...c, realEff: withPrestige(c.eff), eff: withPrestige(fusedStats(base, c.type, 0)) };
   });
-  // au même tier simulé, deux annonces HDV d'un même objet se valent : la moins chère suffit
-  if (simFusion != null) {
-    const cheapest = new Map();
-    for (const c of pool) if (c.src === 'hdv' && !(cheapest.get(c.id)?.price <= c.price)) cheapest.set(c.id, c);
-    pool = pool.filter((c) => c.src !== 'hdv' || cheapest.get(c.id) === c);
+  // En T1, deux exemplaires d'un même objet se valent : une seule entrée par objet — porté, sinon inventaire (le tier
+  // le plus haut), banque, HDV (l'annonce la moins chère), à looter. Les annonces HDV de chaque tier y sont jointes
+  // (hdvOffers) : on peut acheter un tier plus haut, les stats affichées restent celles du T1.
+  const SRC_RANK = { worn: 0, inv: 1, bank: 2, hdv: 3, drop: 4 };
+  const offersById = new Map();
+  for (const c of pool) {
+    if (c.src !== 'hdv') continue;
+    if (!offersById.has(c.id)) offersById.set(c.id, []);
+    offersById.get(c.id).push({ fusion: c.fusion || 0, price: c.price, listingId: c.listingId, seller: c.seller });
   }
+  for (const list of offersById.values()) list.sort((a, b) => a.fusion - b.fusion || a.price - b.price);
+  const better = (a, b) => SRC_RANK[a.src] - SRC_RANK[b.src] || (a.src === 'hdv' ? a.price - b.price : (b.fusion || 0) - (a.fusion || 0));
+  const keep = new Map();
+  for (const c of pool) if (c.src !== 'worn' && (!keep.has(c.id) || better(c, keep.get(c.id)) < 0)) keep.set(c.id, c);
+  const wornIds = new Set(pool.filter((c) => c.src === 'worn').map((c) => c.id));
+  const poolSize = pool.length;
+  pool = pool.filter((c) => c.src === 'worn' || (!wornIds.has(c.id) && keep.get(c.id) === c))
+    .map((c, i) => ({ ...c, uid: i, hdvOffers: offersById.get(c.id) || [] }));
   const banned = new Set(Object.keys(buildBlacklist()).map(Number));
   const budget = opts.hdv && +opts.budget > 0 ? +opts.budget : 0;   // 0 = pas de limite
 
@@ -159,12 +168,22 @@ async function optimizeBuild(opts, say) {
     const alloc = Object.fromEntries(POINT_STATS.map((k) => [k, 0]));
     const S0 = { ...gear };
     let R0 = planCapital;
-    const buy = (S, al, k, R) => { const c = pointCost(sheet.tiers[k] || ELEM_POINT_TIERS, al[k]); if (c > R) return R; al[k]++; S[k] = (S[k] || 0) + 1; return R - c; };
-    if (pvMin) while (pvOf(S0) < pvMin) { const r = buy(S0, alloc, 'vitalite', R0); if (r === R0) break; R0 = r; }
+    // achat de points par paliers entiers (coût constant jusqu'au palier suivant) : au plus `max` points de k ; renvoie le reste
+    const nextTier = (k, v) => (sheet.tiers[k] || ELEM_POINT_TIERS).reduce((u, [th]) => (th > v && th < u ? th : u), Infinity);
+    const buy = (S, al, k, R, max = Infinity) => {
+      const tiers = sheet.tiers[k] || ELEM_POINT_TIERS;
+      while (max > 0) {
+        const v = al[k], c = pointCost(tiers, v);
+        const n = Math.min(nextTier(k, v) - v, Math.floor(R / c), max);
+        if (!(n > 0)) break;
+        al[k] += n; S[k] = (S[k] || 0) + n; R -= n * c; max -= n;
+      }
+      return R;
+    };
+    if (pvMin && pvOf(S0) < pvMin) R0 = buy(S0, alloc, 'vitalite', R0, pvMin - pvOf(S0));   // 1 point de Vitalité = 1 PV
     if (goal.points) {   // objectif Sagesse, Prospection : tout le reste du capital dans la stat qui la donne
-      let R = R0;
-      for (;;) { const r = buy(S0, alloc, goal.points, R); if (r === R) break; R = r; }
-      while (R > 0) { const r = buy(S0, alloc, 'vitalite', R); if (r === R) break; R = r; }
+      const R = buy(S0, alloc, goal.points, R0);
+      buy(S0, alloc, 'vitalite', R);
       return { S: S0, alloc, turn: turnOf(S0) };
     }
     let refS = S0, refTurn = turnOf(S0), best = null;
@@ -173,6 +192,7 @@ async function optimizeBuild(opts, say) {
       const S = { ...S0 }, al = { ...alloc };
       let R = R0;
       if (OFF_POINT_STATS.some((k) => w[k] > 0)) {
+        // les poids étant fixes, la stat choisie reste la meilleure jusqu'à son palier suivant : achetée d'un bloc
         for (;;) {
           let pick = null, ratio = 0;
           for (const k of OFF_POINT_STATS) {
@@ -180,10 +200,10 @@ async function optimizeBuild(opts, say) {
             if (w[k] > 0 && c <= R && w[k] / c > ratio) { ratio = w[k] / c; pick = k; }
           }
           if (!pick) break;
-          R = buy(S, al, pick, R);
+          R = buy(S, al, pick, R, nextTier(pick, al[pick]) - al[pick]);
         }
       }
-      while (R > 0) { const r = buy(S, al, 'vitalite', R); if (r === R) break; R = r; }   // reste → Vitalité
+      R = buy(S, al, 'vitalite', R);   // reste → Vitalité
       const turn = turnOf(S);
       if (!best || turn.dmg > best.turn.dmg) best = { S, alloc: al, turn };
       const same = turn.used.map((u) => u.sp.id).sort().join() === refTurn.used.map((u) => u.sp.id).sort().join();
@@ -202,8 +222,18 @@ async function optimizeBuild(opts, say) {
     const a = allocate(st.S);
     return { S: a.S, active: st.active, alloc: a.alloc, turn: a.turn };
   };
-  let evals = 0;
+  // score mémorisé par build (les recherches repassent souvent par les mêmes) ; evals = builds différents évalués
+  let evals = 0, hits = 0;
+  const memo = new Map();
   const score = (build) => {
+    const key = slots.map((s) => build[s.slot]?.uid ?? '-').join(',');
+    const known = memo.get(key);
+    if (known !== undefined) { hits++; return known; }
+    const v = scoreRaw(build);
+    if (memo.size < 2e6) memo.set(key, v);
+    return v;
+  };
+  const scoreRaw = (build) => {
     evals++;
     const ev = evalBuild(build);
     const pv = pvOf(ev.S), pa = paOf(ev.S);
@@ -249,6 +279,7 @@ async function optimizeBuild(opts, say) {
     return a;
   };
 
+  let lastYield = Date.now();   // rend la main à la page toutes les 50 ms (affichage de la progression)
   async function climb(start) {
     let build = { ...start }, best = score(build);
     for (let pass = 0; pass < 12; pass++) {
@@ -268,7 +299,7 @@ async function optimizeBuild(opts, say) {
           if (pick?.two && s.slot === 'arme') build.bouclier = null;
           best = pickScore; improved = true;
         }
-        if (evals % 400 < 40) await sleep(0);
+        if (Date.now() - lastYield > 50) { lastYield = Date.now(); await sleep(0); }
       }
       // panoplies : poser d'un coup 2, 3… objets d'une panoplie (le palier ne vient qu'à plusieurs, et passer de 2 à 3
       // ou 4 objets demande souvent de changer plusieurs emplacements à la fois). Objets ajoutés du plus utile seul
@@ -342,7 +373,7 @@ async function optimizeBuild(opts, say) {
             if (v > best + 1e-6) { build = b; best = v; improved = true; }
           }
         }
-        if (evals % 400 < 40) await sleep(0);
+        if (Date.now() - lastYield > 50) { lastYield = Date.now(); await sleep(0); }
       }
     }
     return { build, best, improved };
@@ -405,8 +436,10 @@ async function optimizeBuild(opts, say) {
       if (!opts.hdv) say('Objets à looter : recherche à l’HDV…');
       const offers = opts.hdv ? pool.filter((c) => c.src === 'hdv') : await fetchHdvGear(types, planLevel, hdvFailed);
       for (const c of drops) {
-        const o = offers.filter((x) => x.id === c.id).sort((a, b) => a.price - b.price)[0];
-        if (o) c.offer = { price: o.price, listingId: o.listingId, seller: o.seller, fusion: o.fusion };
+        c.hdvOffers = offers.filter((x) => x.id === c.id).map((o) => ({ fusion: o.fusion || 0, price: o.price, listingId: o.listingId, seller: o.seller }))
+          .sort((a, b) => a.fusion - b.fusion || a.price - b.price);
+        const o = [...c.hdvOffers].sort((a, b) => a.price - b.price)[0];
+        if (o) c.offer = o;
       }
     }
   }
@@ -414,8 +447,7 @@ async function optimizeBuild(opts, say) {
   const cur = evalBuild(current, false), nxt = evalBuild(final);
   const curTurn = cur.turn, nxtTurn = nxt.turn;
   // contrôle du modèle : stats calculées pour l'équipement actuel (fusions réelles) vs fiche du jeu
-  const realS = simFusion == null ? cur.S
-    : evalBuild(Object.fromEntries(Object.entries(current).map(([k, c]) => [k, c && { ...c, eff: c.realEff }])), false).S;
+  const realS = evalBuild(Object.fromEntries(Object.entries(current).map(([k, c]) => [k, c && { ...c, eff: c.realEff }])), false).S;
   const checks = [
     ['PV', buildPvOf(level)(realS), sheet.pv], ['PA', buildPaOf(level, sheet.prestige)(realS), sheet.pa],   // fiche = niveau actuel
     ...Object.keys(sheet.bonus).map((k) => [STAT_LABELS[k] || k, realS[k] || 0, (sheet.base[k] || 0) + sheet.bonus[k]]),
@@ -427,7 +459,7 @@ async function optimizeBuild(opts, say) {
   // cartes non offensives déjà dans le deck 3 (buffs, soins…) : conservées, c'est toi qui les choisis
   const dmgIds = new Set(sp.spells.map((x) => x.id));
   const keepCards = sp.deckIds(DECK_TARGET).filter((id) => !dmgIds.has(id) && !deck.some((x) => x.id === id)).slice(0, DECK_CARDS - deck.length);
-  return { simTier, gearMult, sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, paOff, deckN, planLevel, statLevel, planCapital, setFx, hdv: opts.hdv, target, goal, bestiary,
+  return { simTier, gearMult, sheet, slots, current, final, cur, nxt, curTurn, nxtTurn, pvOf, paOf, checks, evals, hits, poolSize, poolKept: pool.length, paOff, deckN, planLevel, statLevel, planCapital, setFx, hdv: opts.hdv, target, goal, bestiary,
     ownTol, ownKept, ownLoss: ownKept && bestFound > 0 ? (1 - top.best / bestFound) * 100 : 0,
     pvMin, pvShort: pvMin && pvOf(nxt.S) < pvMin, paMin, paShort: paMin && paOf(nxt.S) < paMin, bank, budget, hdvFailed, realloc: opts.realloc !== false, cost: costOf(final), deck: deck.map((x) => ({ sp: x, v: profileAvg(x.pf, nxt.S) })),
     deckChunks: sp.chunks, keepCards };

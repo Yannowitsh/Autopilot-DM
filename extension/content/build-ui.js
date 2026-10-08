@@ -12,8 +12,9 @@ async function openBuildOptimizer({ load = null } = {}) {
   document.addEventListener('keydown', onKey, true);
   ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
   ov.addEventListener('keydown', (e) => e.stopPropagation());
-  let o = { simTier: '1', deckN: 4, paOff: '', pvMin: '', deckOnly: false, hdv: false, realloc: true, dropsOnly: true };
+  let o = { deckN: 4, paOff: '', pvMin: '', deckOnly: false, hdv: false, realloc: true, dropsOnly: true };
   try { o = { ...o, ...JSON.parse(localStorage.getItem(BUILD_OPTS_KEY) || '{}') }; } catch { /* stockage indisponible */ }
+  delete o.simTier;   // ancienne option « Tier simulé » : tout est comparé en T1
   if (!BUILD_GOALS[o.goal]) o.goal = o.krala ? 'krala' : 'dps';   // ancienne case « Kralamoure »
   delete o.krala;
   const inp = 'background:#2a231a;border:1px solid #5a4a33;border-radius:8px;color:#eee;padding:5px 8px;font:13px system-ui,sans-serif';
@@ -24,7 +25,7 @@ async function openBuildOptimizer({ load = null } = {}) {
       <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
         <label data-tip="Ce que l’optimiseur maximise.&#10;Dégâts par tour : sur une cible sans résistances.&#10;Kralamoure : contre le boss de guilde, ses résistances (20 % Neutre, Terre, Feu et Air, 30 % Eau) appliquées à chaque coup ; le combat dure 10 tours, seul le total de dégâts compte.&#10;Cible : contre les résistances que tu saisis (ou celles d’un ennemi de ton dernier combat) — chaque coup devient (dégât − rés. fixe) × (1 − % rés.), jamais sous 0 ; avec des PV, nombre de tours pour la tuer.&#10;Prospection : celle de l’équipement et des panoplies + 1 par 10 de Chance ; avec « Redistribuer mes points », tous tes points vont en Chance.&#10;Sagesse : idem, points en Sagesse.&#10;Seule cette stat compte (les dégâts et PV n’entrent pas en jeu, utilise PV / PA minimum pour un plancher) ; à égalité, l’objet que tu portes déjà est gardé.">Objectif <select data-o="goal" style="${inp}">${Object.entries(BUILD_GOALS).map(([k, g]) => `<option value="${k}">${g.label}</option>`).join('')}</select></label>
         <label data-tip="Ne propose que des objets jusqu’à ce niveau. Au-dessus de ton niveau actuel, c’est une prévision : PV, PA de base et points de caractéristiques (5 par niveau) de ce niveau-là ; les objets trop hauts pour toi aujourd’hui ne sont pas équipés et les points ne sont pas appliqués. Vide = ton niveau actuel.">Niveau max <input data-o="lvlMax" type="number" min="1" max="200" placeholder="le mien" style="${inp};width:70px"></label>
-        <label data-tip="Tier de fusion auquel tous les objets sont comptés, ceux que tu portes compris : sinon un objet moyen déjà fusionné en T4 bat un meilleur objet encore en T1, qui pourrait lui aussi être fusionné. T1 = stats de base. Chaque tier ajoute +10 % aux stats (sauf PA, PM, PO et invocations ; Dofus Rayonnant : +100 %), puis le prestige et le Bouclier de forge s’appliquent par-dessus — % critique compris. « Réel » = les fusions que les objets ont vraiment.">Tier simulé <select data-o="simTier" style="${inp}"><option value="">réel</option>${[1, 2, 3, 4, 5].map((t) => `<option value="${t}">T${t}${t === 5 ? ' (Rayonnant)' : ''}</option>`).join('')}</select></label>
+        <span style="color:#b9a98c;font-size:12px" data-tip="Tous les objets sont comparés avec leurs stats T1 (stats de base, prestige et Bouclier de forge compris), quel que soit le tier de ton exemplaire ou de l’annonce HDV : un objet moyen déjà fusionné en T4 ne passe pas devant un meilleur objet encore en T1. À l’HDV, tu peux acheter le tier que tu veux ; les stats affichées restent celles du T1.">Comparaison en T1 ⓘ</span>
         <label data-tip="PA de ton tour qui servent à taper ; le reste va à tes buffs, shields, soins… Les dégâts comptés sont ceux du meilleur enchaînement de sorts offensifs (autant de sorts que ces PA le permettent). Les PA au-delà gardent leur valeur (+3 % chacun). Vide = tous tes PA servent à taper.">PA offensifs <input data-o="paOff" type="number" min="1" max="12" placeholder="tous" style="${inp};width:70px"></label>
         <label data-tip="Affichage seulement : nombre de sorts offensifs conseillés pour ton deck avec le build proposé (bouton « Écrire dans le deck 3 »). Ne change pas les objets choisis.">Sorts conseillés <select data-o="deckN" style="${inp}">${[2, 3, 4, 5, 6, 7, 8].map((n) => `<option value="${n}">${n}</option>`).join('')}</select></label>
         <label>PV minimum <input data-o="pvMin" type="number" min="0" placeholder="aucun" style="${inp};width:90px"></label>
@@ -200,15 +201,16 @@ async function openBuildOptimizer({ load = null } = {}) {
     }
     const buy = e.target.closest('[data-buy]');
     if (buy && result && !buy.disabled) {
-      const c = Object.values(result.final).find((x) => (x?.src === 'hdv' && String(x.listingId) === buy.dataset.buy)
-        || (x?.src === 'drop' && String(x.offer?.listingId) === buy.dataset.buy));
+      const c = Object.values(result.final).find((x) => x && ['hdv', 'drop'].includes(x.src) && offersOf(x).some((o) => String(o.listingId) === buy.dataset.buy));
       if (!c) return;
-      const price = c.src === 'drop' ? c.offer.price : c.price, listingId = c.src === 'drop' ? c.offer.listingId : c.listingId;
+      const offer = offersOf(c).find((o) => String(o.listingId) === buy.dataset.buy);
+      const price = offer.price, listingId = offer.listingId;
+      const label = buy.textContent;
       if (armed !== buy) {   // 1er clic : confirmation
         disarm();
         armed = buy;
         buy.textContent = `⚠️ Confirmer ${fmt(price)} K`;
-        armTimer = setTimeout(() => { if (armed === buy) { buy.textContent = '🛒 Acheter'; disarm(); } }, 6000);
+        armTimer = setTimeout(() => { if (armed === buy) { buy.textContent = label; disarm(); } }, 6000);
         return;
       }
       disarm();
@@ -216,8 +218,8 @@ async function openBuildOptimizer({ load = null } = {}) {
       buy.textContent = 'Achat…';
       try {
         await hdvCall('buyListing', [listingId]);
-        Object.assign(c, { src: 'inv', bought: true });   // possédé : « Équiper ce build » le prendra
-        DM.log(`optimiseur : achat HDV ${c.name} (${price} K, annonce ${listingId})`);
+        Object.assign(c, { src: 'inv', bought: true, fusion: offer.fusion });   // possédé : « Équiper ce build » le prendra
+        DM.log(`optimiseur : achat HDV ${c.name} ${tierName(offer.fusion)} (${price} K, annonce ${listingId})`);
         render();
       } catch (err) {
         buy.disabled = false;
@@ -283,7 +285,7 @@ async function openBuildOptimizer({ load = null } = {}) {
         fetchFlight.onRetry = (m) => say(`⏳ ${m}`);
         result = await optimizeBuild(o, say);
         loaded = null;
-        say(`Terminé : ${result.evals} builds testés en ${((Date.now() - t0) / 1000).toFixed(1)} s.`);
+        say(`Terminé : ${result.evals} builds testés${result.hits ? ` (+ ${result.hits} déjà vus)` : ''} en ${((Date.now() - t0) / 1000).toFixed(1)} s${result.poolSize > result.poolKept ? ` — ${result.poolKept} objets distincts sur ${result.poolSize} exemplaires` : ''}.`);
         render();
         rememberBuild(result);
       } catch (err) {
@@ -324,6 +326,12 @@ async function openBuildOptimizer({ load = null } = {}) {
   });
 
   const fmt = (n) => Math.round(n).toLocaleString('fr-FR');
+  const tierName = (f) => (f >= FUSION_MAX ? 'Rayonnant' : `T${(f || 0) + 1}`);
+  // stats affichées = T1 ; le tier de ton exemplaire (porté, inventaire, banque) en petit
+  const t1Label = (c) => `${esc(c.name)}${c.fusion && !['hdv', 'drop'].includes(c.src) ? ` <span style="color:#8a7d66;font-size:11px">(ton exemplaire : ${tierName(c.fusion)})</span>` : ''}`;
+  // annonces HDV de l'objet, une par tier (la moins chère) : un bouton d'achat chacune
+  const offersOf = (c) => c.hdvOffers?.length ? c.hdvOffers : c.src === 'hdv' ? [{ fusion: c.fusion || 0, price: c.price, listingId: c.listingId, seller: c.seller }] : [];
+  const offerBtns = (c, sbtn) => offersOf(c).map((o) => `<button data-buy="${esc(o.listingId)}" style="${sbtn};background:#8a5a1a" title="Acheter l’annonce ${tierName(o.fusion)} (vendeur : ${esc(o.seller)}) — 2e clic pour confirmer">🛒 ${tierName(o.fusion)} ${fmt(o.price)} K</button>`).join('');
   // Survol d'un objet : ses stats (prestige compris) et l'écart avec l'objet de l'autre colonne du même emplacement.
   const hover = document.createElement('div');
   hover.style.cssText = 'position:fixed;z-index:2147483647;max-width:300px;padding:8px 10px;border-radius:8px;background:#0f1114;border:1px solid #5a4a33;box-shadow:0 4px 14px #000a;font:12px/1.45 system-ui,sans-serif;color:#e8e6e1;pointer-events:none;display:none';
@@ -340,10 +348,10 @@ async function openBuildOptimizer({ load = null } = {}) {
     const keys = (o) => Object.keys(o || {}).filter((k) => o[k]).sort((a, b) => statIdxOf(a) - statIdxOf(b));
     const diffKeys = [...new Set([...keys(c.eff), ...keys(other?.eff)])].sort((a, b) => statIdxOf(a) - statIdxOf(b))
       .filter((k) => (c.eff[k] || 0) !== (other?.eff?.[k] || 0));
-    hover.innerHTML = `<div style="font-weight:800">${esc(itemLabel(c))}</div>
-      <div style="color:#8a7d66;font-size:11px">Niveau ${c.lvl ?? '?'}${c.setName ? ` · ${esc(c.setName)}` : ''}${c.src === 'hdv' ? ` · HDV ${fmt(c.price)} K (${esc(c.seller)})` : c.src === 'worn' ? ' · porté' : c.src === 'bank' ? ` · banque (${esc(c.bankName)})` : c.src === 'drop' ? ' · à looter (bestiaire)' : ' · inventaire'}${c.two ? ' · deux mains' : ''}</div>
+    hover.innerHTML = `<div style="font-weight:800">${t1Label(c)} <span style="color:#ffd76a;font-size:11px">stats T1</span></div>
+      <div style="color:#8a7d66;font-size:11px">Niveau ${c.lvl ?? '?'}${c.setName ? ` · ${esc(c.setName)}` : ''}${c.src === 'hdv' ? ` · HDV : ${offersOf(c).map((o) => `${tierName(o.fusion)} ${fmt(o.price)} K`).join(', ')}` : c.src === 'worn' ? ' · porté' : c.src === 'bank' ? ` · banque (${esc(c.bankName)})` : c.src === 'drop' ? ' · à looter (bestiaire)' : ' · inventaire'}${c.two ? ' · deux mains' : ''}</div>
       <div style="margin-top:4px">${keys(c.eff).map((k) => statLine(k, c.eff[k])).join('') || '<i>aucune stat</i>'}</div>
-      ${other !== c ? `<div style="margin-top:6px;border-top:1px solid #3a3024;padding-top:4px;color:#b9a98c">${side === 'new' ? `Par rapport à ${other ? esc(itemLabel(other)) : 'l’emplacement vide'}` : `En passant à ${other ? esc(itemLabel(other)) : 'vide'}`} :</div>
+      ${other !== c ? `<div style="margin-top:6px;border-top:1px solid #3a3024;padding-top:4px;color:#b9a98c">${side === 'new' ? `Par rapport à ${other ? esc(other.name) : 'l’emplacement vide'}` : `En passant à ${other ? esc(other.name) : 'vide'}`} :</div>
         ${diffKeys.map((k) => statLine(k, side === 'new' ? (c.eff[k] || 0) - (other?.eff?.[k] || 0) : (other?.eff?.[k] || 0) - (c.eff[k] || 0), true)).join('') || '<i>aucun écart</i>'}
         <div style="color:#8a7d66;font-size:11px;margin-top:3px">Hors bonus de panoplie (voir la ligne « Panoplies »).</div>` : ''}`;
     hover.style.display = 'block';
@@ -358,9 +366,9 @@ async function openBuildOptimizer({ load = null } = {}) {
     const killTurns = (dmg) => (dmg > 0 ? Math.ceil(r.target.pv / dmg) : '∞');
     const gs = r.goal.stat, gA = gs ? r.goal.value(r.cur.S) : 0, gB = gs ? r.goal.value(r.nxt.S) : 0;
     const heart = (c, slot, side) => `<button data-fav="${esc(slot)}|${side}" title="${buildFavs()[c.id] ? 'Retirer des favoris' : 'Ajouter aux favoris (bulle ❤️ en bas à gauche)'}" style="background:none;border:0;cursor:pointer;padding:0 2px;font-size:13px;color:${buildFavs()[c.id] ? '#ff5c7a' : '#8a7d66'}">${buildFavs()[c.id] ? '❤' : '♡'}</button>`;
-    const item = (c, slot, side) => (c ? `${heart(c, slot, side)}<span data-hover="${esc(slot)}|${side}" style="cursor:help">${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain;vertical-align:middle">` : ''} ${esc(itemLabel(c))}${c.src === 'hdv' ? ` <span style="color:#f0c04a">🛒 ${fmt(c.price)} K</span>` : ''}${c.src === 'bank' ? ` <span style="color:#8fb8ee">🏦 ${esc(c.bankName)}</span>` : ''}${c.src === 'drop' ? ` <span style="color:#c99bff">🐉 à looter</span>${c.offer ? ` <span style="color:#f0c04a">· en vente ${fmt(c.offer.price)} K${c.offer.fusion ? ` (fusion ${c.offer.fusion})` : ''}</span>` : ''}` : ''}${c.bought ? ' <span style="color:#6fcf7a">✔ acheté</span>' : ''}</span>` : '<i style="color:#8a7d66">vide</i>');
+    const item = (c, slot, side) => (c ? `${heart(c, slot, side)}<span data-hover="${esc(slot)}|${side}" style="cursor:help">${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain;vertical-align:middle">` : ''} ${t1Label(c)}${c.src === 'hdv' ? ` <span style="color:#f0c04a">🛒 dès ${fmt(c.price)} K</span>` : ''}${c.src === 'bank' ? ` <span style="color:#8fb8ee">🏦 ${esc(c.bankName)}</span>` : ''}${c.src === 'drop' ? ` <span style="color:#c99bff">🐉 à looter</span>${c.offer ? ` <span style="color:#f0c04a">· en vente dès ${fmt(c.offer.price)} K</span>` : ''}` : ''}${c.bought ? ' <span style="color:#6fcf7a">✔ acheté</span>' : ''}</span>` : '<i style="color:#8a7d66">vide</i>');
     const sbtn = 'border:1px solid #5a4a33;border-radius:6px;padding:2px 7px;color:#fff;cursor:pointer;font:600 11px system-ui,sans-serif;background:#2a231a;margin-left:4px';
-    const tools = (c) => (!c ? '' : `${c.src === 'bank' ? (c.queued ? '<span style="color:#6fcf7a;margin-left:4px">✔ en file d’échange</span>' : `<button data-bankq="${esc(c.uid)}" style="${sbtn};background:#2e6fbf" title="Ajoute cet objet à la file d’échange de ${esc(c.bankName)} : lance « Tout échanger » depuis son onglet, puis équipe-le">📦 File d’échange</button>`) : ''}${c.src === 'drop' && c.offer ? `<button data-buy="${esc(c.offer.listingId)}" style="${sbtn};background:#8a5a1a" title="Acheter cette annonce (vendeur : ${esc(c.offer.seller)}) — 2e clic pour confirmer">🛒 Acheter</button>` : ''}${c.src === 'hdv' ? `<button data-buy="${esc(c.listingId)}" style="${sbtn};background:#8a5a1a" title="Acheter cette annonce (vendeur : ${esc(c.seller)}) — 2e clic pour confirmer">🛒 Acheter</button>` : ''}<button data-ban="${+c.id}" data-name="${esc(c.name)}" style="${sbtn}" title="Mettre en liste noire : ne plus jamais proposer cet objet">🚫</button>`);
+    const tools = (c) => (!c ? '' : `${c.src === 'bank' ? (c.queued ? '<span style="color:#6fcf7a;margin-left:4px">✔ en file d’échange</span>' : `<button data-bankq="${esc(c.uid)}" style="${sbtn};background:#2e6fbf" title="Ajoute cet objet à la file d’échange de ${esc(c.bankName)} : lance « Tout échanger » depuis son onglet, puis équipe-le">📦 File d’échange</button>`) : ''}${c.src === 'hdv' || c.src === 'drop' ? offerBtns(c, sbtn) : ''}<button data-ban="${+c.id}" data-name="${esc(c.name)}" style="${sbtn}" title="Mettre en liste noire : ne plus jamais proposer cet objet">🚫</button>`);
     // monstres qui lâchent un objet à looter : les 3 meilleures chances (prospection comprise), niveaux et zones
     const pctTxt = (x) => `${(x >= 1 ? x.toFixed(1) : x.toFixed(2)).replace('.', ',')} %`;
     // (taux 0 dans le bestiaire = « objet bonus de victoire » ; Boss du Chemin d'abord, ~90 %)
@@ -405,7 +413,7 @@ async function openBuildOptimizer({ load = null } = {}) {
       ${r.bestiary ? `<div style="font-size:12px;color:#c99bff">🐉 Bestiaire : ${r.bestiary.count} objet(s) lootable(s) à ton niveau que tu n’as pas, pris en compte (copie du ${new Date(r.bestiary.at).toLocaleString('fr-FR')})${drops.length ? ` — ${drops.length} à looter dans le build proposé${drops.some((c) => c.offer) ? `, dont ${drops.filter((c) => c.offer).length} en vente à l’HDV` : ''}` : ''}.</div>` : ''}
       ${r.bank ? `<div style="font-size:12px;color:#8fb8ee">🏦 Banque ${esc(r.bank.name)} : ${r.bank.count} objet(s) disponible(s)${r.bank.bound ? `, ${r.bank.bound} lié(s) ignoré(s)` : ''}.</div>` : ''}
       ${r.target?.rf ? `<div style="font-size:12px;color:#b9a98c">🎯 ${esc(r.target.name)} : ${ELEMENTS.map((E, i) => `${E.name} ${r.target.resPct[i]} %${r.target.rf[i] ? ` + ${r.target.rf[i]}` : ''}`).join(' · ')}${r.target.pv ? ` · ${fmt(r.target.pv)} PV` : ''}</div>` : ''}
-      ${r.simTier ? `<div style="font-size:12px;color:#ffd76a">⚗️ Simulation : tous les objets (portés compris) comptés au tier ${r.simTier}${r.simTier === 5 ? ' (Rayonnant)' : ''}, prestige et forge en plus — les stats affichées sont celles de ce tier, pas celles de tes exemplaires.</div>` : ''}
+      <div style="font-size:12px;color:#ffd76a">⚗️ Comparaison en T1 : stats de base de chaque objet (prestige et forge compris), quel que soit le tier de ton exemplaire ou de l’annonce HDV — un tier plus haut ne fera que les augmenter.</div>
       ${r.ownKept ? `<div style="font-size:12px;color:#6fcf7a">🎒 Tolérance ${String(r.ownTol).replace('.', ',')} % : ${r.ownKept} objet(s) à acheter ou looter remplacé(s) par des objets que tu as (−${r.ownLoss.toFixed(1).replace('.', ',')} % par rapport au meilleur build trouvé).</div>` : ''}
       ${r.paShort ? `<div style="color:#ff7b6b;font-weight:700">⚠️ PA minimum (${r.paMin}) impossible à atteindre avec tes objets : le build ci-dessous est celui qui a le plus de PA (${r.paOf(r.nxt.S)}).</div>` : ''}
       ${r.hdvFailed.length ? `<div style="color:#f0a040">⚠️ HDV illisible pour : ${r.hdvFailed.map((t) => esc(SLOT_NAMES[t] || t)).join(', ')} (site saturé) — ces emplacements n’ont pas d’objet HDV proposé.</div>` : ''}
