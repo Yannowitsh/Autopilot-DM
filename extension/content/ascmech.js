@@ -9,7 +9,7 @@
 // joue sa première carte puis recalcule (pioche, morts, coups critiques…).
 const MECH_KEY = 'dmBossMech';
 const MECH_MAX_AGE = 12 * 3600000;
-const CURSE_MIN_HP = 0.5;        // Malédiction des soins : jamais sous 50 % de PV à cause de ses propres vols / soins
+const SELF_W = 1.5;              // 1 PV perdu par nous-mêmes vaut 1,5 PV infligés (nos PV sont plus rares que ceux des boss)
 const STEAL_HEAL_PART = 0.5;     // un vol de vie rend 50 % des dégâts infligés (journaux de combat)
 let mechCache = null;
 
@@ -35,7 +35,7 @@ async function bossMechanics(force = false) {
 function parseMechanic(m) {
   const x = m.x || '', num = (re) => { const r = x.match(re); return r ? +r[1] : null; };
   switch (m.n) {
-    case 'Fureur': return { k: 'fureur', max: num(/plus de (\d+) cartes/) ?? 3 };
+    case 'Fureur': return { k: 'fureur', max: num(/plus de (\d+) cartes/) ?? 3, mult: +(x.match(/×(\d+(?:,\d+)?)/)?.[1] || '2').replace(',', '.') };
     case 'Peau dure': return { k: 'shield', pass: num(/seuls (\d+) ?%/) ?? 50 };
     case 'Onde de choc': return { k: 'onde', pct: num(/(\d+) ?% de tes PV/) ?? 25 };
     case 'Malédiction des soins': return { k: 'curse', from: num(/tour (\d+)/) ?? 1, half: /divisés par deux/.test(x) };
@@ -69,7 +69,7 @@ function fightMechanics(st, list, floor) {
     const asc = b.m.filter((m) => ascRanges(m.w).length);
     let picked = floor ? asc.filter((m) => ascRanges(m.w).some(([a, z]) => floor >= a && floor <= z)) : asc;
     // Cauchemar : la deuxième mécanique s'ajoute
-    const nightmare = picked.some((m) => /^Cauchemar/.test(m.w) || /Cauchemar/.test(m.w.split(' · ')[0]));
+    const nightmare = picked.some((m) => ascRanges(m.w).some(([a, z]) => z === Infinity && floor >= a));
     if (nightmare || !floor) picked = [...picked, ...b.m.filter((m) => /deuxième mécanique/.test(m.w))];
     for (const m of picked) out.push({ boss: f.id, bossName: f.name, name: m.n, text: m.x, ...parseMechanic(m) });
   }
@@ -120,7 +120,7 @@ function planTurn(st, cand, rules) {
   const has = (k) => R.filter((r) => r.k === k);
   const notes = [];
   const fureur = has('fureur').reduce((m, r) => Math.min(m, r.max), Infinity);
-  if (fureur < Infinity) notes.push(`Fureur ≤ ${fureur} cartes`);
+  if (fureur < Infinity) notes.push(`Fureur > ${fureur} cartes`);
   const onde = has('onde').length > 0;
   if (onde) notes.push('Onde : alterner');
   const curse = has('curse').some((r) => round >= r.from && !r.half);
@@ -148,62 +148,75 @@ function planTurn(st, cand, rules) {
   });
   const startLast = onde ? (p.lastEl ?? planTurn.lastEl ?? null) : null;
   const cardsDone = +p.cardsThisTurn || 0;
-  const hpMin = (curse ? CURSE_MIN_HP : 0) * (+p.maxHp || 0);
+  const maxHp = +p.maxHp || 1;
+  // dégâts annoncés par les boss pour leur prochain tour (intentions) : ne jamais se blesser en dessous
+  const incomingOf = (f) => (['attack', 'heavy', 'drain', 'rage'].includes(f.intent?.k) ? +f.intent.value || +f.atk || 0 : 0);
+  const safety = enemies.reduce((t, f) => t + incomingOf(f), 0) + maxHp * 0.05;
+  const ondePct = Math.max(0, ...has('onde').map((r) => r.pct));
+  const fureurRules = has('fureur');
   let best = null;
   const n = Math.min(info.length, 9);
-  // recherche en profondeur : ordre des cartes, cible de chacune, PV des ennemis et du joueur estimés au fil de la suite
-  const dfs = (seq, used, ap, lastEl, count, hp, ehp, shieldUp, score, ondes) => {
+  // Recherche en profondeur : ordre des cartes, cible de chacune, PV des ennemis et du joueur estimés au fil de la suite.
+  // Score en PV : dégâts utiles infligés (sans l'excédent), + bonus par ennemi tué (son attaque ne viendra plus),
+  // − SELF_W × PV perdus par nous-mêmes (onde de choc, soins maudits, coups renvoyés, Fureur).
+  const dfs = (seq, used, ap, lastEl, count, hp, ehp, shieldUp, score) => {
     const allDead = enemies.every((f) => ehp[f.id] <= 0);
-    // suite évaluée à chaque arrêt possible
     let s = score;
-    if (apRule) s -= Math.abs(ap - apRule.ap) * 1e6;
-    if (fureur < Infinity && count > fureur && !allDead) s -= 1e9;
-    if (ondes && !allDead) s -= 1e6 * ondes;   // onde de choc : seulement si la suite finit le combat
-    if (!best || s > best.s + 1e-9 || (Math.abs(s - best.s) < 1e-9 && seq.length < best.seq.length)) best = { s, seq };
+    if (apRule) s -= Math.abs(ap - apRule.ap) * 1e6;   // PA comptés : sinon il nous pulvérise
+    // Fureur : au-delà de N cartes, la prochaine attaque du boss (s'il vit encore) est multipliée
+    if (!allDead) for (const r of fureurRules) if (count > r.max && ehp[r.boss] > 0) s -= SELF_W * incomingOf(st.fighters[r.boss]) * ((r.mult || 2) - 1);
+    if (!best || s > best.s + 1e-6 || (Math.abs(s - best.s) <= 1e-6 && seq.length < best.seq.length)) best = { s, seq };
     if (allDead) return;
     for (let i = 0; i < n; i++) {
       if (used & (1 << i)) continue;
       const x = info[i];
       if (x.ap > ap) continue;
-      let target = null, gain = x.w;
+      let target = null, gain = 0, self = 0;
       const nh = { ...ehp };
-      let selfHp = hp;
       if (x.isDmg || needsTarget(x.c)) {
-        // cibles permises : vivantes, ni sous Miroir, ni à ménager (Échange de vie) si le coup les fait passer sous nos PV %
-        if (x.zone && enemies.some((f) => mirrored.has(f.id) && nh[f.id] > 0)) continue;
-        const myPct = hp / (+p.maxHp || 1);
+        // cible : vivante, pas sous Miroir, et pas à ménager (Échange de vie) si le coup la fait passer sous nos PV %
+        const myPct = hp / maxHp;
         const ok = enemies.filter((f) => nh[f.id] > 0 && !mirrored.has(f.id)).filter((f) => {
           if (!swapProt.has(f.id)) return true;
-          const d = cardEffect(x.c, p, f).dmg;
-          return (nh[f.id] - d) / (+f.maxHp || 1) >= myPct + 0.05;
+          return (nh[f.id] - cardEffect(x.c, p, f).dmg) / (+f.maxHp || 1) >= myPct + 0.05;
         });
         if (!ok.length) continue;
         target = ok.sort((a, b) => nh[a.id] - nh[b.id])[0];
-        const hit = (f) => {
+        const pass = shieldRule && !shieldUp ? shieldRule.pass / 100 : 1;
+        const hit = (f, part) => {
           const e = cardEffect(x.c, p, f);
-          nh[f.id] -= e.dmg * (shieldRule && !shieldUp ? shieldRule.pass / 100 : 1);
-          // Deuxième souffle : il se relève une fois avec x % de ses PV
-          if (nh[f.id] <= 0 && reviveAt[f.id] && !nh[`r:${f.id}`]) { nh[f.id] = (+f.maxHp || 0) * reviveAt[f.id] / 100; nh[`r:${f.id}`] = 1; }
+          const d = e.dmg * part * pass;
+          if (mirrored.has(f.id)) { self += d; return e; }   // Miroir : le coup nous revient
+          const before = nh[f.id];
+          nh[f.id] -= d;
+          gain += Math.min(before, d);
+          if (nh[f.id] <= 0) {
+            // Deuxième souffle : il se relève une fois avec x % de ses PV
+            if (reviveAt[f.id] && !nh[`r:${f.id}`]) { nh[f.id] = (+f.maxHp || 0) * reviveAt[f.id] / 100; nh[`r:${f.id}`] = 1; }
+            else gain += incomingOf(f) + (+f.atk || 0);   // une attaque de moins à encaisser
+          }
           return e;
         };
-        const eff = hit(target);
-        if (x.zone) for (const f of enemies) if (f !== target && nh[f.id] > 0) hit(f);
-        if (curse) {   // vols et soins blessent : le gain de la carte baisse d'autant
-          selfHp -= eff.self;
-          if (selfHp < hpMin) continue;
-          gain *= Math.max(0, 1 - eff.self / Math.max(1, eff.dmg));
-        }
-        if (shieldRule && !shieldUp && x.isDmg) gain *= shieldRule.pass / 100;
-      } else if (curse && cardKind(x.c) === 'heal') continue;
-      const wave = onde && x.isDmg && !x.weapon && lastEl != null && x.firstEl === lastEl;
-      if (wave) selfHp -= p.maxHp * (Math.max(...has('onde').map((r) => r.pct)) / 100);
-      if (selfHp <= 0) continue;
-      const sUp = shieldUp || x.shield;
+        const eff = hit(target, 1);
+        if (x.zone) for (const f of enemies) if (f !== target && (nh[f.id] > 0 || mirrored.has(f.id))) hit(f, ZONE_FALLOFF);
+        if (curse) self += eff.self;   // vols et soins blessent
+        else if (!x.isDmg) gain += x.w * 5;
+      } else if (cardKind(x.c) === 'heal') {
+        if (curse) continue;
+        gain += Math.min(maxHp - hp, x.w * 20);
+      } else gain += x.w * 5;   // buff, bouclier… : valeur tirée de son poids
+      if (x.shield && shieldRule && !shieldUp) gain += 5000;   // Peau dure : le bouclier d'abord
+      const wave = ondePct > 0 && x.isDmg && !x.weapon && lastEl != null && x.firstEl === lastEl;
+      if (wave) self += maxHp * ondePct / 100;
+      // jamais en dessous de ce que les boss vont nous infliger à leur tour (sauf si la suite les tue tous)
+      const left = hp - self;
+      const killsAll = enemies.every((f) => nh[f.id] <= 0);
+      if (self > 0 && left < safety && !(killsAll && left > 0)) continue;
       dfs([...seq, { x, target }], used | (1 << i), ap - x.ap, x.isDmg && !x.weapon ? x.lastEl : lastEl, count + (x.weapon ? 0 : 1),
-        selfHp, nh, sUp, score + gain + (x.shield && shieldRule && !shieldUp ? 1000 : 0), ondes + (wave ? 1 : 0));
+        left, nh, shieldUp || x.shield, score + gain - SELF_W * self);
     }
   };
-  dfs([], 0, +p.ap || 0, startLast, cardsDone, +p.hp || 0, Object.fromEntries(enemies.map((f) => [f.id, +f.hp || 0])), shieldUp0, 0, 0);
+  dfs([], 0, +p.ap || 0, startLast, cardsDone, +p.hp || 0, Object.fromEntries(enemies.map((f) => [f.id, +f.hp || 0])), shieldUp0, 0);
   const first = best?.seq[0];
   return { pick: first?.x || null, target: first?.target || null, plan: best?.seq || [], notes };
 }

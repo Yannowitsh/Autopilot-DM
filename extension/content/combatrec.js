@@ -25,6 +25,23 @@ function fnv(s) {
 }
 const statsSig = (stats) => fnv(JSON.stringify(Object.entries(stats || {}).sort()));
 
+// Journal complet d'un combat : le serveur ne renvoie que les 150 dernières entrées (log), logCount = nombre total. Chaque
+// état reçu en cours de combat est recollé au précédent (sessionStorage de l'onglet) ; logFrom = indice de la 1re entrée
+// connue (0 = journal complet).
+const FIGHT_LOG_KEY = 'dmFightLog';
+function withFullLog(st) {
+  if (!st || !Array.isArray(st.log) || !(+st.logCount)) return st;
+  const key = `${st.kind}|${(st.order || []).join(',')}|${Object.values(st.fighters || {}).map((f) => `${f.name}:${f.maxHp}`).join(',')}`;
+  const start = +st.logCount - st.log.length;
+  let acc = null;
+  try { acc = JSON.parse(sessionStorage.getItem(FIGHT_LOG_KEY) || 'null'); } catch { /* stockage indisponible */ }
+  const end = acc ? acc.from + acc.log.length : 0;
+  if (!acc || acc.key !== key || +st.logCount < end || start > end || start <= acc.from) acc = { key, from: start, log: st.log.slice() };   // autre combat, trou, ou état plus complet
+  else acc.log = acc.log.slice(0, start - acc.from).concat(st.log);
+  try { sessionStorage.setItem(FIGHT_LOG_KEY, JSON.stringify(acc)); } catch { /* journal trop gros : on garde l'état reçu */ }
+  return { ...st, log: acc.log, logFrom: acc.from };
+}
+
 // Fin de combat (état du serveur `st`, récompenses) : mise en attente, puis remise au service worker.
 function combatOnEnd(st, rewards) {
   try {

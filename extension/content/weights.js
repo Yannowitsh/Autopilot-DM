@@ -108,7 +108,7 @@ let weightedBusy = false, useGameAuto = false;
 let fightInit = null;
 window.addEventListener('message', (e) => {
   if (e.source !== window || e.data?.type !== 'dm-fight-init' || typeof e.data.json !== 'string') return;
-  try { fightInit = { st: rscDeep({}, JSON.parse(e.data.json)), at: Date.now() }; } catch { return; }
+  try { fightInit = { st: withFullLog(rscDeep({}, JSON.parse(e.data.json))), at: Date.now() }; } catch { return; }
   if (!weightsOn() || !isOwner()) return;
   // La boucle du pilote attend 3 s après chaque clic de lancement : on démarre le combat sans elle, dès que la page est
   // sur /combat (lancement depuis /aventure ou /chasse : le temps que le jeu y navigue).
@@ -200,7 +200,7 @@ async function weightedFight(manual = null) {
         const hits = fresh.filter((L) => L.t === 'dmg' && res.state.fighters[L.who]?.team !== p.team);
         if (hits.length) planTurn.lastEl = hits[hits.length - 1].el;
       }
-      st = res.state;
+      st = withFullLog(res.state);
       learnCardCrits(st);
       if (res.rewards && st.status !== 'ongoing') { dropOnRewards(res.rewards, `${st.kind}|${st.logCount}`); farmOnRewards(st, res.rewards); }
       if (st.status !== 'ongoing') combatOnEnd(st, res.rewards);

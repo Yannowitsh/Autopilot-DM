@@ -73,7 +73,7 @@ window.addEventListener('message', (e) => {
   if (e.source !== window || e.data?.type !== 'dm-fight' || typeof e.data.line !== 'string') return;
   try {
     const obj = JSON.parse(e.data.line);
-    const st = obj.state;
+    const st = withFullLog(obj.state);
     learnCardCrits(st);
     if (obj.rewards && st?.status && st.status !== 'ongoing') { dropOnRewards(obj.rewards, `${st.kind}|${st.logCount}`); farmOnRewards(st, obj.rewards); }
     if (st?.status && st.status !== 'ongoing') combatOnEnd(st, obj.rewards);
@@ -82,7 +82,7 @@ window.addEventListener('message', (e) => {
       { id, name: f.name, kind: f.kind, team: f.team, level: f.level, maxHp: f.maxHp, stats: f.stats, resCap: f.resCap, buffs: f.buffs,
         ...(id === 'p' ? { cards: f.cards, weaponCard: f.weaponCard } : {}) }]));
     const all = JSON.parse(localStorage.getItem(LAST_FIGHT_KEY) || '{}');
-    all[fightAcct()] = { at: Date.now(), kind: st.kind, status: st.status, fighters, log: st.log };
+    all[fightAcct()] = { at: Date.now(), kind: st.kind, status: st.status, fighters, log: st.log, logFrom: st.logFrom || 0 };
     localStorage.setItem(LAST_FIGHT_KEY, JSON.stringify(all));
   } catch { /* état illisible ou stockage plein */ }
 });
@@ -217,12 +217,25 @@ async function setFavorite(id, on, chunks) {
 // Observé = v + absorbé (bouclier). Stats = stats du combat + buffs du joueur encore actifs (journal « buff », durée en tours).
 // Estimation « sans rés. » = formule de la tierlist ; « avec rés. » = (x − rés. fixe) × (1 − % rés.) de la cible.
 // Zone : les autres cibles touchées prennent les mêmes dégâts (vérifié sur les combats enregistrés).
+// Zone : la cible visée prend 100 %, les autres cibles d'une ligne de zone 60 % (vérifié sur des centaines de coups de
+// Traversée) ; une ligne normale reportée sur un autre ennemi (cible morte) frappe à 100 %.
+const ZONE_FALLOFF = 0.6;
 const EL_RES_PCT = ['resPctNeutre', 'resPctTerre', 'resPctFeu', 'resPctEau', 'resPctAir'];
 const EL_RES = ['resNeutre', 'resTerre', 'resFeu', 'resEau', 'resAir'];
 function damageTest(fight, spells) {
   const P = fight.fighters.p, stats = P.stats;
+  // début du journal perdu (le serveur n'en renvoie que 150 entrées) : les buffs posés avant sont inconnus
+  const partial = (+fight.logFrom || 0) > 0 || (+fight.logCount || 0) > (fight.log?.length || 0);
   const buffs = [], seen = new Set();   // seen : entrées « buff » déjà comptées (journal parcouru deux fois)
-  const addBuff = (k, B) => { if (!seen.has(k) && B.who === 'p' && B.stat) { seen.add(k); buffs.push({ stat: B.stat, v: +B.v || 0, from: pTurn, turns: +B.turns || 1 }); } };
+  // un buff relancé pendant qu'il dure est rafraîchi, pas cumulé (une entrée par sort dans fighters.buffs) : même stat et
+  // même valeur → on remplace
+  const addBuff = (k, B) => {
+    if (seen.has(k) || B.who !== 'p' || !B.stat) return;
+    seen.add(k);
+    const v = +B.v || 0, old = buffs.findIndex((b) => b.stat === B.stat && b.v === v);
+    if (old >= 0) buffs.splice(old, 1);
+    buffs.push({ stat: B.stat, v, from: pTurn, turns: +B.turns || 1 });
+  };
   let pTurn = 0;
   const S = (k) => (+stats[k] || 0) + buffs.reduce((s, b) => s + (b.stat === k && pTurn < b.from + b.turns ? b.v : 0), 0);
   const pct = 1 + S('dmgPctSorts') / 100;
@@ -239,18 +252,23 @@ function damageTest(fight, spells) {
     const card = byName.get(L.card);
     const lines = card ? damageLines(card, S).filter(({ e }) => !(e.chance != null && +e.chance < 100)) : [];
     const used = new Set();
+    // cible principale : celle visée ; si elle meurt, l'ennemi touché par une ligne suivante devient la cible principale
+    let primary = L.target, primaryDead = false, killLine = -1, lastLine = -1;
     for (let j = i + 1; j < log.length && !['play', 'turn', 'round'].includes(log[j].t); j++) {
       const D = log[j];
       if (D.t === 'buff') addBuff(j, D);   // vol de stats en cours de sort
+      if (D.t === 'death' && D.who === primary) { primaryDead = true; killLine = lastLine; }
       if (D.t !== 'dmg') continue;
       const tg = fight.fighters[D.who];
       if (!tg || tg.team === P.team) continue;   // coups sur soi / les alliés (zones) ignorés
       const li = lines.findIndex((x, k) => !used.has(k) && x.el === D.el);
       if (li >= 0 && !lines[li].e.zone) used.add(li);
+      if (primaryDead && li !== killLine && D.who !== primary) { primary = D.who; primaryDead = false; }
+      lastLine = li;
       const ln = lines[li];
       const crit = !!(D.crit ?? L.crit);
       const fatal = log[j + 1]?.t === 'death' && log[j + 1].who === D.who;
-      const secondary = !!L.target && D.who !== L.target;   // autre cible touchée par la zone
+      const secondary = !!primary && D.who !== primary;   // autre cible touchée par une ligne de zone
       const buffed = S(EL_STAT[D.el]) - (+stats[EL_STAT[D.el]] || 0) + S('puissance') - (+stats.puissance || 0);
       const src = ln && (crit ? ln.c : ln.e);
       const row = { card: L.card, ap: card?.ap, target: tg.name, el: D.el, v: (+D.v || 0) + (+D.absorbed || 0), crit, fatal, buffed,
@@ -263,7 +281,8 @@ function damageTest(fight, spells) {
         const b = (x) => (crit ? (ln.c ? +x || 0 : (+x || 0) * CRIT_MULT) : +x || 0);
         const val = (x) => (b(x) * mult + fixed) * pct;
         const s2 = crit && ln.c ? ln.c : e;
-        row.lo = val(s2.min) * n; row.hi = val(s2.max ?? s2.min) * n;
+        const zf = secondary && e.zone ? ZONE_FALLOFF : 1;   // zone : les autres cibles prennent 60 %
+        row.lo = val(s2.min) * n * zf; row.hi = val(s2.max ?? s2.min) * n * zf;
         const rp = Math.min(+tg.resCap || 100, (+tg.stats?.[EL_RES_PCT[D.el]] || 0) + (+tg.stats?.resPctAll || 0));
         const rf = +tg.stats?.[EL_RES[D.el]] || 0;
         const adj = (x) => Math.max(0, (x - rf) * (1 - rp / 100));
@@ -279,7 +298,7 @@ function damageTest(fight, spells) {
     .map(([n, c]) => `${n} : ${c.ap} PA, cc ${c.cc ?? 0} % — ${JSON.stringify((c.eff || []).filter((e) => DMG_FIXED.has(e.k) || DMG_VARIABLE.has(e.k)))}`);
   const buffLog = log.filter((L) => L.t === 'buff').map((L) => JSON.stringify(L));
   const fbuffs = Object.values(fight.fighters).filter((f) => f.buffs && (!Array.isArray(f.buffs) || f.buffs.length)).map((f) => `${f.name} : ${JSON.stringify(f.buffs)}`);
-  return { rows, stats, cards, buffs: buffLog, fbuffs };
+  return { rows, stats, cards, buffs: buffLog, fbuffs, partial };
 }
 
 function openDamageTest(spells) {
@@ -300,7 +319,7 @@ function openDamageTest(spells) {
     document.body.appendChild(ov);
     return;
   }
-  const { rows, stats, cards, buffs, fbuffs } = damageTest(fight, spells);
+  const { rows, stats, cards, buffs, fbuffs, partial } = damageTest(fight, spells);
   const EL = (el) => ELEMENTS[el]?.name || '?';
   const r1 = (x) => Math.round(x);
   const statLine = Object.entries(stats).filter(([, v]) => +v).map(([k, v]) => `${k} ${v}`).join(', ');
@@ -320,6 +339,7 @@ function openDamageTest(spells) {
     <div style="display:flex;gap:8px;align-items:center"><b style="flex:1;font-size:15px">🧪 Test du calcul — dernier combat (${esc(new Date(fight.at).toLocaleString('fr-FR'))})</b>
       <button data-a="copy" style="${btn};background:#2e6fbf">📋 Copier le récap</button><button data-a="close" style="${btn}">✕</button></div>
     <div style="color:#b9a98c;font-size:12px">Stats du combat : ${esc(statLine) || 'aucun bonus'}</div>
+    ${partial ? '<div style="font-size:12px;color:#f0a040">⚠️ Début du combat absent du journal (le serveur n’en garde que 150 entrées) : des buffs posés avant ont pu être manqués, les écarts sont possibles.</div>' : ''}
     <div style="font-size:12px">${okRows.length ? `<b>${inRange} / ${okRows.length}</b> coups dans la fourchette estimée (hors coups fatals, plafonnés par la vie restante).` : 'Aucun coup comparable.'}</div>
     <div style="overflow:auto">
       <table style="border-collapse:collapse;width:100%;font-size:12px">
