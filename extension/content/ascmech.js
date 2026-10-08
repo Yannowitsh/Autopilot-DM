@@ -164,7 +164,18 @@ function planTurn(st, cand, rules) {
   if (mirrored.size) notes.push(`Miroir : ne pas frapper ${[...mirrored].map((id) => st.fighters[id]?.name).join(', ')}`);
   const apRule = has('apExact').find((r) => r.turn === round);
   if (apRule) notes.push(`finir à ${apRule.ap} PA`);
-  const swapProt = new Set(has('swap').filter((r) => round < r.turn).map((r) => r.boss));
+  // Échange de vie : boss à ménager avant son tour… sauf si on peut l'abattre d'ici là (plus d'échange, ni de ses
+  // autres mécaniques : il ne mène plus). Dégâts possibles par tour sur lui : ses meilleures cartes (N si Fureur) + l'arme.
+  const killableBy = (id, turns) => {
+    const f = st.fighters[id];
+    const per = cand.filter((x) => !x.weapon && damageLines(x.c, fighterStat(p)).length).map((x) => cardEffect(x.c, p, f).dmg).sort((a, b) => b - a)
+      .slice(0, fureur < Infinity ? fureur : 4).reduce((t, d) => t + d, 0)
+      + cand.filter((x) => x.weapon).reduce((t, x) => t + cardEffect(x.c, p, f).dmg, 0);
+    return (+f.hp || 0) <= per * turns;
+  };
+  const swapProt = new Set(has('swap').filter((r) => round < r.turn && !killableBy(r.boss, r.turn - round)).map((r) => r.boss));
+  const swapRush = has('swap').filter((r) => round < r.turn && !swapProt.has(r.boss));
+  if (swapRush.length) notes.push(`abattre ${swapRush.map((r) => st.fighters[r.boss]?.name).join(', ')} avant le tour ${swapRush[0].turn}`);
   if (swapProt.size) notes.push(`Échange de vie : ménager ${[...swapProt].map((id) => st.fighters[id]?.name).join(', ')}`);
   // boss qui se relèvera encore (Deuxième souffle pas encore déclenché) : le tuer ne finit pas le combat
   const revived = new Set(st.log?.filter((L) => L.t === 'mechanic' && /se relève/.test(L.text || '')).map((L) => L.who));
@@ -183,6 +194,14 @@ function planTurn(st, cand, rules) {
   const maxHp = +p.maxHp || 1;
   // dégâts annoncés par les boss pour leur prochain tour (intentions) : ne jamais se blesser en dessous
   const incomingOf = (f) => (['attack', 'heavy', 'drain', 'rage'].includes(f.intent?.k) ? +f.intent.value || +f.atk || 0 : 0);
+  // prochaine VRAIE attaque du boss (après nos résistances, plafonnées à 50 %) : s'il se garde ou enrage ce tour-ci, la
+  // suivante — par prudence une attaque lourde (×1,7). C'est elle que la Fureur amplifie.
+  const nextHitOf = (f) => {
+    if (['attack', 'heavy', 'drain'].includes(f.intent?.k) && +f.intent.value) return +f.intent.value;
+    const el = Number.isInteger(f.element) ? f.element : 1;
+    const rp = Math.min(50, fighterStat(p)(EL_RES_PCT[el]));
+    return (+f.atk || 0) * 1.7 * (1 - rp / 100);
+  };
   const safety = enemies.reduce((t, f) => t + incomingOf(f), 0) + maxHp * 0.05;
   const ondePct = Math.max(0, ...has('onde').map((r) => r.pct));
   const fureurRules = has('fureur');
@@ -196,7 +215,13 @@ function planTurn(st, cand, rules) {
     let s = score;
     if (apRule) s -= Math.abs(ap - apRule.ap) * 1e6;   // PA comptés : sinon il nous pulvérise
     // Fureur : au-delà de N cartes, la prochaine attaque du boss (s'il vit encore) est multipliée
-    if (!allDead) for (const r of fureurRules) if (count > r.max && ehp[r.boss] > 0) s -= SELF_W * incomingOf(st.fighters[r.boss]) * ((r.mult || 2) - 1);
+    // Fureur : au-delà de N cartes, la prochaine attaque du boss (s'il vit encore) est multipliée ; interdit si elle nous tue
+    if (!allDead) for (const r of fureurRules) {
+      if (!(count > r.max && ehp[r.boss] > 0)) continue;
+      const boosted = nextHitOf(st.fighters[r.boss]) * (r.mult || 2);
+      const shieldNow = (p.shields || []).reduce((t, x) => t + (+x.v || +x.value || +x.amount || 0), 0) + (seq.some((q) => q.x.shield) ? Math.max(...seq.filter((q) => q.x.shield).map((q) => shieldOf(q.x.c, p).v)) : 0);
+      s -= boosted >= hp + shieldNow ? 1e9 : SELF_W * boosted * (1 - 1 / (r.mult || 2));
+    }
     if (!best || s > best.s + 1e-6 || (Math.abs(s - best.s) <= 1e-6 && seq.length < best.seq.length)) best = { s, seq };
     if (allDead) return;
     for (let i = 0; i < n; i++) {
