@@ -69,7 +69,8 @@ const setStatus = (status, paused = false) => {
 };
 const isOwner = () => cfg.enabled && myTabId != null && cfg.ownerTabId === myTabId;
 const modOn = (k) => DM.modOn(cfg, k);   // module activé dans la popup de l'extension
-const weightsOn = () => cfg.fightEngine === 'weights' && modOn('weights');
+// Ascension : toujours notre moteur (l'Auto du jeu ignore les mécaniques des boss)
+const weightsOn = () => cfg.mode === 'ascension' || (cfg.fightEngine === 'weights' && modOn('weights'));
 
 // ---------- DOM ----------
 const visibleButtons = () => [...document.querySelectorAll('button')].filter((b) => b.offsetParent !== null);

@@ -61,7 +61,8 @@ function rscDeep(rows, v, depth = 0) {
 }
 
 // Prochaine action : la carte la plus lourde de la meilleure combinaison jouable, sinon fin du tour.
-function chooseFightAction(st, casts, blocked) {
+// rules (Ascension) : mécaniques des boss → planTurn choisit l'ordre, le nombre de cartes et les cibles qui les respectent.
+function chooseFightAction(st, casts, blocked, rules = null) {
   const p = st.fighters.p;
   const target = Object.values(st.fighters).filter((f) => f.team !== p.team && f.alive && f.id !== 'p')
     .sort((a, b) => a.hp - b.hp)[0];
@@ -77,6 +78,14 @@ function chooseFightAction(st, casts, blocked) {
     if (cardKind(x.c) === 'heal' && !lowHp) continue;
     if (every > 0 && casts[x.key] != null && p.turnNo - casts[x.key] < every) continue;
     cand.push({ ...x, w, ap });
+  }
+  if (rules) {
+    const plan = planTurn(st, cand, rules);
+    const why = plan.notes.length ? ` [${plan.notes.join(' · ')}]` : '';
+    if (!plan.pick) return { action: { type: 'end' }, label: `fin du tour${why}` };
+    const tg = needsTarget(plan.pick.c) ? plan.target || target : null;
+    return { action: { type: 'play', card: plan.pick.c.uid, target: tg?.id }, pick: plan.pick,
+      label: `${plan.pick.c.name}${tg ? ` → ${tg.name}` : ''}${why}` };
   }
   if (!cand.length) return { action: { type: 'end' }, label: 'fin du tour' };
   // meilleure combinaison (main de quelques cartes : on les essaie toutes) ; à égalité, la moins chère en PA
@@ -146,6 +155,13 @@ async function weightedFight(manual = null) {
     let casts = {};
     try { const s = JSON.parse(sessionStorage.getItem('dmAutoCasts') || '{}'); if (s.key === fightKey) casts = s.casts || {}; } catch { /* rien */ }
     const keepCasts = () => { try { sessionStorage.setItem('dmAutoCasts', JSON.stringify({ key: fightKey, casts })); } catch { /* rien */ } };
+    // Ascension : mécaniques des boss présents à l'étage en cours (bestiaire), respectées par le plan du tour
+    let rules = null;
+    if (isAsc() && st.kind === 'boss') {
+      rules = fightMechanics(st, await bossMechanics(), +cfg.ascFloor || null);
+      planTurn.lastEl = null;
+      DM.log(`ascension${cfg.ascFloor ? ` étage ${cfg.ascFloor}` : ' (étage inconnu)'} : ${rules.map((r) => `${r.bossName} — ${r.name}`).join(' ; ') || 'aucune mécanique connue'}`);
+    }
     let blocked = new Set(), blockedTurn = null, errors = 0;
     for (let i = 0; i < 400 && st.status === 'ongoing'; i++) {
       if (manual ? manual.stop : !isOwner() || !cfg.botFight || !weightsOn()) { reload = false; return; }
@@ -153,7 +169,7 @@ async function weightedFight(manual = null) {
       if (st.currentId !== 'p') return fallback(`pas notre tour (${st.currentId})`);
       const p = st.fighters.p;
       if (blockedTurn !== p.turnNo) { blocked = new Set(); blockedTurn = p.turnNo; }
-      const { action, pick, label } = chooseFightAction(st, casts, blocked);
+      const { action, pick, label } = chooseFightAction(st, casts, blocked, rules);
       status(`Auto par poids : tour ${p.turnNo}, ${p.ap} PA — ${label}`);
       const lo = Math.max(0, +cfg.autoActMin || 0), hi = Math.max(lo, +cfg.autoActMax || 0);
       await sleep((lo + Math.random() * (hi - lo)) * 1000);
@@ -178,6 +194,12 @@ async function weightedFight(manual = null) {
       if (res.presence) return;   // vérification de présence : la page rechargée l'affiche, le pilote la résout
       if (res.otherTab || !res.state) return fallback(`réponse inattendue (${Object.keys(res).join(', ')})`);
       if (pick) { casts[pick.key] = p.turnNo; keepCasts(); }
+      // Onde de choc : élément de la dernière ligne qui a touché un ennemi (le jeu ne le donne pas toujours)
+      if (pick && !pick.weapon && res.state.log) {
+        const fresh = res.state.log.slice(-Math.max(0, (+res.state.logCount || 0) - (+st.logCount || 0)));
+        const hits = fresh.filter((L) => L.t === 'dmg' && res.state.fighters[L.who]?.team !== p.team);
+        if (hits.length) planTurn.lastEl = hits[hits.length - 1].el;
+      }
       st = res.state;
       learnCardCrits(st);
       if (res.rewards && st.status !== 'ongoing') { dropOnRewards(res.rewards, `${st.kind}|${st.logCount}`); farmOnRewards(st, res.rewards); }
