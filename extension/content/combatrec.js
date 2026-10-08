@@ -53,7 +53,9 @@ async function combatSnapshot(sig) {
     gear: gear.error ? gear : gear.slots.map((s) => ({ slot: s.slot, item: s.cur && { id: s.cur.id, name: s.cur.name, lvl: s.cur.lvl, type: s.cur.type,
       rarity: s.cur.rarity, fusion: s.cur.fusion, set: s.cur.setName, base: s.cur.baseEff, fused: s.cur.eff } })),
     scrolls: gear.error ? null : gear.scrolls, level: gear.error ? null : gear.level };
-  lsSet(COMBAT_SNAP_KEY, { ...all, [acct]: snap });
+  // lecture ratée (souvent : page rechargée pendant la lecture) : pas gardée, on réessaie au prochain combat
+  if (!sheet.error && !gear.error) lsSet(COMBAT_SNAP_KEY, { ...all, [acct]: snap });
+  else if (cur) return { ...cur, retryError: sheet.error || gear.error };
   return snap;
 }
 // Cartes de la collection (lignes complètes) : relues si trop vieilles ou si une carte jouée est inconnue.

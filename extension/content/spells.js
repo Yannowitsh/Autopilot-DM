@@ -17,15 +17,49 @@ const ELEMENTS = [
 const DMG_FIXED = new Set(['dmg', 'steal', 'bomb', 'trap', 'detonate', 'poison']);
 const DMG_VARIABLE = new Set(['dmgCasterHp', 'dmgLostHp']);
 const SPELL_FILTERS_KEY = 'dmSpellFilters';
-// Dégâts réels (option « Avec mes stats ») — formule des infobulles du jeu, vérifiée sur les journaux de combat :
-// par ligne : (base × (1 + (stat de l'élément + Puissance) / 100) + Dommages + Dommages <élément>) × (1 + % Dommages aux sorts).
-// Neutre et Terre = Force, Feu = Intelligence, Eau = Chance, Air = Agilité. Critique : chance de la carte + % Critique
-// (seulement si la carte peut critiquer), coup ×1,25 (estimé sur les journaux) + Dommages Critiques.
-// Vision spectrale : 0,4 % par point de PO qu'un sort de dégâts frappe deux fois (compté en moyenne).
-// Les résistances / le niveau du monstre réduisent ensuite tous les sorts pareil : le classement n'en dépend pas.
+// Dégâts réels (option « Avec mes stats ») — formule vérifiée coup par coup sur les combats enregistrés (129/129, 2 builds) :
+// chaque ligne : base × (1 + (stat de l'élément + Puissance) / 100), base tirée à part pour chaque ligne ;
+// + Dommages + Dommages <élément de la ligne> (+ Dommages Critiques si critique) UNE fois par lancer, sur la 1re ligne de dégâts ;
+// le tout × (1 + % Dommages aux sorts) (non vérifié). Neutre et Terre = Force, Feu = Intelligence, Eau = Chance, Air = Agilité.
+// Critique : chance de la carte + % Critique (seulement si la carte peut critiquer) ; le coup utilise les lignes critiques
+// de la carte (champ `crit` de l'état de combat, appris en combat : /deck ne les donne pas), sinon base × CRIT_MULT.
+// Les buffs de stats (Runification, Drain Élémentaire…) s'ajoutent aux stats pendant leur durée. Zone : les autres cibles
+// prennent les mêmes dégâts. Vision spectrale : 0,4 % par point de PO qu'un sort de dégâts frappe deux fois (en moyenne).
 const EL_STAT = ['force', 'force', 'intelligence', 'chance', 'agilite'];
 const EL_DMG = ['dommagesNeutre', 'dommagesTerre', 'dommagesFeu', 'dommagesEau', 'dommagesAir'];
-const CRIT_MULT = 1.25;
+const CRIT_MULT = 1.2;   // repli seulement (lignes critiques inconnues) : de +5 à ×1,6 selon la carte
+// Lignes critiques des cartes, apprises dans les états de combat : { idCarte: [lignes] } (localStorage de la page).
+const CARD_CRIT_KEY = 'dmCardCrit';
+let cardCritCache = null;
+const cardCrits = () => {
+  if (!cardCritCache) { try { cardCritCache = JSON.parse(localStorage.getItem(CARD_CRIT_KEY) || '{}'); } catch { cardCritCache = {}; } }
+  return cardCritCache;
+};
+function learnCardCrits(st) {
+  const p = st?.fighters?.p;
+  if (!p) return;
+  const known = cardCrits();
+  let changed = false;
+  for (const c of [...Object.values(p.cards || {}), p.weaponCard]) {
+    if (!c?.id || !Array.isArray(c.crit) || JSON.stringify(known[c.id]) === JSON.stringify(c.crit)) continue;
+    known[c.id] = c.crit;
+    changed = true;
+  }
+  if (changed) { try { localStorage.setItem(CARD_CRIT_KEY, JSON.stringify(known)); } catch { /* stockage plein */ } }
+}
+const critLinesOf = (card) => (Array.isArray(card?.crit) ? card.crit : cardCrits()[card?.id]) || null;
+// Lignes de dégâts d'une carte : { e: ligne normale, c: ligne critique (même rang dans `crit`) ou null, el, first }.
+function damageLines(card) {
+  const crit = critLinesOf(card);
+  const pair = Array.isArray(crit) && crit.length === (card.eff || []).length;
+  const out = [];
+  (card.eff || []).forEach((e, i) => {
+    if (!e || !DMG_FIXED.has(e.k)) return;
+    const c = pair && crit[i]?.k === e.k ? crit[i] : null;
+    out.push({ e, c, el: Number.isInteger(e.el) ? e.el : 0, first: !out.length });
+  });
+  return out;
+}
 const SPECTRAL_PER_PO = 0.4;
 const PA_VALUE_PCT = 3;   // optimiseur : 1 PA = +3 % de l'objectif (voir score)
 const CHAR_STATS_KEY = 'dmCharStats';
@@ -37,11 +71,13 @@ window.addEventListener('message', (e) => {
   try {
     const obj = JSON.parse(e.data.line);
     const st = obj.state;
+    learnCardCrits(st);
     if (obj.rewards && st?.status && st.status !== 'ongoing') { dropOnRewards(obj.rewards, `${st.kind}|${st.logCount}`); farmOnRewards(st, obj.rewards); }
     if (st?.status && st.status !== 'ongoing') combatOnEnd(st, obj.rewards);
     if (!st?.fighters?.p?.stats || !st.log?.some((L) => L.t === 'play' && L.who === 'p')) return;
     const fighters = Object.fromEntries(Object.entries(st.fighters).map(([id, f]) => [id,
-      { id, name: f.name, kind: f.kind, team: f.team, level: f.level, maxHp: f.maxHp, stats: f.stats, resCap: f.resCap, buffs: f.buffs }]));
+      { id, name: f.name, kind: f.kind, team: f.team, level: f.level, maxHp: f.maxHp, stats: f.stats, resCap: f.resCap, buffs: f.buffs,
+        ...(id === 'p' ? { cards: f.cards, weaponCard: f.weaponCard } : {}) }]));
     const all = JSON.parse(localStorage.getItem(LAST_FIGHT_KEY) || '{}');
     all[fightAcct()] = { at: Date.now(), kind: st.kind, status: st.status, fighters, log: st.log };
     localStorage.setItem(LAST_FIGHT_KEY, JSON.stringify(all));
@@ -69,22 +105,23 @@ function spellDamage(card, stats = null) {
   const S = (k) => +stats?.[k] || 0;
   const pct = (1 + S('dmgPctSorts') / 100);
   const critP = stats && +card.cc > 0 ? Math.min(1, Math.max(0, (+card.cc + S('critique')) / 100)) : 0;
-  // valeur d'un coup de base `v` dans l'élément `el` : [normal, critique]
-  const hitVal = (v, el) => {
+  // valeur d'un coup de base `v` (normal) / `vc` (critique) dans l'élément `el` : [normal, critique] ;
+  // Dommages (+ élément, + critiques) seulement sur la 1re ligne de dégâts du sort
+  const hitVal = (v, vc, el, first) => {
     if (!stats) return [v, v];
-    const mult = 1 + (S(EL_STAT[el]) + S('puissance')) / 100, fixed = S('dommages') + S(EL_DMG[el]);
-    return [(v * mult + fixed) * pct, (v * CRIT_MULT * mult + fixed + S('dommagesCritiques')) * pct];
+    const mult = 1 + (S(EL_STAT[el]) + S('puissance')) / 100, fixed = first ? S('dommages') + S(EL_DMG[el]) : 0;
+    return [(v * mult + fixed) * pct, (vc * mult + fixed + (first ? S('dommagesCritiques') : 0)) * pct];
   };
-  let min = 0, max = 0, zone = false, variable = false, delayed = false, fixed = false, random = false;
-  let rndAvg = 0, rndMax = 0, sure = 0;
+  let min = 0, max = 0, zone = false, fixed = false, random = false;
+  const variable = (card.eff || []).some((e) => DMG_VARIABLE.has(e?.k));
+  let delayed = false, rndAvg = 0, rndMax = 0, sure = 0;
   const byEl = {};
-  for (const e of card.eff || []) {
-    if (DMG_VARIABLE.has(e.k)) { variable = true; continue; }
-    if (!DMG_FIXED.has(e.k)) continue;
+  for (const { e, c, el, first } of damageLines(card)) {
     fixed = true;
     const n = e.k === 'poison' ? Math.max(1, +(e.turns || e.dur) || 1) : 1;   // poison : dégâts à chaque tour
-    const el = Number.isInteger(e.el) ? e.el : 0;
-    const [loN, loC] = hitVal(+e.min || 0, el), [hiN, hiC] = hitVal(+(e.max ?? e.min) || 0, el);
+    const eMin = +e.min || 0, eMax = +(e.max ?? e.min) || 0;
+    const cMin = c ? +c.min || 0 : eMin * CRIT_MULT, cMax = c ? +(c.max ?? c.min) || 0 : eMax * CRIT_MULT;
+    const [loN, loC] = hitVal(eMin, cMin, el, first), [hiN, hiC] = hitVal(eMax, cMax, el, first);
     // min = sans critique, max = critique ; moyenne pondérée par la chance de critique
     const lo = loN * n, hi = (critP ? hiC : hiN) * n;
     const mid = ((1 - critP) * (loN + hiN) / 2 + critP * (loC + hiC) / 2) * n;
@@ -120,14 +157,14 @@ async function fetchSpells() {
     const card = res(ent.card);
     if (!card?.id) continue;
     const eff = (res(card.eff) || []).map(res);
-    const dmg = spellDamage({ ...card, eff });
+    const dmg = spellDamage({ ...card, eff, crit: critLinesOf(card) });
     if (!dmg) {
       if (eff.some((e) => DMG_VARIABLE.has(e?.k))) variableOnly.push(card.n);
       continue;
     }
     const ap = +card.ap || 0;
     spells.push({ id: card.id, key: ent.key, usable: ent.usable !== false, name: card.n, desc: card.d || '', icon: card.icon, ap, rarity: card.r,
-      fusion: +card.f || 0, card: { ...card, eff }, ...dmg, perAp: ap ? dmg.avg / ap : Infinity });
+      fusion: +card.f || 0, card: { ...card, eff, crit: critLinesOf(card) }, ...dmg, perAp: ap ? dmg.avg / ap : Infinity });
   }
   const favs = new Set((res(props.initialFavorites) || []).map(Number));
   const decks = res(props.initialDecks) || [];
@@ -173,46 +210,57 @@ async function setFavorite(id, on, chunks) {
 
 // ---------- Test du calcul : coups réels du dernier combat vs estimation ----------
 // Pour chaque carte jouée : les lignes de dégâts qui suivent dans le journal (jusqu'à la carte / au tour suivant),
-// appariées dans l'ordre aux lignes de la carte du même élément. Observé = v + absorbé (bouclier).
+// appariées dans l'ordre aux lignes de la carte du même élément (lignes critiques si le coup est critique).
+// Observé = v + absorbé (bouclier). Stats = stats du combat + buffs du joueur encore actifs (journal « buff », durée en tours).
 // Estimation « sans rés. » = formule de la tierlist ; « avec rés. » = (x − rés. fixe) × (1 − % rés.) de la cible.
-// Zone : seule la cible visée prend 100 % ; les autres cibles touchées prennent ~60 % (vérifié sur un récap de combat).
-const ZONE_FALLOFF = 0.6;
+// Zone : les autres cibles touchées prennent les mêmes dégâts (vérifié sur les combats enregistrés).
 const EL_RES_PCT = ['resPctNeutre', 'resPctTerre', 'resPctFeu', 'resPctEau', 'resPctAir'];
 const EL_RES = ['resNeutre', 'resTerre', 'resFeu', 'resEau', 'resAir'];
 function damageTest(fight, spells) {
-  const stats = fight.fighters.p.stats;
-  const S = (k) => +stats[k] || 0;
+  const P = fight.fighters.p, stats = P.stats;
+  const buffs = [], seen = new Set();   // seen : entrées « buff » déjà comptées (journal parcouru deux fois)
+  const addBuff = (k, B) => { if (!seen.has(k) && B.who === 'p' && B.stat) { seen.add(k); buffs.push({ stat: B.stat, v: +B.v || 0, from: pTurn, turns: +B.turns || 1 }); } };
+  let pTurn = 0;
+  const S = (k) => (+stats[k] || 0) + buffs.reduce((s, b) => s + (b.stat === k && pTurn < b.from + b.turns ? b.v : 0), 0);
   const pct = 1 + S('dmgPctSorts') / 100;
+  // cartes de l'état de combat (lignes critiques comprises), sinon celles de la collection
   const byName = new Map(spells.map((sp) => [sp.name, sp.card]));
+  for (const c of [...Object.values(P.cards || {}), P.weaponCard]) if (c?.name) byName.set(c.name, { ...byName.get(c.name), ...c, n: c.name });
   const rows = [];
-  let buffed = false;
   const log = fight.log;
   for (let i = 0; i < log.length; i++) {
     const L = log[i];
-    if (L.t === 'buff' && L.who === 'p') buffed = true;
+    if (L.t === 'turn' && L.who === 'p') pTurn++;
+    if (L.t === 'buff') addBuff(i, L);
     if (L.t !== 'play' || L.who !== 'p') continue;
     const card = byName.get(L.card);
-    const lines = (card?.eff || []).filter((e) => DMG_FIXED.has(e.k) && !(e.chance != null && +e.chance < 100));
+    const lines = card ? damageLines(card).filter(({ e }) => !(e.chance != null && +e.chance < 100)) : [];
     const used = new Set();
     for (let j = i + 1; j < log.length && !['play', 'turn', 'round'].includes(log[j].t); j++) {
       const D = log[j];
+      if (D.t === 'buff') addBuff(j, D);   // vol de stats en cours de sort
       if (D.t !== 'dmg') continue;
       const tg = fight.fighters[D.who];
-      if (!tg || tg.team === fight.fighters.p.team) continue;   // coups sur soi / les alliés (zones) ignorés
-      const li = lines.findIndex((e, k) => !used.has(k) && (Number.isInteger(e.el) ? e.el : 0) === D.el);
-      if (li >= 0 && !lines[li].zone) used.add(li);
-      const e = lines[li];
+      if (!tg || tg.team === P.team) continue;   // coups sur soi / les alliés (zones) ignorés
+      const li = lines.findIndex((x, k) => !used.has(k) && x.el === D.el);
+      if (li >= 0 && !lines[li].e.zone) used.add(li);
+      const ln = lines[li];
       const crit = !!(D.crit ?? L.crit);
       const fatal = log[j + 1]?.t === 'death' && log[j + 1].who === D.who;
       const secondary = !!L.target && D.who !== L.target;   // autre cible touchée par la zone
+      const buffed = S(EL_STAT[D.el]) - (+stats[EL_STAT[D.el]] || 0) + S('puissance') - (+stats.puissance || 0);
+      const src = ln && (crit ? ln.c : ln.e);
       const row = { card: L.card, ap: card?.ap, target: tg.name, el: D.el, v: (+D.v || 0) + (+D.absorbed || 0), crit, fatal, buffed,
-        secondary, pos: li >= 0 ? `${li + 1}/${lines.length}` : null, base: e ? `${e.min}-${e.max ?? e.min}` : null };
-      if (e) {
-        const n = e.k === 'poison' ? Math.max(1, +(e.turns || e.dur) || 1) : 1;
-        const mult = 1 + (S(EL_STAT[D.el]) + S('puissance')) / 100, fixed = S('dommages') + S(EL_DMG[D.el]);
-        const val = (b) => (crit ? b * CRIT_MULT * mult + fixed + S('dommagesCritiques') : b * mult + fixed) * pct;
-        const zf = secondary ? ZONE_FALLOFF : 1;
-        row.lo = val(+e.min || 0) * n * zf; row.hi = val(+(e.max ?? e.min) || 0) * n * zf;
+        secondary, pos: li >= 0 ? `${li + 1}/${lines.length}` : null, base: src ? `${src.min}-${src.max ?? src.min}${crit ? ' (crit)' : ''}`
+          : ln ? `${ln.e.min}-${ln.e.max ?? ln.e.min} ×${CRIT_MULT} (crit inconnu)` : null };
+      if (ln) {
+        const e = ln.e, n = e.k === 'poison' ? Math.max(1, +(e.turns || e.dur) || 1) : 1;
+        const mult = 1 + (S(EL_STAT[D.el]) + S('puissance')) / 100;
+        const fixed = ln.first ? S('dommages') + S(EL_DMG[D.el]) + (crit ? S('dommagesCritiques') : 0) : 0;
+        const b = (x) => (crit ? (ln.c ? +x || 0 : (+x || 0) * CRIT_MULT) : +x || 0);
+        const val = (x) => (b(x) * mult + fixed) * pct;
+        const s2 = crit && ln.c ? ln.c : e;
+        row.lo = val(s2.min) * n; row.hi = val(s2.max ?? s2.min) * n;
         const rp = Math.min(+tg.resCap || 100, (+tg.stats?.[EL_RES_PCT[D.el]] || 0) + (+tg.stats?.resPctAll || 0));
         const rf = +tg.stats?.[EL_RES[D.el]] || 0;
         const adj = (x) => Math.max(0, (x - rf) * (1 - rp / 100));
@@ -226,9 +274,9 @@ function damageTest(fight, spells) {
   const played = [...new Set(log.filter((L) => L.t === 'play' && L.who === 'p').map((L) => L.card))];
   const cards = played.map((n) => [n, byName.get(n)]).filter(([, c]) => c)
     .map(([n, c]) => `${n} : ${c.ap} PA, cc ${c.cc ?? 0} % — ${JSON.stringify((c.eff || []).filter((e) => DMG_FIXED.has(e.k) || DMG_VARIABLE.has(e.k)))}`);
-  const buffs = log.filter((L) => L.t === 'buff').map((L) => JSON.stringify(L));
+  const buffLog = log.filter((L) => L.t === 'buff').map((L) => JSON.stringify(L));
   const fbuffs = Object.values(fight.fighters).filter((f) => f.buffs && (!Array.isArray(f.buffs) || f.buffs.length)).map((f) => `${f.name} : ${JSON.stringify(f.buffs)}`);
-  return { rows, stats, cards, buffs, fbuffs };
+  return { rows, stats, cards, buffs: buffLog, fbuffs };
 }
 
 function openDamageTest(spells) {
@@ -256,28 +304,28 @@ function openDamageTest(spells) {
   const text = [
     `Test calcul dégâts — combat ${fight.kind || ''} du ${new Date(fight.at).toLocaleString('fr-FR')} (${fight.status || ''})`,
     `Stats : ${statLine}`,
-    ...rows.map((r) => `${r.card} (${r.ap ?? '?'} PA) → ${r.target} : ${r.v} ${EL(r.el)}${r.crit ? ' CRIT' : ''}${r.secondary ? ' [zone ×0,6]' : ''}${r.fatal ? ' (coup fatal)' : ''}${r.buffed ? ' [buff]' : ''}`
+    ...rows.map((r) => `${r.card} (${r.ap ?? '?'} PA) → ${r.target} : ${r.v} ${EL(r.el)}${r.crit ? ' CRIT' : ''}${r.secondary ? ' [zone]' : ''}${r.fatal ? ' (coup fatal)' : ''}${r.buffed ? ` [buff +${r.buffed}]` : ''}`
       + (r.pos ? ` | ligne ${r.pos} base ${r.base}` : '') + (r.lo != null ? ` | estimé ${r1(r.lo)}-${r1(r.hi)} sans rés. | ${r1(r.loR)}-${r1(r.hiR)} avec rés. (${r.rp} %, ${r.rf} fixe) | ratio ${r.ratio.toFixed(2)}` : ` | ${card(r)}`)),
     '', 'Cartes jouées (lignes de dégâts) :', ...cards,
     '', `Buffs du journal : ${buffs.length ? '' : 'aucun'}`, ...buffs,
     ...(fbuffs.length ? ['Buffs des combattants (fin de combat) :', ...fbuffs] : []),
   ].join('\n');
-  const okRows = rows.filter((r) => r.lo != null && !r.fatal && !r.buffed);
+  const okRows = rows.filter((r) => r.lo != null && !r.fatal);
   function card(r) { return r.ap == null ? 'arme ou carte hors collection : non gérée' : 'ligne de la carte introuvable'; }
   const inRange = okRows.filter((r) => r.v >= Math.floor(r.loR) - 1 && r.v <= Math.ceil(r.hiR) + 1).length;
   ov.innerHTML = box(`
     <div style="display:flex;gap:8px;align-items:center"><b style="flex:1;font-size:15px">🧪 Test du calcul — dernier combat (${esc(new Date(fight.at).toLocaleString('fr-FR'))})</b>
       <button data-a="copy" style="${btn};background:#2e6fbf">📋 Copier le récap</button><button data-a="close" style="${btn}">✕</button></div>
     <div style="color:#b9a98c;font-size:12px">Stats du combat : ${esc(statLine) || 'aucun bonus'}</div>
-    <div style="font-size:12px">${okRows.length ? `<b>${inRange} / ${okRows.length}</b> coups dans la fourchette estimée (hors coups fatals, plafonnés par la vie restante, et coups sous buff).` : 'Aucun coup comparable.'}</div>
+    <div style="font-size:12px">${okRows.length ? `<b>${inRange} / ${okRows.length}</b> coups dans la fourchette estimée (hors coups fatals, plafonnés par la vie restante).` : 'Aucun coup comparable.'}</div>
     <div style="overflow:auto">
       <table style="border-collapse:collapse;width:100%;font-size:12px">
         <tr style="color:#b9a98c;text-align:left"><th>Sort</th><th>Cible</th><th>Élément</th><th style="text-align:right">Observé</th><th style="text-align:right">Estimé sans rés.</th><th style="text-align:right">Avec rés. cible</th><th style="text-align:right">Ratio</th></tr>
         ${rows.map((r) => {
           const ok = r.lo != null && r.v >= Math.floor(r.loR) - 1 && r.v <= Math.ceil(r.hiR) + 1;
-          const col = r.lo == null || r.fatal || r.buffed ? '#b9a98c' : ok ? '#6fcf7a' : '#ff7b6b';
+          const col = r.lo == null || r.fatal ? '#b9a98c' : ok ? '#6fcf7a' : '#ff7b6b';
           return `<tr style="border-top:1px solid #3a3024">
-            <td>${esc(r.card)}${r.crit ? ' <b style="color:#f0c04a">CRIT</b>' : ''}${r.secondary ? ' <span title="Autre cible touchée par la zone : estimation ×0,6">[zone ×0,6]</span>' : ''}${r.buffed ? ' <span title="Un buff était actif : les stats ont pu changer">[buff]</span>' : ''}${r.lo == null ? ` <span style="color:#8a7d66">(${esc(card(r))})</span>` : ''}</td>
+            <td>${esc(r.card)}${r.crit ? ' <b style="color:#f0c04a">CRIT</b>' : ''}${r.secondary ? ' <span title="Autre cible touchée par la zone">[zone]</span>' : ''}${r.buffed ? ` <span title="Buffs de stats actifs pendant ce coup (Runification, Drain…), comptés dans l'estimation">[buff +${r.buffed}]</span>` : ''}${r.lo == null ? ` <span style="color:#8a7d66">(${esc(card(r))})</span>` : ''}</td>
             <td>${esc(r.target)}${r.fatal ? ' ☠' : ''}</td>
             <td style="color:${ELEMENTS[r.el]?.color || '#888'}">${EL(r.el)}</td>
             <td style="text-align:right;font-weight:700;color:${col}">${r.v}</td>
@@ -287,7 +335,7 @@ function openDamageTest(spells) {
         }).join('') || '<tr><td colspan="7" style="padding:10px;color:#b9a98c">Aucun coup de sort dans ce combat.</td></tr>'}
       </table>
     </div>
-    <div style="color:#8a7d66;font-size:11px">Vert = dans la fourchette, rouge = hors fourchette, gris = non comparable (coup fatal ☠ plafonné par la vie, buff actif, ligne inconnue). « Copier le récap » puis colle-le moi.</div>`);
+    <div style="color:#8a7d66;font-size:11px">Vert = dans la fourchette, rouge = hors fourchette, gris = non comparable (coup fatal ☠ plafonné par la vie, ligne inconnue). « Copier le récap » puis colle-le moi.</div>`);
   ov.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-a="copy"]');
     if (!b) return;

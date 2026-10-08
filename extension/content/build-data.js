@@ -379,23 +379,24 @@ async function fetchCharSheet() {
     pv: tile('PV'), pa: tile('PA'), crit: tile('% Critique'), sets };
 }
 
-// Signature de dégâts d'une carte : par élément, base moyenne cumulée (B) et nombre de coups (N, pour les dommages fixes).
+// Signature de dégâts d'une carte : par élément, base moyenne cumulée normale (B) et critique (BC), nombre de coups
+// (N, pour les résistances fixes) ; F = élément de la 1re ligne de dégâts, qui seule reçoit les Dommages fixes (poids FW).
 function spellProfile(card) {
-  const B = [0, 0, 0, 0, 0], N = [0, 0, 0, 0, 0];
-  let any = false;
-  for (const e of card.eff || []) {
-    if (!DMG_FIXED.has(e.k)) continue;
-    any = true;
+  const B = [0, 0, 0, 0, 0], BC = [0, 0, 0, 0, 0], N = [0, 0, 0, 0, 0];
+  let F = null, FW = 0;
+  for (const { e, c, el, first } of damageLines(card)) {
     const n = e.k === 'poison' ? Math.max(1, +(e.turns || e.dur) || 1) : 1;
     const w = e.chance != null && +e.chance < 100 ? Math.max(0, +e.chance) / 100 : 1;
-    const el = Number.isInteger(e.el) ? e.el : 0;
-    B[el] += w * n * ((+e.min || 0) + (+(e.max ?? e.min) || 0)) / 2;
+    const avg = ((+e.min || 0) + (+(e.max ?? e.min) || 0)) / 2;
+    B[el] += w * n * avg;
+    BC[el] += w * n * (c ? ((+c.min || 0) + (+(c.max ?? c.min) || 0)) / 2 : avg * CRIT_MULT);
     N[el] += w * n;
+    if (first) { F = el; FW = w; }
   }
-  return any ? { B, N, cc: +card.cc || 0 } : null;
+  return F != null ? { B, BC, N, F, FW, cc: +card.cc || 0 } : null;
 }
 // Dégâts moyens d'un sort avec ces stats (même formule que spellDamage, en version rapide).
-// pf.R (cible à résistances fixes) : retirées à chaque coup, après les % Dommages ; B et N portent déjà (1 − % rés.).
+// pf.R (cible à résistances fixes) : retirées à chaque coup, après les % Dommages ; B, BC, N et FW portent déjà (1 − % rés.).
 function profileAvg(pf, S) {
   const pct = 1 + (S.dmgPctSorts || 0) / 100, spectral = 1 + (S.po || 0) * SPECTRAL_PER_PO / 100;
   const p = pf.cc > 0 ? Math.min(1, Math.max(0, (pf.cc + (S.critique || 0)) / 100)) : 0;
@@ -403,8 +404,9 @@ function profileAvg(pf, S) {
   for (let el = 0; el < 5; el++) {
     if (!pf.N[el]) continue;
     const m = 1 + ((S[EL_STAT[el]] || 0) + (S.puissance || 0)) / 100;
-    const fixed = (S.dommages || 0) + (S[EL_DMG[el]] || 0);
-    const v = (pf.B[el] * m * (1 + p * (CRIT_MULT - 1)) + pf.N[el] * (fixed + p * (S.dommagesCritiques || 0))) * pct;
+    let v = (pf.B[el] * (1 - p) + pf.BC[el] * p) * m;
+    if (el === pf.F) v += pf.FW * ((S.dommages || 0) + (S[EL_DMG[el]] || 0) + p * (S.dommagesCritiques || 0));
+    v *= pct;
     tot += pf.R ? Math.max(0, v - pf.N[el] * pf.R[el]) : v;
   }
   return tot * spectral;

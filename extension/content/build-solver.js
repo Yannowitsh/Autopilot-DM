@@ -103,7 +103,8 @@ async function optimizeBuild(opts, say) {
   const goalStat = goal.stat || null;
   const goalKeys = goalStat ? [goalStat, ...(goal.also || [])] : [];
   const vsTarget = (pf) => (!pf || !target ? pf
-    : { ...pf, B: pf.B.map((b, el) => b * (1 - target.resPct[el] / 100)), N: pf.N.map((n, el) => n * (1 - target.resPct[el] / 100)),
+    : { ...pf, B: pf.B.map((b, el) => b * (1 - target.resPct[el] / 100)), BC: pf.BC.map((b, el) => b * (1 - target.resPct[el] / 100)),
+      FW: pf.FW * (1 - target.resPct[pf.F] / 100), N: pf.N.map((n, el) => n * (1 - target.resPct[el] / 100)),
       R: target.rf?.some(Boolean) ? target.rf : null });
   const spells = sp.spells.filter((x) => !opts.deckOnly || sp.activeDeck.has(x.id))
     .map((x) => ({ ...x, pf: vsTarget(spellProfile(x.card)) })).filter((x) => x.pf);
@@ -148,7 +149,7 @@ async function optimizeBuild(opts, say) {
     const pct = (1 + (S.dmgPctSorts || 0) / 100) * (1 + (S.po || 0) * SPECTRAL_PER_PO / 100);
     for (const { sp: x } of used) {
       const p = x.pf.cc > 0 ? Math.min(1, Math.max(0, (x.pf.cc + (S.critique || 0)) / 100)) : 0;
-      for (let el = 0; el < 5; el++) w[EL_STAT[el]] += x.pf.B[el] * (1 + p * (CRIT_MULT - 1)) * pct / 100;
+      for (let el = 0; el < 5; el++) w[EL_STAT[el]] += (x.pf.B[el] * (1 - p) + x.pf.BC[el] * p) * pct / 100;
     }
     return w;
   };
