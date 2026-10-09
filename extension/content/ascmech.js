@@ -139,6 +139,11 @@ function shieldOf(card, p) {
 }
 const apGainOf = (card) => (card.eff || []).reduce((t, e) => t + (e?.k === 'apGain' && e.tgt === 'self' ? +e.min || 0 : 0), 0);
 const AP_REMOVE_CUT = 0.3;   // PA retirés à l'ennemi : sa prochaine attaque est affaiblie (~30 %, estimation)
+// Coût d'une mécanique pour nous, en part de nos PV max par tour (estimation) : sert à choisir l'ordre d'abattage, puisque
+// seul le premier boss encore debout (le plus à gauche) impose ses mécaniques. Malédiction : selon la part de nos cartes
+// qui soignent ou volent de la vie (elles deviennent des dégâts sur nous).
+const MECH_PAIN = { apSteal: 0.1, fureur: 0.1, apExact: 0.1, swap: 0.1, onde: 0.05, seal: 0.05, shield: 0.05, mirror: 0.05 };
+const LEAD_KILL_TURNS = 2;   // tours de mécaniques évités quand le meneur tombe (valeur du coup qui l'abat)
 
 // ---------- Plan du tour ----------
 // cand : cartes jouables [{ c, key, weapon, w, ap }] ; rules : fightMechanics(...). Renvoie la 1re carte de la meilleure
@@ -153,6 +158,16 @@ function planTurn(st, cand, rules) {
   const R = rules.filter((r) => r.boss === lead);
   const has = (k) => R.filter((r) => r.k === k);
   const notes = [];
+  // Ordre d'abattage : abattre le meneur passe la main au boss suivant (et à ses mécaniques). Plus ses mécaniques coûtent
+  // par rapport à celles du suivant, plus on le vise ; s'il est le moins gênant, on vise d'abord les autres.
+  const healShare = cand.length ? cand.filter((x) => (x.c.eff || []).some((e) => e?.k === 'steal' || /heal/i.test(e?.k || ''))).length / cand.length : 0;
+  const painOf = (id) => rules.filter((r) => r.boss === id)
+    .reduce((t, r) => t + (r.k === 'curse' ? (r.half ? 0.15 : 0.4) * healShare : MECH_PAIN[r.k] || 0), 0);
+  const nextLead = order.filter((id) => id !== lead).find((id) => rules.some((r) => r.boss === id));
+  const leadDelta = lead && nextLead ? painOf(lead) - painOf(nextLead) : 0;
+  const leadW = (id) => (id !== lead || Math.abs(leadDelta) < 0.02 ? 1 : leadDelta > 0 ? 1 + 10 * leadDelta : 1 / (1 - 10 * leadDelta));
+  if (leadDelta >= 0.02) notes.push(`abattre ${st.fighters[lead]?.name} d’abord (ses mécaniques coûtent plus que celles de ${st.fighters[nextLead]?.name})`);
+  else if (leadDelta <= -0.02) notes.push(`garder ${st.fighters[lead]?.name} en vie (${st.fighters[nextLead]?.name} prendrait le relais, en pire)`);
   const fureur = has('fureur').reduce((m, r) => Math.min(m, r.max), Infinity);
   if (fureur < Infinity) notes.push(`Fureur > ${fureur} cartes`);
   const onde = has('onde').length > 0;
@@ -252,7 +267,7 @@ function planTurn(st, cand, rules) {
           if (d >= nh[f.id] && !(reviveAt[f.id] && !nh[`r:${f.id}`])) return 1e12 + d;   // coup fatal
           const extra = reviveAt[f.id] && !nh[`r:${f.id}`] ? (+f.maxHp || 0) * reviveAt[f.id] / 100 : 0;
           const rush = swapRush.some((q) => q.boss === f.id) ? 10 : 1;   // à abattre avant son Échange de vie : en priorité
-          return rush * Math.max(1, +f.atk || incomingOf(f) || 1) * d / Math.max(1, nh[f.id] + extra);
+          return rush * leadW(f.id) * Math.max(1, +f.atk || incomingOf(f) || 1) * d / Math.max(1, nh[f.id] + extra);
         };
         target = ok.sort((a, b) => threat(b) - threat(a))[0];
         const pass = shieldRule && !shieldUp ? shieldRule.pass / 100 : 1;
@@ -267,7 +282,10 @@ function planTurn(st, cand, rules) {
           if (nh[f.id] <= 0) {
             // Deuxième souffle : il se relève une fois avec x % de ses PV
             if (reviveAt[f.id] && !nh[`r:${f.id}`]) { nh[f.id] = (+f.maxHp || 0) * reviveAt[f.id] / 100; nh[`r:${f.id}`] = 1; }
-            else gain += incomingOf(f) + (+f.atk || 0);   // une attaque de moins à encaisser
+            else {
+              gain += incomingOf(f) + (+f.atk || 0);   // une attaque de moins à encaisser
+              if (f.id === lead) gain += leadDelta * maxHp * LEAD_KILL_TURNS;   // ses mécaniques passent au suivant
+            }
           }
           return e;
         };
