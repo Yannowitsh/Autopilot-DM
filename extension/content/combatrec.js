@@ -47,8 +47,9 @@ function combatOnEnd(st, rewards) {
   if (st?.status && st.status !== 'ongoing') selfCheckFight(st);
   // niveau du personnage dans ce combat (📈 Leveling) : vu à la fin de chaque combat, Auto du jeu comme Auto par poids
   if (st?.status && st.status !== 'ongoing' && +st.fighters?.p?.level) {
-    levelSeen = { lvl: +st.fighters.p.level, at: Date.now(), xp: rewards ? +rewards.xp || 0 : null,
-      noXp: Object.values(st.fighters).filter((f) => f.team !== st.fighters.p.team && f.xp === 0).map((f) => `${normName(f.name)}|${f.level}`) };
+    // niveau APRÈS le combat (rewards.newLevel) ; gardé en sessionStorage : l'Auto par poids recharge la page en fin de combat
+    levelSeenSet({ lvl: +rewards?.newLevel || +st.fighters.p.level, at: Date.now(), xp: rewards ? +rewards.xp || 0 : null,
+      noXp: Object.values(st.fighters).filter((f) => f.team !== st.fighters.p.team && f.xp === 0).map((f) => `${normName(f.name)}|${f.level}`) });
   }   // auto-diagnostic (selfcheck.js), même sans envoi en ligne
   try {
     if (!combatOn() || !st?.fighters?.p || !st.status || st.status === 'ongoing') return;

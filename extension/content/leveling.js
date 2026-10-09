@@ -28,9 +28,12 @@ const LEVEL_MAX_DEFEATS = 5;   // défaites d'affilée (après baisse de prudenc
 const LEVEL_ALLOC_FALLBACK = '60dbf9f72590dfc5c79366a0bed9bbbc123e6de0e4';   // allocatePoints(stat, nombre) sur /personnage
 const levelEstXp = (lvl) => lvl * (400 + 8 * lvl);
 const levelChar = () => myName() || fightAcct();
-// Niveau vu dans le dernier combat terminé (combatOnEnd) : { lvl, at }. Pas lastFight() : l'Auto par poids ne le met pas à
-// jour (il gardait le niveau 200 d'une Ascension d'avant le Prestige → montée « finie » au 1er combat, 2.3.0).
-let levelSeen = null;
+// Niveau après le dernier combat terminé (combatOnEnd : rewards.newLevel) : { lvl, at, xp, noXp }. Pas lastFight() : l'Auto
+// par poids ne le met pas à jour (niveau 200 d'une Ascension d'avant le Prestige → montée « finie » au 1er combat, 2.3.0).
+// En sessionStorage, pas en variable : l'Auto par poids recharge la page en fin de combat (niveau resté à 31, 2.3.3).
+const LEVEL_SEEN_KEY = 'dmLevelSeen';
+const levelSeenGet = () => { try { return JSON.parse(sessionStorage.getItem(LEVEL_SEEN_KEY) || 'null'); } catch { return null; } };
+const levelSeenSet = (v) => { try { sessionStorage.setItem(LEVEL_SEEN_KEY, JSON.stringify(v)); } catch { /* stockage indisponible */ } };
 const levelScanCache = new Map();   // zone → { at, groups, rotateAt } : valable jusqu'au renouvellement des groupes
 // montées enregistrées par erreur (2.3.0) : moins d'une minute
 const levelHistOf = (who) => (cfg.levelHistory?.[who] || []).filter((x) => x.ms >= 60000);
@@ -145,11 +148,11 @@ async function levelNeedPick() {
 async function levelAfterWin() {
   if (!levelOn() || !isHunt()) return false;
   const run = cfg.levelRun;
-  // niveau du combat qui vient de finir (il peut dépasser le dernier connu de 1 ou 2 niveaux, jamais de 20)
-  const seen = levelSeen && levelSeen.at > (run.startedAt || 0) && Date.now() - levelSeen.at < 120000 ? levelSeen.lvl : null;
-  const lvl = seen && Math.abs(seen - (run.lastLvl || seen)) <= 20 ? seen : run.lastLvl || 1;
+  // niveau après le combat qui vient de finir (récompenses du jeu)
+  const ls = levelSeenGet();
+  const fresh = ls && ls.at > (run.startedAt || 0) && Date.now() - ls.at < 5 * 60000 ? ls : null;
+  const lvl = Math.max(fresh?.lvl || 0, run.lastLvl || 1);
   // monstres à 0 XP (archis grade 6) : retenus pour ne plus les viser
-  const fresh = seen && levelSeen;
   if (fresh?.noXp?.length) await save({ levelNoXp: { ...(cfg.levelNoXp || {}), ...Object.fromEntries(fresh.noXp.map((k) => [k, Date.now()])) } });
   const wins = (run.wins || 0) + 1;
   const danger = wins % 5 === 0 ? Math.min(12, run.danger * 1.1) : run.danger;
@@ -164,12 +167,13 @@ async function levelAfterWin() {
 }
 
 // Passage de niveau : points en Sagesse, équipement revu, palier de notification, fin à 200.
-async function levelOnLevelUp(from, lvl) {
+async function levelOnLevelUp(from, lvl) {   // lvl peut être corrigé par la fiche
   const who = levelChar();
   if (cfg.levelChrono?.[who]) await save({ levelChrono: { ...cfg.levelChrono, [who]: { ...cfg.levelChrono[who], lastLvl: lvl } } });
   try {
     const sh = await levelSheet();
     if (sh.pointsFree > 0) await levelSpendPoints(sh);
+    if (sh.level > lvl) { lvl = sh.level; await save({ levelRun: { ...cfg.levelRun, lastLvl: lvl } }); }   // la fiche fait foi
   } catch (e) { DM.log(`leveling : points non répartis (${e.message})`); }
   try { await autoEquipTick(true); } catch { /* auto-équipement facultatif */ }
   const every = Math.max(0, +cfg.levelNotifyEvery || 0);
