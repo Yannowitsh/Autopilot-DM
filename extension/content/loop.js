@@ -19,6 +19,13 @@ async function step() {
     return;
   }
 
+  // Mode saison : jamais d'Aventure (étapes de boss) ni d'Ascension, seulement la chasse d'une zone choisie.
+  if (seasonOn() && !isHunt()) {
+    await save({ enabled: false, paused: false, botFight: false,
+      status: `Arrêté : ${SEASON_ONLY_HUNT}${cfg.mode === 'chasse' ? ' — choisis une zone' : ''}` });
+    return;
+  }
+
   // Boss de chasse : cet onglet est celui du boss → un seul essai, puis retour au farm.
   if (inBossTab()) {
     if (!path.startsWith('/combat')) return bossLaunch();

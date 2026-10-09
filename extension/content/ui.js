@@ -31,6 +31,7 @@ async function onPlayPause() {
   try {
     const ctx = await playContext();
     if (ctx.error) { tradeToast(`▶ ${ctx.error}`, 'err'); return; }
+    if (seasonOn() && ctx.mode && ctx.mode !== 'chasse') { tradeToast(`▶ ${SEASON_ONLY_HUNT}`, 'err'); return; }
     if (dropOn() && ctx.mode) await dropStop('remplacé par ▶ sur une autre activité');
     if (sampleOn() && ctx.mode) await sampleStop('remplacé par ▶ sur une autre activité');
     if (levelOn() && ctx.mode) await levelStop('remplacé par ▶ sur une autre activité');
@@ -96,6 +97,7 @@ const MENU_CSS = `
     color: #fff; background: #3a3f48; }
   button:hover:not(:disabled) { filter: brightness(1.15); }
   button:disabled { opacity: .6; cursor: default; }
+  .seg button:disabled { opacity: .3; text-decoration: line-through; cursor: not-allowed; }   /* mode saison */
   .seg { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; }
   .seg button.on { background: #2e6fbf; }
   select { width: 100%; background: #14161a; color: #e8e6e1; border: 1px solid #3a3f48; border-radius: 5px; padding: 5px; font-size: 13px; }
@@ -189,6 +191,7 @@ function buildUi() {
           <button data-mode="chasse">Chasse</button>
           <button data-mode="ascension" data-tip="Étages de boss, débloqué au niveau 200">Ascension</button>
         </div>
+        <label class="muted" style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" data-k="season"> 🛡️ Mode saison (chasse uniquement, jamais de boss)${DM.tip("Saison Héroïque : une défaite contre un boss tue le perso de saison (mort définitive). Coché, le pilote ne fait que de la chasse (monstres, jamais de boss) : Aventure et Ascension refusées, boss de chasse auto désactivé, énergie ignorée (combats gratuits). Une défaite en chasse ne tue pas le perso.")}</label>
         <div data-k="zoneBox">
           <div class="muted" style="margin-bottom:4px">Zone${DM.tip("Zone farmée en mode Chasse (zones à ton niveau). Par défaut le pilote attaque le groupe le plus dur ; si tu attaques toi-même un groupe, c’est celui-là qui est relancé.")}</div>
           <div class="row"><select data-k="zone"></select><button data-k="reload" data-tip="Recharger la liste des zones depuis le jeu.">↻</button></div>
@@ -318,8 +321,15 @@ function buildUi() {
 
   $('toggle').addEventListener('click', () => send({ type: 'toggle', fromPage: true }).catch(() => {}));
   $('settings').addEventListener('click', () => send({ type: 'openSettings' }).catch(() => {}));
+  $('season').addEventListener('change', async () => {
+    const on = $('season').checked;
+    await save(on ? { seasonMode: true, mode: 'chasse' } : { seasonMode: false });
+    renderUi();
+    if (on && !cfg.huntZones?.length) await loadZones();
+  });
   for (const b of root.querySelectorAll('[data-mode]')) {
     b.addEventListener('click', async () => {
+      if (seasonOn() && b.dataset.mode !== 'chasse') { tradeToast(SEASON_ONLY_HUNT, 'err'); return; }
       await save({ mode: b.dataset.mode });
       renderUi();
       if (b.dataset.mode === 'chasse' && !cfg.huntZones?.length) await loadZones();

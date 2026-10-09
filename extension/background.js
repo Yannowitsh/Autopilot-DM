@@ -75,7 +75,7 @@ async function bossAutoCheck(st, now) {
     return;
   }
   if (run?.phase === 'fighting' && now - run.startedAt > BOSS_FIGHT_MAX_MS) return bossFinish('abandonné (délai dépassé)');
-  if (run || !BOSS_AUTO_ENABLED || !s.enabled || s.bossAuto === false || !st.active) return;
+  if (run || !BOSS_AUTO_ENABLED || !s.enabled || s.bossAuto === false || s.seasonMode || !st.active) return;   // saison : un boss tue le perso
   if (s.bossTriedFor === st.spawnAt || st.endsAt - now < BOSS_MIN_LEFT_MS) return;
   await chrome.storage.local.set({
     bossTriedFor: st.spawnAt,   // un seul essai par apparition

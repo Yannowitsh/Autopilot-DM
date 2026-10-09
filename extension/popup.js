@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 const NUM = ['minEnergy', 'resumeEnergy', 'delayMin', 'delayMax', 'fastFightMinSec', 'huntRetries', 'errorReloadSec', 'reloadGapSec', 'updateCheckMin', 'equipCheckMin'];
-const BOOL = ['sellKeepAbove', 'bossAuto', 'fastFight', 'combatUpload'];
+const BOOL = ['sellKeepAbove', 'bossAuto', 'fastFight', 'combatUpload', 'seasonMode'];
 
 async function render() {
   const s = await DM.getAll();
@@ -65,6 +65,7 @@ async function saveForm() {
   for (const k of NUM) o[k] = Math.max(0, Number($(k).value) || 0);
   for (const k of BOOL) o[k] = $(k).checked;
   if (o.delayMax < o.delayMin) o.delayMax = o.delayMin;
+  if (o.seasonMode) o.mode = 'chasse';   // saison : chasse uniquement (les boss tuent le perso de saison)
   await chrome.storage.local.set(o);
   $('msg').textContent = 'Réglages enregistrés.';
 }

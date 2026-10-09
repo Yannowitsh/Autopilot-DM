@@ -91,6 +91,9 @@ const SEMI_AUTO = /^Auto$/;              // jamais « Auto AFK −50 % » ni « 
 const HUNT_RETRY = /^(Refaire ce combat|Réessayer ce groupe)$/;
 const isHunt = () => cfg.mode === 'chasse' && !!cfg.huntZone;
 const isAsc = () => cfg.mode === 'ascension';
+// Mode saison (saison Héroïque) : une défaite contre un boss tue le perso de saison → le pilote ne fait que de la chasse.
+const seasonOn = () => !!cfg.seasonMode;
+const SEASON_ONLY_HUNT = 'mode saison : seule la chasse est autorisée (les boss tuent le perso de saison)';
 const maxRetries = () => (isHunt() ? (cfg.dropRun?.active ? DROP_MAX_DEFEATS - 1 : cfg.sampleRun?.active ? SAMPLE_MAX_DEFEATS - 1 : cfg.levelRun?.active ? LEVEL_MAX_DEFEATS : Math.max(0, Math.round(+cfg.huntRetries || 0))) : MAX_PATH_RETRIES);
 // Fin d'un combat d'Ascension : boutons propres aux étages (« Suivant en auto » / « Réessayer en auto » existent aussi).
 const ASC_END = /^(Étage suivant|Réessayer l.étage|Voir l.Ascension)$/;

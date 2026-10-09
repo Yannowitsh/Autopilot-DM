@@ -403,7 +403,11 @@ function renderUi() {
   tg.style.background = cfg.enabled ? '#a33' : '#2e7d32';
   $('energy').textContent = cfg.energy != null ? `⚡ ${cfg.energy}/${cfg.energyMax}` : '';
 
-  for (const b of ui.root.querySelectorAll('[data-mode]')) b.classList.toggle('on', b.dataset.mode === cfg.mode);
+  for (const b of ui.root.querySelectorAll('[data-mode]')) {
+    b.classList.toggle('on', b.dataset.mode === cfg.mode);
+    b.disabled = seasonOn() && b.dataset.mode !== 'chasse';   // saison : Aventure / Ascension (boss) interdites
+  }
+  $('season').checked = seasonOn();
   for (const b of ui.root.querySelectorAll('[data-engine]')) b.classList.toggle('on', b.dataset.engine === (cfg.fightEngine || 'game'));
   // modules désactivés dans la popup : leurs sections du menu sont masquées
   for (const el of ui.root.querySelectorAll('[data-mod]')) {

@@ -39,6 +39,16 @@ Sur téléphone, garde Firefox au premier plan et le téléphone branché : tant
 
 Les fichiers `.xpi` sont fabriqués par GitHub Actions (`.github/workflows/firefox.yml`) : signés par Mozilla pour chaque nouvelle version de `main` (secrets du dépôt `AMO_JWT_ISSUER` et `AMO_JWT_SECRET`, clé d'API de [addons.mozilla.org](https://addons.mozilla.org/developers/addon/api/key/)), et une préversion de test « test-&lt;branche&gt; » pour chaque push sur une autre branche.
 
+## Mode saison (saison Héroïque)
+
+Pendant une saison Héroïque, une défaite contre un **boss** tue définitivement le perso de saison ; une défaite contre des monstres de chasse ne coûte rien. Coche **🛡️ Mode saison** (menu 🤖 → Activité, ou popup → Réglages) quand tu joues ton perso de saison :
+
+- le pilote ne fait **que de la chasse** (zone choisie) : Aventure (étapes de boss) et Ascension sont grisées, et le pilote s'arrête avec un message s'il n'est pas en chasse ; le bouton **▶** refuse les pages Aventure et Ascension ;
+- le boss de chasse automatique n'est jamais tenté ;
+- l'énergie n'est plus surveillée (combats gratuits en saison).
+
+Le farm de drop, le Leveling et l'échantillonnage passent par la chasse : ils restent disponibles. Pense à décocher le mode saison en revenant sur ton perso principal.
+
 ## Farm de drop
 
 Dans l'optimiseur, avec **Chercher dans le bestiaire** (et **Drops de monstres uniquement**, coché par défaut : pas d'objets « bonus de victoire » ni de boss), le bouton **🐉 Aller dropper** (aussi dans la bulle ❤️ Favoris) liste tous les objets du build (à looter ou déjà possédés, pour monter leur tier) et tes objets favoris — les exemplaires que tu as déjà (inventaire + porté) sont affichés et déduits du tier voulu : coche ceux à farmer (rien n'est coché par défaut ; les « objets bonus de victoire » d'une zone sont farmables aussi, chance non publiée), ils passent dans la **liste de courses** où tu choisis le tier voulu pour chacun (T1 = 1 exemplaire, T2 = 3, T3 = 9, T4 = 27, T5 Rayonnant = 81) : la fenêtre affiche ta meilleure chance et le nombre de combats estimé. **Fusion auto** (cochée par défaut, dans la liste de courses) : pendant le farm (toutes les 5 min, entre deux combats) et à la fin, 3 exemplaires d'un objet de la liste → tier suivant, jusqu'au tier voulu — seulement les objets de la liste, jamais les autres ; bouton **⚡ Fusionner la liste** pour le faire tout de suite. La liste de courses est gardée et se trouve dans la bulle **❤️ Favoris** (avec tes builds et objets favoris ; 🛒 + sur un favori pour l'y ajouter), même après l'arrêt du farm. **Lancer le farm** passe le pilote en mode Chasse : il scanne toutes les zones utiles et attaque le groupe qui contient le plus de monstres lâchant un objet voulu (scan refait à chaque changement de zone), compte les objets reçus en fin de combat et change de zone quand celle-ci n'a plus rien à donner ou plus de groupe utile. 5 défaites d'affilée dans une zone : elle est abandonnée (notification) et on passe à la suivante. Arrêt + notification Discord quand tout est droppé, ou quand plus aucune zone n'a de groupe utile (avec la raison). Le suivi s'affiche dans le menu 🤖 (■ Arrêter le farm) ; le mode de combat est celui choisi (Auto du jeu / par poids).

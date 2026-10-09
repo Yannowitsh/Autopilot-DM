@@ -58,6 +58,7 @@ const DM = {
     wantedMinPerGroup: 1, // avis de recherche : nb minimum de monstres recherchés dans le même groupe
     bossPreAlertMin: 0,  // pré-alerte N minutes avant (0 = désactivé)
     bossAuto: true,      // pilote actif : tente le boss de chasse dans un nouvel onglet à son apparition, puis reprend le farm
+    seasonMode: false,   // saison Héroïque : chasse uniquement, jamais de boss (une défaite contre un boss tue le perso)
     sellKeepAbove: true, // Autosell : garde les objets d'un niveau supérieur au personnage
     sellKeepRarities: [4, 5], // Autosell : raretés jamais vendues (indices de DM.RARITIES)
     mode: 'aventure',    // 'aventure' (Chemin), 'chasse' (groupe le plus dur d'une zone en boucle) ou 'ascension' (niv. 200)
@@ -240,6 +241,7 @@ const DM = {
 
   // Libellé court de l'activité du pilote (bouton Démarrer…).
   modeLabel(s) {
+    if (s.seasonMode && !(s.mode === 'chasse' && s.huntZone)) return '🛡️ saison : choisis une zone de chasse';
     if (s.mode === 'ascension') return 'ascension';
     return s.mode === 'chasse' && s.huntZone ? `chasse : ${s.huntZoneName || 'zone ' + s.huntZone}${s.huntGroup ? ` · G${s.huntGroup}` : ''}` : 'aventure';
   },
