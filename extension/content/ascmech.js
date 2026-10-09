@@ -105,8 +105,9 @@ function cardEffectRaw(card, p, tgt) {
     const avg = (x) => ((+x.min || 0) + (+(x.max ?? x.min) || 0)) / 2;
     const fixed = first ? S('dommages') + S(EL_DMG[el]) : 0;
     const v = ((1 - critP) * (avg(e) * mult + fixed) + critP * ((c ? avg(c) : avg(e) * CRIT_MULT) * mult + fixed + (first ? S('dommagesCritiques') : 0))) * pct;
-    const rp = tgt ? Math.min(+tgt.resCap || 100, (+tgt.stats?.[EL_RES_PCT[el]] || 0) + (+tgt.stats?.resPctAll || 0)) : 0;
-    const rf = tgt ? +tgt.stats?.[EL_RES[el]] || 0 : 0;
+    const T = tgt && fighterStat(tgt);   // stats de la cible, malus compris (Proie de l'Ouginak : −20 % de résistance)
+    const rp = tgt ? Math.min(+tgt.resCap || 100, T(EL_RES_PCT[el]) + T('resPctAll')) : 0;
+    const rf = tgt ? T(EL_RES[el]) : 0;
     const d = Math.max(0, (v - rf) * (1 - rp / 100));
     dmg += d;
     if (e.k === 'steal') steal += d * STEAL_HEAL_PART;

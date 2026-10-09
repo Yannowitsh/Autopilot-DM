@@ -94,6 +94,28 @@ const isAsc = () => cfg.mode === 'ascension';
 // Mode saison (saison Héroïque) : une défaite contre un boss tue le perso de saison → le pilote ne fait que de la chasse.
 const seasonOn = () => !!cfg.seasonMode;
 const SEASON_ONLY_HUNT = 'mode saison : seule la chasse est autorisée (les boss tuent le perso de saison)';
+// Perso de saison joué ? Le jeu l'écrit dans les données de chaque page (en-tête : "seasonChar":true|false) : lu dans les
+// scripts de la page, sans requête, toutes les 30 s. Perso de saison → mode saison activé tout seul (seasonAuto) ;
+// retour au perso principal → désactivé, s'il avait été activé ainsi (une case cochée à la main reste cochée).
+let seasonSeenAt = 0;
+function seasonDetect() {
+  if (Date.now() - seasonSeenAt < 30000) return;
+  seasonSeenAt = Date.now();
+  let on = null;
+  for (const s of document.scripts) {
+    const m = s.textContent.match(/seasonChar\\?":(true|false)/);
+    if (m) { on = m[1] === 'true'; break; }
+  }
+  if (on === true && !cfg.seasonMode) {
+    DM.log('perso de saison détecté : mode saison activé (chasse uniquement)');
+    save({ seasonMode: true, seasonAuto: true, ...(cfg.mode !== 'chasse' ? { mode: 'chasse' } : {}) });
+    tradeToast('🛡️ Perso de saison détecté : mode saison activé (chasse uniquement, jamais de boss)', 'ok');
+  } else if (on === false && cfg.seasonMode && cfg.seasonAuto) {
+    DM.log('perso principal : mode saison désactivé');
+    save({ seasonMode: false, seasonAuto: false });
+    tradeToast('🛡️ Perso principal : mode saison désactivé', 'ok');
+  }
+}
 const maxRetries = () => (isHunt() ? (cfg.dropRun?.active ? DROP_MAX_DEFEATS - 1 : cfg.sampleRun?.active ? SAMPLE_MAX_DEFEATS - 1 : cfg.levelRun?.active ? LEVEL_MAX_DEFEATS : Math.max(0, Math.round(+cfg.huntRetries || 0))) : MAX_PATH_RETRIES);
 // Fin d'un combat d'Ascension : boutons propres aux étages (« Suivant en auto » / « Réessayer en auto » existent aussi).
 const ASC_END = /^(Étage suivant|Réessayer l.étage|Voir l.Ascension)$/;

@@ -323,7 +323,7 @@ function buildUi() {
   $('settings').addEventListener('click', () => send({ type: 'openSettings' }).catch(() => {}));
   $('season').addEventListener('change', async () => {
     const on = $('season').checked;
-    await save(on ? { seasonMode: true, mode: 'chasse' } : { seasonMode: false });
+    await save(on ? { seasonMode: true, seasonAuto: false, mode: 'chasse' } : { seasonMode: false, seasonAuto: false });
     renderUi();
     if (on && !cfg.huntZones?.length) await loadZones();
   });

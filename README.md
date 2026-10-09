@@ -41,13 +41,13 @@ Les fichiers `.xpi` sont fabriqués par GitHub Actions (`.github/workflows/firef
 
 ## Mode saison (saison Héroïque)
 
-Pendant une saison Héroïque, une défaite contre un **boss** tue définitivement le perso de saison ; une défaite contre des monstres de chasse ne coûte rien. Coche **🛡️ Mode saison** (menu 🤖 → Activité, ou popup → Réglages) quand tu joues ton perso de saison :
+Pendant une saison Héroïque, une défaite contre un **boss** tue définitivement le perso de saison ; une défaite contre des monstres de chasse ne coûte rien. Le mode **🛡️ Mode saison** s'active **tout seul** dès que l'extension voit que tu joues ton perso de saison (le jeu l'indique dans chaque page), et se désactive quand tu repasses sur ton perso principal. Tu peux aussi le cocher à la main (menu 🤖 → Activité, ou popup → Réglages) ; coché à la main, il reste coché. Avec le mode saison :
 
 - le pilote ne fait **que de la chasse** (zone choisie) : Aventure (étapes de boss) et Ascension sont grisées, et le pilote s'arrête avec un message s'il n'est pas en chasse ; le bouton **▶** refuse les pages Aventure et Ascension ;
 - le boss de chasse automatique n'est jamais tenté ;
 - l'énergie n'est plus surveillée (combats gratuits en saison).
 
-Le farm de drop, le Leveling et l'échantillonnage passent par la chasse : ils restent disponibles. Pense à décocher le mode saison en revenant sur ton perso principal.
+Le farm de drop, le 📈 Leveling et l'échantillonnage passent par la chasse : ils restent disponibles et ne font que des chasses.
 
 ## Farm de drop
 
@@ -65,7 +65,7 @@ Dans la popup de l'extension (icône en haut à droite de Chrome), bloc **Module
 
 Menu 🤖 → Activité → **Combat** : **Auto du jeu** (le bouton Auto du site) ou **Auto par poids** : le pilote joue lui-même les cartes, sans animation, avec une courte pause aléatoire entre deux actions (réglable).
 
-**🎯 Poids des cartes** (menu 🤖, ou bouton en bas à droite de la page `/deck`) règle chaque carte, deck par deck ou dans toute la collection (avec recherche), et l'arme : à chaque action, le pilote garde la combinaison de cartes jouables qui tient dans tes PA avec le plus gros total de poids, et joue la plus lourde en premier. Poids **0** = jamais jouée ; **tous les N tours** = au plus une fois tous les N tours (pour les buffs qui durent). Les soins ne sont joués que sous un seuil de PV. Cible : l'ennemi qui a le moins de PV. Par défaut : gain de PA 100, buffs 90 (relancés à la fin de leur durée), soins 80, dégâts selon leurs dégâts de base par PA, arme 30. En cas de souci (état illisible, réponse inattendue), le combat repasse sur l'Auto du jeu.
+**🎯 Poids des cartes** (menu 🤖, ou bouton en bas à droite de la page `/deck`) règle chaque carte, deck par deck ou dans toute la collection (avec recherche), et l'arme : à chaque action, le pilote garde la combinaison de cartes jouables qui tient dans tes PA avec le plus gros total de poids, et joue la plus lourde en premier. Poids **0** = jamais jouée ; **tous les N tours** = au plus une fois tous les N tours (pour les buffs qui durent). Les soins ne sont joués que sous un seuil de PV. **Coup final** : quand les cartes de dégâts en main (et l'arme) suffisent à tuer tous les ennemis ce tour, sans buff, le pilote ne joue qu'elles, sur les bonnes cibles (pas de buff, bouclier ni soin inutiles : PA et temps gagnés) ; l'estimation est prudente (dégâts moyens × 0,85, résistances et malus de la cible compris). Cible : l'ennemi qui a le moins de PV. Par défaut : gain de PA 100, buffs 90 (relancés à la fin de leur durée), soins 80, dégâts selon leurs dégâts de base par PA, arme 30. En cas de souci (état illisible, réponse inattendue), le combat repasse sur l'Auto du jeu.
 
 **Combat lancé à la main** (Kralamoure, boss…) : le bouton **🎯 Jouer ce combat par poids** (en bas à droite de `/combat`) joue ce combat-là avec les mêmes poids, sans le pilote et sans relance à la fin ; recliquer l'arrête.
 
