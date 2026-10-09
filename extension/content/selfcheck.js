@@ -11,7 +11,7 @@ const SELF_DRIFT_OK = 0.9;        // alerte si moins de 90 % des coups tombent d
 const SELF_REALERT_MS = 3 * 86400000;   // un problème déjà signalé l'est de nouveau au plus tous les 3 jours
 // effets de cartes que l'extension sait interpréter (les autres sont signalés)
 const KNOWN_EFFECTS = new Set([...DMG_FIXED, ...DMG_VARIABLE, 'heal', 'healPct', 'shieldHp', 'shieldLvl', 'apGain', 'apRemove', 'apSteal',
-  'buff', 'debuff', 'stealStat', 'summon', 'stun']);
+  'buff', 'debuff', 'stealStat', 'summon', 'stun', 'empower']);   // empower : Portail (classes.js)
 
 const selfState = () => { try { return JSON.parse(localStorage.getItem(SELF_KEY) || '{}'); } catch { return {}; } };
 const selfSave = (s) => { try { localStorage.setItem(SELF_KEY, JSON.stringify(s)); } catch { /* stockage plein */ } };
@@ -90,7 +90,7 @@ function selfCheckFight(st) {
 // Mécaniques du bestiaire que le moteur ne sait pas contrer (nouveaux types : Carapace, Reflet…).
 function selfCheckMechanics(list) {
   const known = new Set(['Fureur', 'Peau dure', 'Onde de choc', 'Malédiction des soins', 'Sceau', 'Deuxième souffle', 'Miroir', 'PA comptés',
-    'Rage', 'Vol de PA', 'Échange de vie', 'Aucune mécanique cachée']);
+    'Rage', 'Vol de PA', 'Échange de vie', 'Reflet', 'Métamorphose', 'Aucune mécanique cachée']);
   const unknown = new Map();
   for (const b of list || []) for (const m of b.m || []) if (!known.has(m.n) && !unknown.has(m.n)) unknown.set(m.n, `${b.n} : ${m.x}`);
   for (const [n, ex] of unknown) selfIssue(`mechlist:${n}`, `nouvelle mécanique de boss « ${n} » (non gérée par le moteur)`, ex);

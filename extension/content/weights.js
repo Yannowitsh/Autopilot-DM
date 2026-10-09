@@ -84,7 +84,8 @@ function lethalPlan(st, cand) {
   let ap = +p.ap || 0, left = hits, first = null;
   for (const f of foes.sort((a, b) => a.hp - b.hp)) {
     const need = (+f.hp || 0) + (f.shields || []).reduce((t, x) => t + (+x.value || +x.v || +x.amount || 0), 0);
-    const dm = left.map((x) => cardEffect(x.c, p, f).dmg * KILL_MARGIN);
+    const refl = reflectNow(st).get(f.id);   // Reflet : la part de l'élément renvoyé ne compte pas
+    const dm = left.map((x) => cardEffect(x.c, p, f).dmg * KILL_MARGIN * (1 - reflFrac(x.c, refl)));
     let best = null;
     for (let m = 1; m < 1 << left.length; m++) {
       let d = 0, a = 0;
@@ -106,8 +107,11 @@ function lethalPlan(st, cand) {
 // rules (Ascension) : mécaniques des boss → planTurn choisit l'ordre, le nombre de cartes et les cibles qui les respectent.
 function chooseFightAction(st, casts, blocked, rules = null) {
   const p = st.fighters.p;
-  const target = Object.values(st.fighters).filter((f) => f.team !== p.team && f.alive && f.id !== 'p')
-    .sort((a, b) => a.hp - b.hp)[0];
+  const foes = Object.values(st.fighters).filter((f) => f.team !== p.team && f.alive && f.id !== 'p').sort((a, b) => a.hp - b.hp);
+  // cible d'une carte : l'ennemi le plus faible qui ne renvoie pas (Reflet) l'élément de toute la carte
+  const reflected = reflectNow(st);
+  const targetFor = (c) => foes.find((f) => reflFrac(c, reflected.get(f.id)) < 1) || null;
+  const target = foes[0];
   const lowHp = p.maxHp > 0 && (p.hp * 100) / p.maxHp < (+cfg.autoHealBelow || 0);
   const cards = (p.hand || []).map((uid) => p.cards?.[uid]).filter(Boolean).map((c) => ({ c, key: c.id, weapon: false }));
   if (p.weaponCard && !p.weaponUsed) cards.push({ c: p.weaponCard, key: WEAPON_KEY, weapon: true });
@@ -115,7 +119,7 @@ function chooseFightAction(st, casts, blocked, rules = null) {
     const { w, every } = weightOf(x.c, x.weapon);
     const ap = +x.c.ap || 0;
     if (!(w > 0) || ap > p.ap || p.sealed?.includes(x.c.uid) || blocked.has(x.c.uid)) return null;
-    if (needsTarget(x.c) && !target) return null;
+    if (needsTarget(x.c) && !targetFor(x.c)) return null;
     if (cardKind(x.c) === 'heal' && !lowHp && !rules) return null;   // Ascension : le plan du tour pèse le soin réel
     if (every > 0 && casts[x.key] != null && p.turnNo - casts[x.key] < every) return null;
     return { ...x, w, ap };
@@ -151,8 +155,8 @@ function chooseFightAction(st, casts, blocked, rules = null) {
   if (wantDraw(p, pool, p.ap - (best?.ap || 0), blocked)) return draw;
   if (!best) return { action: { type: 'end' }, label: 'fin du tour' };
   const pick = cand.filter((_, i) => best.m & (1 << i)).sort((a, b) => b.w - a.w || b.ap - a.ap)[0];
-  const tgt = needsTarget(pick.c) ? target.id : undefined;
-  return { action: { type: 'play', card: pick.c.uid, target: tgt }, pick, label: `${pick.c.name}${tgt ? ` → ${target.name}` : ''}` };
+  const tg = needsTarget(pick.c) ? targetFor(pick.c) : null;
+  return { action: { type: 'play', card: pick.c.uid, target: tg?.id }, pick, label: `${pick.c.name}${tg ? ` → ${tg.name}` : ''}` };
 }
 
 // useGameAuto : sur cette page, on laisse l'Auto du jeu (état illisible, combat déjà en Auto, erreur…).

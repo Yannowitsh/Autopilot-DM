@@ -309,8 +309,10 @@ function damageTest(fight, spells) {
   for (const c of [...Object.values(P.cards || {}), P.weaponCard]) if (c?.name) byName.set(c.name, { ...byName.get(c.name), ...c, n: c.name });
   const rows = [];
   const log = fight.log;
+  const refl = reflectTracker();   // Reflet : élément renvoyé par chaque boss, tour par tour
   for (let i = 0; i < log.length; i++) {
     const L = log[i];
+    refl.line(L);
     if (L.t === 'turn' && L.who === 'p') pTurn++;
     if (L.t === 'buff') { addBuff(i, L); addFoeBuff(i, L); }
     if (L.t === 'turn' && foeBuffs[L.who]) foeBuffs[L.who] = foeBuffs[L.who].filter((b) => --b.left > 0);
@@ -352,7 +354,8 @@ function damageTest(fight, spells) {
       const row = { card: L.card, ap: card?.ap, target: tg.name, el: D.el, v: (+D.v || 0) + (+D.absorbed || 0), crit, fatal, buffed,
         secondary, pos: li >= 0 ? `${li + 1}/${lines.length}` : null, base: src ? `${src.min}-${src.max ?? src.min}${crit ? ' (crit)' : ''}`
           : ln ? `${ln.e.min}-${ln.e.max ?? ln.e.min} ×${CRIT_MULT} (crit inconnu)` : null };
-      if (ln) {
+      if (refl.cur.get(D.who) === D.el) row.reflected = true;   // élément renvoyé : il ne le blesse pas (pas d'estimation)
+      else if (ln) {
         const e = ln.e, n = e.k === 'poison' ? Math.max(1, +(e.turns || e.dur) || 1) : 1;
         const mult = 1 + (S(EL_STAT[D.el]) + S('puissance')) / 100;
         const fixed = ln.first ? S('dommages') + S(EL_DMG[D.el]) + (crit ? S('dommagesCritiques') : 0) : 0;
