@@ -7,9 +7,22 @@
 // `entries` ne contient que les objets non portés ; le serveur refuse de toute façon de vendre un objet porté.
 const SELL_ACTION_FALLBACK = '606e0b152d7eeb65f891df20554b9d310fd5dfd04c';
 const NEVER_SELL_SLOTS = new Set(['familier', 'dofus']);   // jamais vendus par l'Autosell
-// Valeur de fusion du tier max « Rayonnant » (= FUSION.max du jeu : 0 = Tiers 1 … 3 = Tiers 4, 4 = Rayonnant, le « tier 5 »).
-// Jamais vendu automatiquement (comme « Tout cocher » sur le site).
-const FUSION_MAX = 4;
+// Fusion (constantes FUSION du jeu, relues dans ses chunks le 2026-10-09) : 0 = Tiers 1, 1 = Tiers 2, 2 = Rayonnant,
+// 3 à 7 = Rayonnant +1 à +5. Jusqu'au Rayonnant : 3 exemplaires du tier → 1 du suivant. Ensuite : l'objet + des Rayonnants
+// « nourriture » (radiantFeed : 1 pour +1 et +2, 2 pour +3 à +5). Stats : +10 % (T2), +20 % (Rayonnant), puis +25 à +45 %.
+// Dofus : fusion au plus jusqu'au Rayonnant +2, sauf éternel (Prestige) en Rayonnant +5 : stats ×2.
+// Un Rayonnant n'est jamais vendu automatiquement (comme « Tout cocher » sur le site).
+const FUSION = { max: 7, radiant: 2, copies: 3, bonusPct: [0, 10, 20, 25, 30, 35, 40, 45], excluded: ['pa', 'pm', 'po', 'invocations'],
+  dofusRadiantPct: 100, dofusMax: 4, radiantPa: 2 };
+const radiantFeed = (f) => (f < 2 ? 0 : f < 4 ? 1 : 2);   // Rayonnants consommés pour passer de f à f + 1
+const isRadiant = (f) => (+f || 0) >= FUSION.radiant;
+const fusionCap = (type) => (type === 'dofus' ? FUSION.dofusMax : FUSION.max);
+const fusionName = (f) => ((f = +f || 0) < 2 ? `T${f + 1}` : f === 2 ? 'Rayonnant' : `Rayonnant +${f - 2}`);
+// exemplaires de base (T1) que représente un objet en fusion f : 1, 3, 9, 18, 27, 45, 63, 81
+const fusionCopies = (f) => { let n = 1; for (let i = 0; i < (+f || 0); i++) n = i < FUSION.radiant ? n * FUSION.copies : n + 9 * radiantFeed(i); return n; };
+// libellé du jeu (« Tiers 2 », « Rayonnant », « Rayonnant +3 », « T2 », « ★+1 ») → fusion
+const fusionOfLabel = (t) => { const r = String(t || '').match(/(?:Rayonnant|★)\s*(?:\+\s*(\d))?/); if (r) return 2 + (+r[1] || 0);
+  return Math.max(0, +(String(t || '').match(/T(?:iers)?\s*(\d)/)?.[1] || 1) - 1); };
 const SELL_BATCH = 50;
 let sellActionId = null;
 
@@ -164,7 +177,7 @@ async function autosell(dryRun) {
   const keepReason = (e) => e.locked || locked.has(DM.lockKey(e.name, e.lvl)) ? 'locked'
     : NEVER_SELL_SLOTS.has(e.slot) ? 'slot'
     : keepRar.has(e.rarity) ? 'rarity'
-    : e.fusion >= FUSION_MAX ? 'radiant'
+    : isRadiant(e.fusion) ? 'radiant'
     : keepAbove && !(e.lvl <= level) ? 'above'
     : null;
   const kept = { locked: 0, slot: 0, rarity: 0, radiant: 0, above: 0 };

@@ -215,7 +215,7 @@ function buildUi() {
         <div class="head"><span>✨ Fusion${DM.tip("3 exemplaires d’un même objet au même tier → 1 exemplaire du tier suivant (+10 % de stats), jusqu’au tier Rayonnant. Les objets portés ne sont pas touchés.")}</span><span class="muted">3 identiques → tier +1</span></div>
         <div class="row">
           <button data-k="fuseScan" style="flex:1" data-tip="Liste les objets que tu peux fusionner, avec le résultat des fusions en cascade.">Chercher les doublons</button>
-          <button data-k="fuseAll" data-tip="Fusionne tout ce qui est listé, en cascade (3 base → 1 T2, 3 T2 → 1 T3…).">Tout fusionner</button>
+          <button data-k="fuseAll" data-tip="Fusionne tout ce qui est listé, en cascade jusqu’au Rayonnant (3 T1 → 1 T2, 3 T2 → 1 Rayonnant). Au-delà (l’objet + des Rayonnants), via la liste de courses ou à la main.">Tout fusionner</button>
         </div>
         <div class="status" data-k="fuseMsg"></div>
         <ul class="fuse" data-k="fuseList"></ul>

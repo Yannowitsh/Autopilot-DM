@@ -1,20 +1,21 @@
 // Autopilot-DM — content script : fusion + auto-équipement (calcul).
 // Les fichiers content/*.js et content.js partagent la même portée globale (monde isolé), chargés dans l’ordre du manifest.
 
-// ---------- Fusion : 3 exemplaires d'un même tiers → 1 du tiers suivant (+10 % de stats), jusqu’au tier 5 « Rayonnant » (fusion 4) ----------
+// ---------- Fusion : 3 exemplaires d'un même tiers → 1 du tiers suivant jusqu'au Rayonnant, puis + Rayonnants (FUSION, autosell.js) ----------
 // Server action « fuseItem(itemId, fusion) » → { newFusion } ou { error }. Les objets portés ne sont pas dans `entries`.
 const FUSE_ACTION_FALLBACK = '60e1cb4d715df40bfc2d5e6af8032e5ae119fd0915';
 const FUSE_COPIES = 3;
 let fuseActionId = null, fuseChunks = null;
-const tierLabel = (f) => (f >= FUSION_MAX ? 'Rayonnant ★' : f ? `T${f + 1}` : 'base');   // comme le jeu : fusion 1 = « Tiers 2 »
+const tierLabel = (f) => (isRadiant(f) ? `${fusionName(f)} ★` : f ? `T${f + 1}` : 'base');   // comme le jeu : fusion 1 = « Tiers 2 »
 
-// Objets fusionnables, regroupés par objet : fusions en cascade simulées (3 base → 1 T1 ; 3 T1 → 1 T2…).
+// Objets fusionnables, regroupés par objet : fusions en cascade simulées (3 T1 → 1 T2 ; 3 T2 → 1 Rayonnant). Au-delà du
+// Rayonnant (l'objet + des Rayonnants), jamais en masse : liste de courses (tier voulu) ou à la main.
 async function fusePlan() {
   const { entries, chunks } = await fetchInventory();
   fuseChunks = chunks;
   const byId = new Map();
   for (const e of entries) {
-    if (e.fusion >= FUSION_MAX) continue;
+    if (isRadiant(e.fusion)) continue;
     const g = byId.get(e.id) || { id: e.id, name: e.name, lvl: e.lvl, rarity: e.rarity, tiers: {}, locks: [] };
     g.tiers[e.fusion] = (g.tiers[e.fusion] || 0) + e.qty;
     if (e.locked) g.locks.push(e.fusion || 0);
@@ -24,7 +25,7 @@ async function fusePlan() {
   for (const g of byId.values()) {
     const t = { ...g.tiers };
     const steps = [];
-    for (let f = 0; f < FUSION_MAX; f++) {
+    for (let f = 0; f < FUSION.radiant; f++) {
       while ((t[f] || 0) >= FUSE_COPIES) {
         steps.push(f);
         t[f] -= FUSE_COPIES;
@@ -74,8 +75,9 @@ async function fuseItems(items, onProgress) {
   return done;
 }
 
-// Fusion ciblée (liste de courses du farm de drop) : seulement les objets de `targets` (id → tier voulu, 1 à 5), en cascade
-// depuis le tier de base, jamais au-delà du tier voulu. Exemplaires de l'inventaire seulement (pas l'objet porté).
+// Fusion ciblée (liste de courses du farm de drop) : seulement les objets de `targets` (id → tier voulu, 1 = T1 … 3 =
+// Rayonnant … 8 = Rayonnant +5), en cascade depuis le tier de base, jamais au-delà du tier voulu. Au-delà du Rayonnant, un
+// seul objet monte (l'objet le plus haut + les Rayonnants qu'il faut). Exemplaires de l'inventaire seulement (pas l'objet porté).
 // Les autres objets ne sont pas touchés (contrairement à « Tout fusionner »). → nombre de fusions faites.
 async function fuseTowards(targets) {
   if (!targets.size) return 0;
@@ -83,12 +85,22 @@ async function fuseTowards(targets) {
   fuseChunks = chunks;
   const items = [];
   for (const [id, tier] of targets) {
-    const top = Math.min(FUSION_MAX, tier - 1);   // fusion visée (T2 = 1)
+    const mine = entries.filter((e) => e.id === id);
+    const top = Math.min(fusionCap(mine[0]?.slot), tier - 1);   // fusion visée (T2 = 1, Rayonnant = 2)
     const t = {};
-    for (const e of entries) if (e.id === id) t[e.fusion || 0] = (t[e.fusion || 0] || 0) + e.qty;
+    for (const e of mine) t[e.fusion || 0] = (t[e.fusion || 0] || 0) + e.qty;
     const steps = [];
-    for (let f = 0; f < top; f++) {
+    for (let f = 0; f < Math.min(top, FUSION.radiant); f++) {
       while ((t[f] || 0) >= FUSE_COPIES) { steps.push(f); t[f] -= FUSE_COPIES; t[f + 1] = (t[f + 1] || 0) + 1; }
+    }
+    // au-delà : un seul objet, le plus haut déjà fait (sinon un Rayonnant), nourri de Rayonnants palier par palier
+    let cur = [...Array(top).keys()].reverse().find((f) => f >= FUSION.radiant && (t[f] || 0) > 0);
+    while (cur != null && cur < top) {
+      const spare = (t[FUSION.radiant] || 0) - (cur === FUSION.radiant ? 1 : 0);
+      if (spare < radiantFeed(cur)) break;
+      steps.push(cur);
+      t[FUSION.radiant] -= radiantFeed(cur); t[cur]--; t[cur + 1] = (t[cur + 1] || 0) + 1;
+      cur++;
     }
     const locks = entries.filter((e) => e.id === id && e.locked).map((e) => e.fusion || 0);
     if (steps.length) items.push({ id, name: entries.find((e) => e.id === id)?.name || `objet ${id}`, steps, locks });
@@ -228,8 +240,9 @@ function scanFuseButtons() {
     const m = b.textContent.match(/Fusionner\s*\d+\s*→\s*(.+?)\s*\((\d+)\s*\/\s*(\d+)\)/);
     let extra = b.nextElementSibling?.classList.contains('dm-fuse-all') ? b.nextElementSibling : null;
     const n = m ? Math.floor(+m[2] / +m[3]) : 0;
-    const target = !m ? 0 : /Rayonnant/.test(m[1]) ? FUSION_MAX : +(m[1].match(/T(?:iers\s*)?(\d)/)?.[1] || 0) - 1;
-    if (n < 2 || target < 1) { if (!extra?.dataset.busy) extra?.remove(); continue; }
+    const target = !m ? 0 : fusionOfLabel(m[1]);
+    // au-delà du Rayonnant : pas de fusion « 3 → 1 » en masse
+    if (n < 2 || target < 1 || target > FUSION.radiant) { if (!extra?.dataset.busy) extra?.remove(); continue; }
     if (!extra) {
       extra = document.createElement('button');
       extra.type = 'button';
@@ -296,8 +309,7 @@ const EQUIP_ACTION_FALLBACK = '706383ea472542e23da3f7d81239188959e316dda0';
 // Les 4e et 5e sont facultatives (poids faibles) : non choisies, elles ne changent rien.
 const EQUIP_WEIGHTS = [1, 0.35, 0.15, 0.08, 0.04];
 const EQUIP_N = EQUIP_WEIGHTS.length;
-// Constantes du jeu (FUSION et libellés), pour calculer les stats réelles d'un objet fusionné comme le site.
-const FUSION_RULES = { stepPct: 10, excluded: ['pa', 'pm', 'po', 'invocations'], dofusRadiantPct: 100, radiantPa: 2 };
+// Libellés des stats du jeu (FUSION : autosell.js).
 const STAT_LABELS = { pv: 'Points de vie', pa: 'PA', pm: 'PM', po: 'Portée', invocations: 'Invocations', vitalite: 'Vitalité', sagesse: 'Sagesse', force: 'Force', intelligence: 'Intelligence', chance: 'Chance', agilite: 'Agilité', critique: '% Critique', prospection: 'Prospection', initiative: 'Initiative', puissance: 'Puissance', soins: 'Soins', dommages: 'Dommages', dommagesTerre: 'Dommages Terre', dommagesFeu: 'Dommages Feu', dommagesEau: 'Dommages Eau', dommagesAir: 'Dommages Air', dommagesNeutre: 'Dommages Neutre', dommagesCritiques: 'Dommages Critiques', resCritiques: 'Résistance Critiques', dommagesPoussee: 'Dommages Poussée', resPoussee: 'Résistance Poussée', resPctTerre: '% Résistance Terre', resPctFeu: '% Résistance Feu', resPctEau: '% Résistance Eau', resPctAir: '% Résistance Air', resPctNeutre: '% Résistance Neutre', resTerre: 'Résistance Terre', resFeu: 'Résistance Feu', resEau: 'Résistance Eau', resAir: 'Résistance Air', resNeutre: 'Résistance Neutre', fuite: 'Fuite', tacle: 'Tacle', esquivePA: 'Esquive PA', esquivePM: 'Esquive PM', retraitPA: 'Retrait PA', retraitPM: 'Retrait PM', renvoi: 'Renvoi de dommages', pods: 'Pods', dmgPctDistance: '% Dommages distance', dmgPctMelee: '% Dommages mêlée', dmgPctArmes: '% Dommages d’armes', dmgPctSorts: '% Dommages aux sorts', resPctDistance: '% Résistance distance', resPctMelee: '% Résistance mêlée', resPctAll: '% Résistance (tous éléments)', resAll: 'Réduction de dommages' };
 const STAT_ORDER = ['pa', 'pm', 'po', 'invocations', 'vitalite', 'sagesse', 'force', 'intelligence', 'chance', 'agilite', 'puissance', 'critique', 'dommages', 'dommagesNeutre', 'dommagesTerre', 'dommagesFeu', 'dommagesEau', 'dommagesAir', 'dommagesCritiques', 'dommagesPoussee', 'soins', 'prospection', 'initiative', 'resPctNeutre', 'resPctTerre', 'resPctFeu', 'resPctEau', 'resPctAir', 'resNeutre', 'resTerre', 'resFeu', 'resEau', 'resAir', 'resCritiques', 'resPoussee', 'tacle', 'fuite', 'retraitPA', 'retraitPM', 'esquivePA', 'esquivePM', 'renvoi', 'dmgPctSorts', 'dmgPctArmes', 'dmgPctMelee', 'dmgPctDistance', 'resPctMelee', 'resPctDistance', 'pods'];
 // Emplacements dans l'ordre de la grille du menu (emoji affiché tant qu'on ne connaît pas l'objet porté).
@@ -312,27 +324,29 @@ const EQUIP_SLOTS = [
 let equipActionId = null;
 const eqItemKey = (it) => `${it.id}|${it.fusion || 0}`;
 
-// Stats réelles d'un objet au tier de fusion donné (même calcul que itemStats du site).
+// Stats réelles d'un objet au tier de fusion donné (itemStats du site) : chaque stat positive × (1 + bonus %), au moins +1 ;
+// Dofus éternel (Rayonnant +5) : tout ×2 ; Rayonnant (hors Dofus) avec des PA : au moins 2 PA.
+const fusionMult = (f) => 1 + FUSION.bonusPct[Math.min(FUSION.max, Math.max(0, Math.floor(+f || 0)))] / 100;
 function fusedStats(st, type, fusion) {
   if (!fusion) return st || {};
   const out = {};
-  if (type === 'dofus' && fusion >= FUSION_MAX) {
-    for (const [k, v] of Object.entries(st || {})) out[k] = v > 0 ? Math.round(v * (1 + FUSION_RULES.dofusRadiantPct / 100)) : v;
+  if (type === 'dofus' && fusion >= FUSION.max) {
+    for (const [k, v] of Object.entries(st || {})) out[k] = v > 0 ? Math.round(v * (1 + FUSION.dofusRadiantPct / 100)) : v;
     return out;
   }
-  const mult = 1 + fusion * FUSION_RULES.stepPct / 100;
-  for (const [k, v] of Object.entries(st || {})) out[k] = v > 0 && !FUSION_RULES.excluded.includes(k) ? Math.round(v * mult) : v;
-  if (fusion >= FUSION_MAX && (out.pa ?? 0) > 0) out.pa = Math.max(out.pa, FUSION_RULES.radiantPa);
+  const mult = fusionMult(fusion);
+  for (const [k, v] of Object.entries(st || {})) out[k] = v > 0 && !FUSION.excluded.includes(k) ? Math.max(v + 1, Math.round(v * mult)) : v;
+  if (isRadiant(fusion) && type !== 'dofus' && (out.pa ?? 0) > 0) out.pa = Math.max(out.pa, FUSION.radiantPa);
   return out;
 }
 // Inverse approché de fusedStats (stats de base d'un objet fusionné, à l'arrondi près) : repli quand seules les stats
 // fusionnées sont connues (banque lue par une ancienne version de l'extension).
 function unfusedStats(eff, type, fusion) {
   if (!fusion) return eff || {};
-  const radiant = type === 'dofus' && fusion >= FUSION_MAX;
-  const mult = radiant ? 1 + FUSION_RULES.dofusRadiantPct / 100 : 1 + fusion * FUSION_RULES.stepPct / 100;
+  const radiant = type === 'dofus' && fusion >= FUSION.max;
+  const mult = radiant ? 1 + FUSION.dofusRadiantPct / 100 : fusionMult(fusion);
   const out = {};
-  for (const [k, v] of Object.entries(eff || {})) out[k] = v > 0 && (radiant || !FUSION_RULES.excluded.includes(k)) ? Math.round(v / mult) : v;
+  for (const [k, v] of Object.entries(eff || {})) out[k] = v > 0 && (radiant || !FUSION.excluded.includes(k)) ? Math.max(1, Math.round(v / mult)) : v;
   return out;
 }
 

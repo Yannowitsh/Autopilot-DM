@@ -210,7 +210,7 @@ function renderEquip() {
   const changing = new Set((eqPlanState?.changes || []).map((c) => c.slot));
   const slotHtml = (d) => {
     const it = cur[d.slot];
-    const tip = `${d.label} : ${it ? `${it.name}${it.fusion ? ` (${it.fusion >= FUSION_MAX ? 'Rayonnant' : `Tiers ${it.fusion + 1}`})` : ''}` : (eqState ? 'vide' : '?')}${enabled[d.slot] === false ? ' — désactivé' : ''}`;
+    const tip = `${d.label} : ${it ? `${it.name}${it.fusion ? ` (${fusionName(it.fusion)})` : ''}` : (eqState ? 'vide' : '?')}${enabled[d.slot] === false ? ' — désactivé' : ''}`;
     return `<button data-eqslot="${d.slot}" class="eqslot${enabled[d.slot] === false ? '' : ' on'}${changing.has(d.slot) ? ' chg' : ''}" data-tip="${DM.tipAttr(tip)}">`
       + (it?.icon ? `<img src="/img/items/${+it.icon}.png" alt="">` : `<span class="em">${d.em}</span>`)
       + `<span>${d.dofus ? d.label.replace('Dofus ', 'D') : d.label}</span></button>`;

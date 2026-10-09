@@ -73,17 +73,21 @@ async function optimizeBuild(opts, say) {
   const fitSheet = { ...sheet, bonus: Object.fromEntries(Object.entries(sheet.bonus).map(([k, v]) => [k, v - (+state.scrolls?.[k] || 0)])) };
   gearMult = fitGearMult(pool.filter((c) => c.src === 'worn'), setFx, fitSheet, gearMult);
   DM.log(`optimiseur : panoplies — ${setsFromGame} connue(s) par la fiche du jeu, le reste via dofusdb ; parchemins ${JSON.stringify(fixedStats)}`);
-  // Comparaison toujours en T1 : stats de base de chaque objet (+ prestige et forge), quel que soit le tier de ton
-  // exemplaire ou de l'annonce — un objet moyen déjà en T4 ne passe pas devant un meilleur objet encore en T1.
-  // realEff = stats réelles (contrôle du modèle sur la fiche du jeu).
-  const simTier = 1;
+  // Comparaison au tier choisi (opts.simFusion : 0 = T1 … 2 = Rayonnant … 7 = Rayonnant +5) : chaque objet — les tiens
+  // comme les autres — est simulé à ce tier (un Dofus au plus Rayonnant +2), quel que soit celui de ton exemplaire ou de
+  // l'annonce : un objet moyen déjà fusionné ne passe pas devant un meilleur objet encore en T1. Exception : tes objets
+  // éternels (Prestige), Rayonnant +5 à vie, gardent leur tier. realEff = stats réelles (contrôle du modèle sur la fiche).
+  const simTier = Math.max(0, Math.min(FUSION.max, Math.floor(+opts.simFusion || 0)));
+  const eternalKeys = new Set((sheet.eternal || []).map((e) => `${normName(e.n)}|${+e.fusion || 0}`));
+  const isEternal = (c) => ['worn', 'inv'].includes(c.src) && eternalKeys.has(`${normName(c.name)}|${c.fusion || 0}`);
   pool = pool.map((c) => {
     const base = c.baseEff || unfusedStats(c.eff, c.type, c.fusion || 0);
-    return { ...c, realEff: withPrestige(c.eff), eff: withPrestige(fusedStats(base, c.type, 0)) };
+    const f = isEternal(c) ? c.fusion : Math.min(simTier, fusionCap(c.type));
+    return { ...c, eternal: isEternal(c), simFusion: f, realEff: withPrestige(c.eff), eff: withPrestige(fusedStats(base, c.type, f)) };
   });
-  // En T1, deux exemplaires d'un même objet se valent : une seule entrée par objet — porté, sinon inventaire (le tier
-  // le plus haut), banque, HDV (l'annonce la moins chère), à looter. Les annonces HDV de chaque tier y sont jointes
-  // (hdvOffers) : on peut acheter un tier plus haut, les stats affichées restent celles du T1.
+  // Au tier simulé, deux exemplaires d'un même objet se valent : une seule entrée par objet — porté, sinon inventaire (le
+  // tier le plus haut, un éternel d'abord), banque, HDV (l'annonce la moins chère), à looter. Les annonces HDV de chaque
+  // tier y sont jointes (hdvOffers) : on peut acheter le tier qu'on veut, les stats affichées restent celles du tier simulé.
   const SRC_RANK = { worn: 0, inv: 1, bank: 2, hdv: 3, drop: 4 };
   const offersById = new Map();
   for (const c of pool) {

@@ -58,7 +58,7 @@ function itemFromPanel(panel) {
   if (!title) return null;
   const name = [...title.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join('').trim();
   const tier = title.querySelector('span')?.textContent || '';
-  const fusion = /Rayonnant/.test(tier) ? FUSION_MAX : +(tier.match(/Tiers\s*(\d+)/)?.[1] || 1) - 1;
+  const fusion = fusionOfLabel(tier);
   const lvl = +([...panel.querySelectorAll('span')].map((s) => s.textContent.match(/^Niveau (\d+)$/)).find(Boolean)?.[1] || 0);
   return name ? { name, lvl, fusion } : null;
 }
@@ -421,7 +421,7 @@ let queueRun = null;   // { stop, done, total } pendant « Tout échanger »
 const queueKey = () => myName() || '?';
 const tradeQueue = () => cfg.tradeQueues?.[queueKey()] || [];
 const sameItem = (a, b) => a.name === b.name && a.lvl === b.lvl && a.fusion === b.fusion;
-const itemLabel = (it) => `${it.name}${it.fusion ? ` · ${it.fusion >= FUSION_MAX ? 'Rayonnant' : `T${it.fusion + 1}`}` : ''}`;
+const itemLabel = (it) => `${it.name}${it.fusion ? ` · ${fusionName(it.fusion)}` : ''}`;
 
 function setTradeQueue(q) {
   return save({ tradeQueues: { ...(cfg.tradeQueues || {}), [queueKey()]: q.filter((it) => it.qty > 0) } });

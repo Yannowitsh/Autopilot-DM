@@ -14,7 +14,7 @@ async function openBuildOptimizer({ load = null } = {}) {
   ov.addEventListener('keydown', (e) => e.stopPropagation());
   let o = { deckN: 4, paOff: '', pvMin: '', deckOnly: false, hdv: false, realloc: true, dropsOnly: true };
   try { o = { ...o, ...JSON.parse(localStorage.getItem(BUILD_OPTS_KEY) || '{}') }; } catch { /* stockage indisponible */ }
-  delete o.simTier;   // ancienne option « Tier simulé » : tout est comparé en T1
+  delete o.simTier;   // ancienne option (1 à 5, avant la refonte des tiers du 09/10) ; remplacée par simFusion (0 à 7)
   if (!BUILD_GOALS[o.goal]) o.goal = o.krala ? 'krala' : 'dps';   // ancienne case « Kralamoure »
   delete o.krala;
   const inp = 'background:#2a231a;border:1px solid #5a4a33;border-radius:8px;color:#eee;padding:5px 8px;font:13px system-ui,sans-serif';
@@ -26,7 +26,7 @@ async function openBuildOptimizer({ load = null } = {}) {
         <label data-tip="Ce que l’optimiseur maximise.&#10;Dégâts par tour : sur une cible sans résistances.&#10;Kralamoure : contre le boss de guilde, ses résistances (20 % Neutre, Terre, Feu et Air, 30 % Eau) appliquées à chaque coup ; le combat dure 10 tours, seul le total de dégâts compte.&#10;Cible : contre les résistances que tu saisis (ou celles d’un ennemi de ton dernier combat) — chaque coup devient (dégât − rés. fixe) × (1 − % rés.), jamais sous 0 ; avec des PV, nombre de tours pour la tuer.&#10;Prospection : celle de l’équipement et des panoplies + 1 par 10 de Chance ; avec « Redistribuer mes points », tous tes points vont en Chance.&#10;Sagesse : idem, points en Sagesse.&#10;Ascension (survie) : contre les boss d’un étage déjà tenté (toi ou un ami) — maximise la marge de survie = tes PV (+ boucliers en % des PV de ton deck actif) ÷ les dégâts encaissés le temps de tous les tuer. Chaque boss frappe dans son élément jusqu’à sa mort ; tes résistances comptent jusqu’à 50 % (plafond du jeu). Arbitre seul entre dégâts, PV et résistances, et la Vitalité des points.&#10;Seule cette stat compte (les dégâts et PV n’entrent pas en jeu, utilise PV / PA minimum pour un plancher) ; à égalité, l’objet que tu portes déjà est gardé.">Objectif <select data-o="goal" style="${inp}">${Object.entries(BUILD_GOALS).map(([k, g]) => `<option value="${k}">${g.label}</option>`).join('')}</select></label>
         <label data-k="ascBox" data-tip="Étage d’Ascension visé : PV, attaques, éléments et résistances de ses boss viennent du dernier essai enregistré à cet étage (le tien ou celui d’un ami de la synchro). Vide = l’étage en cours.">Étage <input data-o="ascFloor" type="number" min="1" placeholder="${cfg.ascFloor || 'en cours'}" style="${inp};width:70px"></label>
         <label data-tip="Ne propose que des objets jusqu’à ce niveau. Au-dessus de ton niveau actuel, c’est une prévision : PV, PA de base et points de caractéristiques (5 par niveau) de ce niveau-là ; les objets trop hauts pour toi aujourd’hui ne sont pas équipés et les points ne sont pas appliqués. Vide = ton niveau actuel.">Niveau max <input data-o="lvlMax" type="number" min="1" max="200" placeholder="le mien" style="${inp};width:70px"></label>
-        <span style="color:#b9a98c;font-size:12px" data-tip="Tous les objets sont comparés avec leurs stats T1 (stats de base, prestige et Bouclier de forge compris), quel que soit le tier de ton exemplaire ou de l’annonce HDV : un objet moyen déjà fusionné en T4 ne passe pas devant un meilleur objet encore en T1. À l’HDV, tu peux acheter le tier que tu veux ; les stats affichées restent celles du T1.">Comparaison en T1 ⓘ</span>
+        <label data-tip="Tous les objets — ton équipement actuel comme les propositions — sont simulés à ce tier (stats de base × bonus du tier, puis prestige et Bouclier de forge), quel que soit le tier de ton exemplaire ou de l’annonce HDV : on compare ce que donnerait ton équipement à ce tier contre le meilleur équipement à ce même tier (critiques, résistances, panoplies compris). Un Dofus s’arrête au Rayonnant +2 ; tes objets éternels (Prestige) gardent leur Rayonnant +5.&#10;T1 : stats de base · T2 : +10 % · Rayonnant : +20 % (9 exemplaires) · Rayonnant +1 à +5 : +25 à +45 % (18, 27, 45, 63, 81 exemplaires).">Tier simulé <select data-o="simFusion" style="${inp}">${[...Array(FUSION.max + 1).keys()].map((f) => `<option value="${f}">${fusionName(f)}${f ? ` (+${FUSION.bonusPct[f]} %)` : ''}</option>`).join('')}</select></label>
         <label data-tip="PA de ton tour qui servent à taper ; le reste va à tes buffs, shields, soins… Les dégâts comptés sont ceux du meilleur enchaînement de sorts offensifs (autant de sorts que ces PA le permettent). Les PA au-delà gardent leur valeur (+3 % chacun). Vide = tous tes PA servent à taper.">PA offensifs <input data-o="paOff" type="number" min="1" max="15" placeholder="tous" style="${inp};width:70px"></label>
         <label data-tip="Affichage seulement : nombre de sorts offensifs conseillés pour ton deck avec le build proposé (bouton « Écrire dans le deck 3 »). Ne change pas les objets choisis.">Sorts conseillés <select data-o="deckN" style="${inp}">${[2, 3, 4, 5, 6, 7, 8].map((n) => `<option value="${n}">${n}</option>`).join('')}</select></label>
         <label>PV minimum <input data-o="pvMin" type="number" min="0" placeholder="aucun" style="${inp};width:90px"></label>
@@ -328,9 +328,9 @@ async function openBuildOptimizer({ load = null } = {}) {
   });
 
   const fmt = (n) => Math.round(n).toLocaleString('fr-FR');
-  const tierName = (f) => (f >= FUSION_MAX ? 'Rayonnant' : `T${(f || 0) + 1}`);
-  // stats affichées = T1 ; le tier de ton exemplaire (porté, inventaire, banque) en petit
-  const t1Label = (c) => `${esc(c.name)}${c.fusion && !['hdv', 'drop'].includes(c.src) ? ` <span style="color:#8a7d66;font-size:11px">(ton exemplaire : ${tierName(c.fusion)})</span>` : ''}`;
+  const tierName = fusionName;
+  // stats affichées = tier simulé ; le tier de ton exemplaire (porté, inventaire, banque) en petit, ∞ pour un éternel
+  const t1Label = (c) => `${esc(c.name)}${c.eternal ? ' <span style="color:#7cc6f0;font-size:11px" title="Objet éternel (Prestige) : gardé à son tier">∞</span>' : ''}${c.fusion && !['hdv', 'drop'].includes(c.src) && c.fusion !== c.simFusion ? ` <span style="color:#8a7d66;font-size:11px">(ton exemplaire : ${tierName(c.fusion)})</span>` : ''}`;
   // annonces HDV de l'objet, une par tier (la moins chère) : un bouton d'achat chacune
   const offersOf = (c) => c.hdvOffers?.length ? c.hdvOffers : c.src === 'hdv' ? [{ fusion: c.fusion || 0, price: c.price, listingId: c.listingId, seller: c.seller }] : [];
   const offerBtns = (c, sbtn) => offersOf(c).map((o) => `<button data-buy="${esc(o.listingId)}" style="${sbtn};background:#8a5a1a" title="Acheter l’annonce ${tierName(o.fusion)} (vendeur : ${esc(o.seller)}) — 2e clic pour confirmer">🛒 ${tierName(o.fusion)} ${fmt(o.price)} K</button>`).join('');
@@ -350,7 +350,7 @@ async function openBuildOptimizer({ load = null } = {}) {
     const keys = (o) => Object.keys(o || {}).filter((k) => o[k]).sort((a, b) => statIdxOf(a) - statIdxOf(b));
     const diffKeys = [...new Set([...keys(c.eff), ...keys(other?.eff)])].sort((a, b) => statIdxOf(a) - statIdxOf(b))
       .filter((k) => (c.eff[k] || 0) !== (other?.eff?.[k] || 0));
-    hover.innerHTML = `<div style="font-weight:800">${t1Label(c)} <span style="color:#ffd76a;font-size:11px">stats T1</span></div>
+    hover.innerHTML = `<div style="font-weight:800">${t1Label(c)} <span style="color:#ffd76a;font-size:11px">stats ${tierName(c.simFusion ?? result.simTier ?? 0)}</span></div>
       <div style="color:#8a7d66;font-size:11px">Niveau ${c.lvl ?? '?'}${c.setName ? ` · ${esc(c.setName)}` : ''}${c.src === 'hdv' ? ` · HDV : ${offersOf(c).map((o) => `${tierName(o.fusion)} ${fmt(o.price)} K`).join(', ')}` : c.src === 'worn' ? ' · porté' : c.src === 'bank' ? ` · banque (${esc(c.bankName)})` : c.src === 'drop' ? ' · à looter (bestiaire)' : ' · inventaire'}${c.two ? ' · deux mains' : ''}</div>
       <div style="margin-top:4px">${keys(c.eff).map((k) => statLine(k, c.eff[k])).join('') || '<i>aucune stat</i>'}</div>
       ${other !== c ? `<div style="margin-top:6px;border-top:1px solid #3a3024;padding-top:4px;color:#b9a98c">${side === 'new' ? `Par rapport à ${other ? esc(other.name) : 'l’emplacement vide'}` : `En passant à ${other ? esc(other.name) : 'vide'}`} :</div>
@@ -424,7 +424,7 @@ async function openBuildOptimizer({ load = null } = {}) {
       ${r.bestiary ? `<div style="font-size:12px;color:#c99bff">🐉 Bestiaire : ${r.bestiary.count} objet(s) lootable(s) à ton niveau que tu n’as pas, pris en compte (copie du ${new Date(r.bestiary.at).toLocaleString('fr-FR')})${drops.length ? ` — ${drops.length} à looter dans le build proposé${drops.some((c) => c.offer) ? `, dont ${drops.filter((c) => c.offer).length} en vente à l’HDV` : ''}` : ''}.</div>` : ''}
       ${r.bank ? `<div style="font-size:12px;color:#8fb8ee">🏦 Banque ${esc(r.bank.name)} : ${r.bank.count} objet(s) disponible(s)${r.bank.bound ? `, ${r.bank.bound} lié(s) ignoré(s)` : ''}.</div>` : ''}
       ${r.target?.rf ? `<div style="font-size:12px;color:#b9a98c">🎯 ${esc(r.target.name)} : ${ELEMENTS.map((E, i) => `${E.name} ${r.target.resPct[i]} %${r.target.rf[i] ? ` + ${r.target.rf[i]}` : ''}`).join(' · ')}${r.target.pv ? ` · ${fmt(r.target.pv)} PV` : ''}</div>` : ''}
-      <div style="font-size:12px;color:#ffd76a">⚗️ Comparaison en T1 : stats de base de chaque objet (prestige et forge compris), quel que soit le tier de ton exemplaire ou de l’annonce HDV — un tier plus haut ne fera que les augmenter.</div>
+      <div style="font-size:12px;color:#ffd76a">⚗️ Comparaison en ${tierName(r.simTier || 0)}${r.simTier ? ` (+${FUSION.bonusPct[r.simTier]} %)` : ''} : ton équipement actuel et le build proposé sont tous deux simulés à ce tier (prestige et forge compris), quel que soit le tier de tes exemplaires ou des annonces HDV${r.simTier > FUSION.dofusMax ? ' — Dofus au plus Rayonnant +2' : ''}${Object.values(r.current || {}).some((c) => c?.eternal) || Object.values(r.final || {}).some((c) => c?.eternal) ? ' ; tes objets éternels ∞ gardent leur Rayonnant +5' : ''}.</div>
       ${r.ownKept ? `<div style="font-size:12px;color:#6fcf7a">🎒 Tolérance ${String(r.ownTol).replace('.', ',')} % : ${r.ownKept} objet(s) à acheter ou looter remplacé(s) par des objets que tu as (−${r.ownLoss.toFixed(1).replace('.', ',')} % par rapport au meilleur build trouvé).</div>` : ''}
       ${r.paShort ? `<div style="color:#ff7b6b;font-weight:700">⚠️ PA minimum (${r.paMin}) impossible à atteindre avec tes objets : le build ci-dessous est celui qui a le plus de PA (${r.paOf(r.nxt.S)}).</div>` : ''}
       ${r.hdvFailed.length ? `<div style="color:#f0a040">⚠️ HDV illisible pour : ${r.hdvFailed.map((t) => esc(SLOT_NAMES[t] || t)).join(', ')} (site saturé) — ces emplacements n’ont pas d’objet HDV proposé.</div>` : ''}
@@ -582,11 +582,10 @@ async function openFavorites() {
       <button data-open-save="${esc(x.id)}" style="${btn};background:#2e6fbf">📂 Ouvrir</button></div>`).join('')}` : '';
     // liste de courses du farm de drop (même liste que la fenêtre 🐉 Aller dropper)
     const cart = cfg.dropCart || [];
-    let tiers = {};
-    try { tiers = JSON.parse(localStorage.getItem(DROP_TIERS_KEY) || '{}'); } catch { /* stockage indisponible */ }
+    const tiers = dropTiers();
     const inCart = new Set(cart.map((c) => c.id));
     $('[data-k="cart"]').innerHTML = `<div style="display:flex;align-items:center;gap:8px"><b style="font-size:13px;flex:1">🛒 Liste de courses${cart.length ? ` (${cart.length})` : ''}</b>
-        ${cart.length ? `<label style="font-size:12px;color:#b9a98c;display:flex;align-items:center;gap:4px" title="Pendant le farm de drop (toutes les 5 min, entre deux combats) et à la fin : 3 exemplaires d’un objet de la liste → tier suivant, jusqu’au tier voulu. Les autres objets ne sont jamais fusionnés."><input type="checkbox" data-a="autoFuse"${cfg.dropAutoFuse !== false ? ' checked' : ''}> fusion auto</label>
+        ${cart.length ? `<label style="font-size:12px;color:#b9a98c;display:flex;align-items:center;gap:4px" title="Pendant le farm de drop (toutes les 5 min, entre deux combats) et à la fin : les objets de la liste montent jusqu’au tier voulu (3 → 1 jusqu’au Rayonnant, puis l’objet + des Rayonnants). Les autres objets ne sont jamais fusionnés."><input type="checkbox" data-a="autoFuse"${cfg.dropAutoFuse !== false ? ' checked' : ''}> fusion auto</label>
         <label style="font-size:12px;color:#b9a98c;display:flex;align-items:center;gap:4px" title="Verrouille d’office (cadenas du jeu) les objets de la liste, tous tiers confondus : ni vendus, ni brisés, ni mis à l’HDV. Un objet retiré de la liste est déverrouillé, sauf s’il était verrouillé à la main ou fait partie d’un équipement enregistré. La fusion auto les déverrouille le temps de fusionner."><input type="checkbox" data-a="lockCart"${cfg.dropLockCart !== false ? ' checked' : ''}> 🔒 verrouiller</label>
         <button data-a="fuseCart" style="${btn}" title="Fusionne maintenant les objets de la liste jusqu’à leur tier voulu (seulement ceux-là)">⚡ Fusionner la liste</button>` : ''}
         <button data-a="drop" style="${btn};background:#6a3fa0" title="Ouvre la liste de courses complète : objets du build et favoris, tiers voulus, exemplaires déjà possédés, puis lancer le farm">🐉 ${cart.length ? 'Modifier / lancer le farm' : 'Composer la liste'}</button></div>`
@@ -596,7 +595,7 @@ async function openFavorites() {
         <span style="width:70px;color:#8a7d66;font-size:11px">${esc(SLOT_NAMES[it?.s] || it?.s || '')}</span>
         ${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:24px;height:24px;object-fit:contain">` : ''}
         <span style="flex:1">${esc(c.name)}${it?.lvl ? ` <span style="color:#8a7d66;font-size:12px">niv. ${it.lvl}${it.setName ? ` · ${esc(it.setName)}` : ''}</span>` : ''}${b && !huntable(c.id) ? ' <span style="color:#e08a5a;font-size:11px" title="Aucun monstre de chasse ne le lâche : le farm de drop l’ignore (HDV, coffres, boss…)">pas en chasse</span>' : ''}</span>
-        <select data-tier="${+c.id}" style="background:#2a231a;color:#f0c04a;border:1px solid #5a4a33;border-radius:6px;font:12px system-ui,sans-serif" title="Tier voulu (fusion 3 → 1)">${[1, 2, 3, 4, 5].map((n) => `<option value="${n}"${n === (tiers[c.id] || 1) ? ' selected' : ''}>T${n}${n === 5 ? ' (Rayonnant)' : ''}</option>`).join('')}</select>
+        <select data-tier="${+c.id}" style="background:#2a231a;color:#f0c04a;border:1px solid #5a4a33;border-radius:6px;font:12px system-ui,sans-serif" title="Tier voulu : T1 = 1 exemplaire, T2 = 3, Rayonnant = 9, puis l’objet + des Rayonnants (+1 = 18 … +5 = 81)">${tierOptions(tiers[c.id] || 1, it?.s)}</select>
         ${hdvCell(c.id, c.name)}
         <button data-uncart="${+c.id}" style="${btn}" title="Retirer de la liste de courses">✕</button></div>`;
       }).join('')
@@ -661,10 +660,9 @@ async function openFavorites() {
   ov.addEventListener('input', (e) => { if (e.target.dataset.a === 'cartSearch') renderHits(); });
   ov.addEventListener('change', (e) => {
     if (e.target.dataset.tier) {
-      let tiers = {};
-      try { tiers = JSON.parse(localStorage.getItem(DROP_TIERS_KEY) || '{}'); } catch { /* stockage indisponible */ }
+      const tiers = dropTiers();
       tiers[+e.target.dataset.tier] = +e.target.value;
-      try { localStorage.setItem(DROP_TIERS_KEY, JSON.stringify(tiers)); } catch { /* idem */ }
+      saveDropTiers(tiers);
     }
     if (e.target.dataset.a === 'autoFuse') save({ dropAutoFuse: e.target.checked });
     if (e.target.dataset.a === 'lockCart') save({ dropLockCart: e.target.checked });
@@ -680,13 +678,12 @@ async function openFavorites() {
     }
     const fz = e.target.closest('[data-a="fuseCart"]');
     if (fz) {
-      let tiers = {};
-      try { tiers = JSON.parse(localStorage.getItem(DROP_TIERS_KEY) || '{}'); } catch { /* idem */ }
+      const tiers = dropTiers();
       fz.disabled = true;
       fz.textContent = 'Fusion…';
       try {
         const n = await fuseTowards(new Map((cfg.dropCart || []).map((c) => [c.id, tiers[c.id] || 1])));
-        say(n ? `⚡ ${n} fusion(s) faite(s) vers les tiers voulus.` : 'Rien à fusionner : pas 3 exemplaires d’un même tier en dessous du tier voulu.');
+        say(n ? `⚡ ${n} fusion(s) faite(s) vers les tiers voulus.` : 'Rien à fusionner : pas assez d’exemplaires (ou de Rayonnants) sous le tier voulu.');
       } catch (err) { say(`❌ ${err.message}`); }
       fz.disabled = false;
       fz.textContent = '⚡ Fusionner la liste';
@@ -909,4 +906,72 @@ async function openSpellList() {
     }).join('') || '<div style="color:#b9a98c;padding:12px">Aucun sort ne correspond aux filtres.</div>';
   }
   if (f.real) applyStats(); else render();
+}
+
+// ---------- Objet éternel (Prestige) : 5 conseils ----------
+// À chaque Prestige, l'objet gardé devient éternel en Rayonnant +5, quel que soit le tier de l'exemplaire choisi (un Dofus,
+// qui plafonne au Rayonnant +2 en fusion normale, voit ses stats ×2). Bulle 💡 sous le bouton « Faire Prestige N » et sous
+// « Objet gardé (il deviendra éternel) » : les objets (portés et inventaire) dont le passage en éternel rapporte le plus de
+// stats, pesées comme les runes de forgemagie, avec un bonus pour les objets rares (un Dofus ne se fusionne pas au-delà).
+const RUNE_POINTS = { vitalite: 0.2, pv: 0.2, sagesse: 3, force: 1, intelligence: 1, chance: 1, agilite: 1, puissance: 2, critique: 10, pa: 100,
+  pm: 90, po: 51, invocations: 30, dommages: 20, dommagesNeutre: 5, dommagesTerre: 5, dommagesFeu: 5, dommagesEau: 5, dommagesAir: 5,
+  dommagesCritiques: 5, dommagesPoussee: 5, soins: 10, prospection: 3, initiative: 0.1, resPctNeutre: 6, resPctTerre: 6, resPctFeu: 6,
+  resPctEau: 6, resPctAir: 6, resNeutre: 2, resTerre: 2, resFeu: 2, resEau: 2, resAir: 2, resCritiques: 2, resPoussee: 2, tacle: 4, fuite: 4,
+  retraitPA: 7, retraitPM: 7, esquivePA: 7, esquivePM: 7, dmgPctSorts: 15, dmgPctArmes: 15, pods: 0.25 };
+const runePoints = (st) => Object.entries(st || {}).reduce((t, [k, v]) => t + (v > 0 ? v * (RUNE_POINTS[k] ?? 1) : 0), 0);
+async function eternalAdvice(n = 5) {
+  const [state, sheet] = await Promise.all([fetchEquipState(), fetchCharSheet().catch(() => null)]);
+  const already = new Set((sheet?.eternal || []).map((e) => normName(e.n)));
+  const byId = new Map();   // un conseil par objet : le meilleur exemplaire possédé sert de référence, le moins fusionné est à choisir
+  for (const c of [...state.entries, ...state.slots.map((s) => s.cur && { ...s.cur, worn: true })].filter(Boolean)) {
+    if (!c.type || c.type === 'parchemin' || !Object.keys(c.baseEff || {}).length || already.has(normName(c.name))) continue;
+    const g = byId.get(c.id) || { ...c, best: -1, low: 99, worn: false };
+    g.best = Math.max(g.best, c.fusion || 0); g.low = Math.min(g.low, c.fusion || 0); g.worn ||= !!c.worn;
+    byId.set(c.id, g);
+  }
+  const out = [];
+  for (const g of byId.values()) {
+    if (g.best >= FUSION.max) continue;
+    const now = fusedStats(g.baseEff, g.type, g.best), eter = fusedStats(g.baseEff, g.type, FUSION.max);
+    const gain = runePoints(eter) - runePoints(now);
+    if (gain <= 0) continue;
+    // rareté : un Dofus ne monte pas au-delà du Rayonnant +2 (ni ×2) autrement ; les objets rares sont durs à réunir à 81
+    const score = gain * (g.type === 'dofus' ? 2 : 1) * (1 + 0.1 * (+g.rarity || 0)) * (g.worn ? 1.2 : 1);
+    const diff = Object.entries(eter).map(([k, v]) => [k, v - (now[k] || 0)]).filter(([, d]) => d > 0)
+      .sort((a, b) => b[1] * (RUNE_POINTS[b[0]] ?? 1) - a[1] * (RUNE_POINTS[a[0]] ?? 1)).slice(0, 4);
+    out.push({ ...g, gain, score, diff });
+  }
+  return out.sort((a, b) => b.score - a.score).slice(0, n);
+}
+function scanPrestigeAdvice() {
+  if (!location.pathname.startsWith('/personnage') || !modOn('build')) { document.querySelectorAll('.dm-eternal').forEach((el) => el.remove()); return; }
+  const anchors = [
+    [...document.querySelectorAll('button.btn-gold')].find((b) => /^Faire Prestige \d+/.test(b.textContent.trim())),
+    [...document.querySelectorAll('div')].find((d) => d.children.length === 0 && /^Objet gardé \(il deviendra éternel\)/.test(d.textContent.trim())),
+  ].filter(Boolean);
+  for (const a of anchors) {
+    if (a.nextElementSibling?.classList.contains('dm-eternal')) continue;
+    const box = document.createElement('div');
+    box.className = 'dm-eternal';
+    box.style.cssText = 'margin:6px 0;border:1px solid #4a90c2;border-radius:10px;background:#12202b;color:#d8e8f4;font:12px/1.45 system-ui,sans-serif;padding:6px 9px';
+    box.innerHTML = '<button type="button" style="all:unset;cursor:pointer;font-weight:700;color:#8fd0ff">💡 Quel objet rendre éternel ? (5 conseils Autopilot-DM)</button><div data-k="list"></div>';
+    a.after(box);
+    box.firstElementChild.addEventListener('click', async () => {
+      const list = box.querySelector('[data-k="list"]');
+      if (list.dataset.on) { list.innerHTML = ''; delete list.dataset.on; return; }
+      list.dataset.on = '1';
+      list.textContent = 'Calcul…';
+      try {
+        const adv = await eternalAdvice();
+        const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+        list.innerHTML = `<div style="color:#9db8cc;margin:4px 0">Il passe en Rayonnant +5 quel que soit l’exemplaire choisi : garde le moins fusionné. Gain = stats en plus par rapport à ton meilleur exemplaire (poids des runes), bonus aux objets rares — un Dofus plafonne sinon au Rayonnant +2 et prend ici ×2.</div>`
+          + (adv.map((c, i) => `<div style="display:flex;gap:8px;align-items:center;padding:4px 0;border-top:1px solid #24394a">
+            <b style="width:14px">${i + 1}.</b>${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:30px;height:30px;object-fit:contain">` : ''}
+            <span style="flex:1"><b class="rarity-${+c.rarity || 0} rarity-text">${esc(c.name)}</b> <span style="color:#9db8cc">niv. ${c.lvl ?? '?'}${c.worn ? ' · porté' : ''} · ${fusionName(c.best)} → ${c.type === 'dofus' ? 'éternel (stats ×2)' : 'Rayonnant +5'}${c.low < c.best ? ` · choisis l’exemplaire ${fusionName(c.low)}` : ''}</span>
+            <br><span style="color:#6fcf7a">${c.diff.map(([k, d]) => `+${Math.round(d).toLocaleString('fr-FR')} ${esc(STAT_LABELS[k] || k)}`).join(' · ')}</span></span>
+            <span style="color:#ffd76a;white-space:nowrap" title="Gain en points de rune (avant prestige et forge)">+${Math.round(c.gain).toLocaleString('fr-FR')} pts</span></div>`).join('')
+            || '<div>Aucun objet à conseiller.</div>');
+      } catch (e) { list.textContent = `❌ ${e.message}`; }
+    });
+  }
 }

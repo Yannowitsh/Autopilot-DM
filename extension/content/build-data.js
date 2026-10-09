@@ -380,8 +380,10 @@ async function fetchCharSheet() {
       save({ setTiers: known });
     }
   } catch (e) { DM.log(`fiche : panoplies illisibles (${e.message})`); }
+  // objets éternels (un par Prestige) : { prestige, n, fusion } — Rayonnant +5 à vie, jamais rabaissés par le tier simulé
+  const eternal = (res(info.eternal) || []).map(res).filter((e) => e?.n);
   return { level: +info.level || 1, prestige: +info.prestige || 0, forge, forgePct: forgeBonusPct(forge), base, bonus, tiers, pointsFree, capital,
-    pv: tile('PV'), pa: tile('PA'), crit: tile('% Critique'), sets };
+    pv: tile('PV'), pa: tile('PA'), crit: tile('% Critique'), sets, eternal, ascensionBest: +info.ascensionBest || 0 };
 }
 
 // Signature de dégâts d'une carte : par élément, base moyenne cumulée normale (B) et critique (BC), nombre de coups

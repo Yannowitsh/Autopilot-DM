@@ -7,7 +7,7 @@
 //   prev: { mode, huntZone, huntZoneName, huntGroup }, startedAt }
 // Le pilote passe en mode Chasse sur la zone la plus rentable, n'attaque que les groupes contenant un monstre qui lâche
 // un objet voulu, compte les objets reçus (butin de fin de combat) et change de zone quand celle-ci n'a plus rien à donner.
-// Copies : T1 = 1 exemplaire, T2 = 3, T3 = 9, T4 = 27, T5 (Rayonnant) = 81 (fusion 3 → 1).
+// Copies : fusionCopies (autosell.js) — T1 = 1, T2 = 3, Rayonnant = 9, Rayonnant +1 à +5 = 18, 27, 45, 63, 81.
 const DROP_MAX_DEFEATS = 5;
 const dropOn = () => !!cfg.dropRun?.active;
 const dropLeft = (run = cfg.dropRun) => (run?.items || []).filter((it) => it.got < it.need);
@@ -110,8 +110,8 @@ async function dropSyncInventory(force = false) {
   let st;
   try { st = await fetchEquipState(); } catch (e) { DM.log(`farm de drop : inventaire illisible (${e.message})`); return; }
   const owned = new Map();
-  for (const e of st.entries) owned.set(e.id, (owned.get(e.id) || 0) + e.qty * 3 ** (e.fusion || 0));
-  for (const s of st.slots) if (s.cur) owned.set(s.cur.id, (owned.get(s.cur.id) || 0) + 3 ** (s.cur.fusion || 0));
+  for (const e of st.entries) owned.set(e.id, (owned.get(e.id) || 0) + e.qty * fusionCopies(e.fusion));
+  for (const s of st.slots) if (s.cur) owned.set(s.cur.id, (owned.get(s.cur.id) || 0) + fusionCopies(s.cur.fusion));
   const cur = cfg.dropRun;
   if (!cur?.active) return;
   const items = cur.items.map((it) => {
@@ -145,7 +145,7 @@ function dropOnRewards(rewards, key) {
   for (const r of rewards.items) {
     const it = run.items.find((x) => x.id === r.id && x.got < x.need);
     if (!it) continue;
-    it.got = Math.min(it.need, it.got + 3 ** (+r.f || 0));
+    it.got = Math.min(it.need, it.got + fusionCopies(+r.f || 0));
     got.push(it);
   }
   if (!got.length) return;
@@ -180,7 +180,7 @@ async function startDropFarm(items, zoneNames) {
   if (sampleOn()) await sampleStop('remplacé par 🐉 Farm de drop');
   const run = {
     active: true, startedAt: Date.now(), syncAt: Date.now(), zoneNames, tried: [], skipped: [], zone: null,
-    items: items.map((it) => ({ ...it, need: it.need ?? 3 ** (it.tier - 1), got: 0 })),
+    items: items.map((it) => ({ ...it, need: it.need ?? tierNeed(it.tier), got: 0 })),
     prev: dropOn() ? cfg.dropRun.prev : { mode: cfg.mode, huntZone: cfg.huntZone, huntZoneName: cfg.huntZoneName, huntGroup: cfg.huntGroup },
   };
   if (!dropZones(run).length) throw new Error('aucune zone de chasse connue pour ces objets');
@@ -192,6 +192,25 @@ async function startDropFarm(items, zoneNames) {
 // Fenêtre « 🐉 Aller dropper » : objets à looter du build (à cocher, rien par défaut) → liste de courses en dessous,
 // avec le tier voulu pour chacun (retenu d'une fois sur l'autre).
 const DROP_TIERS_KEY = 'dmDropTiers';
+// Tier voulu = fusion + 1 : 1 = T1, 2 = T2, 3 = Rayonnant, 4 à 8 = Rayonnant +1 à +5. Avant 2.2.4, 4 = T4 (27 ex.) et
+// 5 = T5 Rayonnant (81 ex.) : migrés au même nombre d'exemplaires (Rayonnant +2, Rayonnant +5).
+const tierNeed = (tier) => fusionCopies((+tier || 1) - 1);
+function dropTiers() {
+  let t = {};
+  try { t = JSON.parse(localStorage.getItem(DROP_TIERS_KEY) || '{}'); } catch { return t; }
+  try {
+    if (localStorage.getItem(`${DROP_TIERS_KEY}V`) !== '2') {
+      for (const k in t) t[k] = { 4: 5, 5: 8 }[t[k]] || t[k];
+      localStorage.setItem(DROP_TIERS_KEY, JSON.stringify(t));
+      localStorage.setItem(`${DROP_TIERS_KEY}V`, '2');
+    }
+  } catch { /* stockage indisponible */ }
+  return t;
+}
+const saveDropTiers = (t) => { try { localStorage.setItem(DROP_TIERS_KEY, JSON.stringify(t)); } catch { /* stockage indisponible */ } };
+// options d'un <select> de tier (un Dofus s'arrête au Rayonnant +2, sauf éternel)
+const tierOptions = (sel, type = null) => [...Array(fusionCap(type) + 1).keys()].map((f) => f + 1)
+  .map((n) => `<option value="${n}"${n === sel ? ' selected' : ''}>${fusionName(n - 1)} (${fusionCopies(n - 1)} ex.)</option>`).join('');
 // Candidats : objets à looter du build (r, facultatif) puis objets favoris ❤️ ; sources lues dans le bestiaire.
 async function openDropFarm(r = null) {
   document.querySelector('.dm-drop-farm')?.remove();
@@ -199,12 +218,12 @@ async function openDropFarm(r = null) {
   let b;
   try { b = await fetchBestiary(); } catch (e) { tradeToast(`🐉 Bestiaire illisible : ${e.message}`, 'err'); return; }
   const zones = b.zones || {};
-  // exemplaires possédés (inventaire + porté), en équivalents T1 : un objet en tier n vaut 3^(n−1) exemplaires
+  // exemplaires possédés (inventaire + porté), en équivalents T1 (fusionCopies : Rayonnant = 9, Rayonnant +5 = 81)
   const owned = new Map();
   try {
     const st = await fetchEquipState();
-    for (const e of st.entries) owned.set(e.id, (owned.get(e.id) || 0) + e.qty * 3 ** (e.fusion || 0));
-    for (const s of st.slots) if (s.cur) owned.set(s.cur.id, (owned.get(s.cur.id) || 0) + 3 ** (s.cur.fusion || 0));
+    for (const e of st.entries) owned.set(e.id, (owned.get(e.id) || 0) + e.qty * fusionCopies(e.fusion));
+    for (const s of st.slots) if (s.cur) owned.set(s.cur.id, (owned.get(s.cur.id) || 0) + fusionCopies(s.cur.fusion));
   } catch (e) { DM.log(`aller dropper : inventaire illisible (${e.message}) — objets possédés non déduits`); }
   const cands = [
     // tous les objets du build proposé (à looter ou déjà possédés : farmer un objet qu'on a fait monter son tier)
@@ -217,11 +236,10 @@ async function openDropFarm(r = null) {
     const srcs = (b.drops[c.id] || []).filter(([, , , , zs]) => zs?.length).map(([m, , , p, z]) => ({ m, p: +p || 0, z }));
     return { c, srcs, best: Math.max(0, ...srcs.map((s) => s.p)), have: owned.get(c.id) || 0 };
   });
-  // exemplaires encore à farmer pour le tier voulu (T1 = 1, T2 = 3, T3 = 9… moins ceux qu'on a déjà)
-  const needOf = (i) => Math.max(0, 3 ** (tierOf(i) - 1) - items[i].have);
-  const haveTxt = (n) => (n ? `possédé : ${n} ex.${n >= 3 ? ` (≈ T${Math.floor(Math.log(n) / Math.log(3) + 1e-9) + 1})` : ''}` : '');
-  let tiers = {};
-  try { tiers = JSON.parse(localStorage.getItem(DROP_TIERS_KEY) || '{}'); } catch { /* stockage indisponible */ }
+  // exemplaires encore à farmer pour le tier voulu (T1 = 1, T2 = 3, Rayonnant = 9, +1 = 18… moins ceux qu'on a déjà)
+  const needOf = (i) => Math.max(0, tierNeed(tierOf(i)) - items[i].have);
+  const haveTxt = (n) => (n ? `possédé : ${n} ex.${n >= 3 ? ` (≈ ${fusionName([...Array(FUSION.max + 1).keys()].filter((f) => fusionCopies(f) <= n).at(-1))})` : ''}` : '');
+  const tiers = dropTiers();
   // liste de courses : celle gardée (cfg.dropCart), modifiée au fil des coches
   const inCart = new Set((cfg.dropCart || []).map((c) => c.id));
   const cart = new Set(items.map((x, i) => (inCart.has(x.c.id) && x.srcs.length ? i : -1)).filter((i) => i >= 0));
@@ -236,9 +254,9 @@ async function openDropFarm(r = null) {
   const row = 'display:flex;align-items:center;gap:8px;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:5px 8px';
   const pct = (x) => `${(x >= 1 ? x.toFixed(1) : x.toFixed(2)).replace('.', ',')} %`;
   const icon = (c) => (c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:26px;height:26px;object-fit:contain">` : '');
-  const tierOf = (i) => tiers[items[i].c.id] || 1;
+  const tierOf = (i) => tiers[items[i].c.id] || (r?.simTier ? r.simTier + 1 : 1);   // par défaut : le tier simulé du build
   ov.innerHTML = `<div style="width:min(680px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
-    <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🐉 Aller dropper${DM.tip('Coche les objets à aller chercher : ils passent dans la liste de courses, où tu choisis le tier voulu. Le pilote passe ensuite en mode Chasse : il va dans la zone la plus rentable, n’attaque que les groupes qui contiennent un monstre qui lâche un objet de la liste, compte les objets reçus en fin de combat et change de zone quand celle-ci n’a plus rien à donner (ou aucun groupe utile). 5 défaites d’affilée dans une zone : elle est abandonnée (notification) et on passe à la suivante. Plus aucune zone possible : arrêt + notification. Tout est droppé : arrêt + notification. Le mode de combat (Auto du jeu / par poids) est celui du menu 🤖. Tier : T1 = 1 exemplaire, T2 = 3, T3 = 9, T4 = 27, T5 (Rayonnant) = 81 (fusion 3 → 1).')}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
+    <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">🐉 Aller dropper${DM.tip('Coche les objets à aller chercher : ils passent dans la liste de courses, où tu choisis le tier voulu. Le pilote passe ensuite en mode Chasse : il va dans la zone la plus rentable, n’attaque que les groupes qui contiennent un monstre qui lâche un objet de la liste, compte les objets reçus en fin de combat et change de zone quand celle-ci n’a plus rien à donner (ou aucun groupe utile). 5 défaites d’affilée dans une zone : elle est abandonnée (notification) et on passe à la suivante. Plus aucune zone possible : arrêt + notification. Tout est droppé : arrêt + notification. Le mode de combat (Auto du jeu / par poids) est celui du menu 🤖. Tier : T1 = 1 exemplaire, T2 = 3, Rayonnant = 9, puis l’objet + des Rayonnants : +1 = 18, +2 = 27, +3 = 45, +4 = 63, +5 = 81.')}</b><button data-a="x" style="${btn};background:transparent">✕</button></div>
     <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#b9a98c"><span style="flex:1">Objets du build et objets favoris ❤️ — coche ceux à farmer (les exemplaires que tu as déjà sont déduits) :</span>
       <button data-a="all" style="${btn};padding:2px 8px">☑ Tout sélectionner</button><button data-a="none" style="${btn};padding:2px 8px">☐ Tout désélectionner</button></div>
     <div style="overflow-y:auto;max-height:38vh;display:flex;flex-direction:column;gap:4px">${items.map(({ c, srcs, best, have }, i) => `<label style="${row};cursor:${srcs.length ? 'pointer' : 'default'};${srcs.length ? '' : 'opacity:.55'}">
@@ -250,7 +268,7 @@ async function openDropFarm(r = null) {
     </label>`).join('') || '<div style="color:#b9a98c">Aucun objet : lance l’optimiseur (ses objets apparaissent ici) ou ajoute des favoris ❤️ avec le cœur ♡.</div>'}</div>
     <div style="border-top:1px solid #3a3024;padding-top:8px;display:flex;flex-direction:column;gap:4px">
       <div style="display:flex;align-items:center;gap:6px"><b style="font-size:13px;flex:1">🛒 Liste de courses</b>
-        <label style="font-size:12px;color:#b9a98c">Tier pour toute la liste <select data-a="tierAll" style="${inp}"><option value="">—</option>${[1, 2, 3, 4, 5].map((n) => `<option value="${n}">T${n}${n === 5 ? ' (Rayonnant)' : ''}</option>`).join('')}</select></label></div>
+        <label style="font-size:12px;color:#b9a98c">Tier pour toute la liste <select data-a="tierAll" style="${inp}"><option value="">—</option>${tierOptions(0)}</select></label></div>
       <div data-k="cart" style="overflow-y:auto;max-height:30vh;display:flex;flex-direction:column;gap:4px"></div>
     </div>
     <div style="display:flex;gap:8px;align-items:center"><span data-k="msg" style="flex:1;font-size:12px;color:#b9a98c"></span><button data-a="go" style="${btn};background:#8a5a1a">🐉 Lancer le farm</button></div></div>`;
@@ -262,7 +280,7 @@ async function openDropFarm(r = null) {
     $('[data-k="cart"]').innerHTML = list.map((i) => {
       const { c, best, have } = items[i], t = tierOf(i), need = needOf(i);
       return `<div style="${row};${need ? '' : 'opacity:.6'}">${icon(c)}<b style="flex:1;min-width:0">${esc(c.name)}${have ? `<br><span style="font-weight:400;font-size:11px;color:#6fcf7a">🎒 ${haveTxt(have)}</span>` : ''}</b>
-        <select data-t="${i}" style="${inp}">${[1, 2, 3, 4, 5].map((n) => `<option value="${n}"${n === t ? ' selected' : ''}>T${n}${n === 5 ? ' (Rayonnant)' : ''}</option>`).join('')}</select>
+        <select data-t="${i}" style="${inp}">${tierOptions(t, b.items?.find?.((x) => x.id === c.id)?.s)}</select>
         <span style="color:#b9a98c;font-size:12px;width:140px;text-align:right">${!need ? '✔ déjà atteint' : `${need} ex. à farmer · ${best > 0 ? `~${Math.ceil(need / (best / 100)).toLocaleString('fr-FR')} combats` : 'chance inconnue'}`}</span>
         <button data-rm="${i}" style="${btn};padding:2px 7px" title="Retirer de la liste">✕</button></div>`;
     }).join('') || '<div style="color:#8a7d66;font-size:12px">Vide : coche des objets au-dessus.</div>';
@@ -281,13 +299,13 @@ async function openDropFarm(r = null) {
     if (t.dataset.i != null) { if (t.checked) cart.add(+t.dataset.i); else cart.delete(+t.dataset.i); saveCart(); renderCart(); }
     if (t.dataset.a === 'tierAll' && t.value) {   // tier de toute la liste ; chaque ligne reste modifiable ensuite
       for (const i of cart) tiers[items[i].c.id] = +t.value;
-      try { localStorage.setItem(DROP_TIERS_KEY, JSON.stringify(tiers)); } catch { /* idem */ }
+      saveDropTiers(tiers);
       t.value = '';
       renderCart();
     }
     if (t.dataset.t != null) {
       tiers[items[+t.dataset.t].c.id] = +t.value;
-      try { localStorage.setItem(DROP_TIERS_KEY, JSON.stringify(tiers)); } catch { /* idem */ }
+      saveDropTiers(tiers);
       renderCart();
     }
   });

@@ -224,10 +224,10 @@ async function openPicker() {
   const NO_FILTERS = { q: '', rarity: '', slot: '', tier: '', min: '', max: '', hideBound: true, hideLocked: true };
   // filtre de fusion : '' tous · radiant = Rayonnants (tier max) · fused = fusionnés (Tiers 2 et +) · base = sans fusion · notRadiant
   const TIER_FILTERS = {
-    radiant: (fu) => fu >= FUSION_MAX,
+    radiant: (fu) => isRadiant(fu),
     fused: (fu) => fu > 0,
     base: (fu) => !fu,
-    notRadiant: (fu) => fu < FUSION_MAX,
+    notRadiant: (fu) => !isRadiant(fu),
   };
   let f = { ...NO_FILTERS };
   try { f = { ...f, ...JSON.parse(localStorage.getItem(PICK_FILTERS_KEY) || '{}'), q: '' }; } catch { /* stockage indisponible */ }
@@ -243,7 +243,7 @@ async function openPicker() {
         <select data-f="slot" style="${inp}"><option value="">Tous emplacements</option>${slots.map((s) => `<option value="${s}">${esc(SLOT_NAMES[s] || s)}</option>`).join('')}</select>
         <select data-f="tier" style="${inp}" data-tip="Filtrer selon le tier de fusion : Rayonnants (tier maximum ★), objets fusionnés (Tiers 2 et plus), objets sans fusion, ou tout sauf les Rayonnants.">
           <option value="">Tous tiers</option>
-          <option value="radiant">★ Rayonnants (${rows.filter((r) => r.fusion >= FUSION_MAX).length})</option>
+          <option value="radiant">★ Rayonnants (${rows.filter((r) => isRadiant(r.fusion)).length})</option>
           <option value="fused">Fusionnés (Tiers 2+)</option>
           <option value="base">Sans fusion</option>
           <option value="notRadiant">Hors Rayonnants</option>
@@ -309,7 +309,7 @@ async function openPicker() {
     lastIdx = null;
     list.innerHTML = visible.map((r, i) => {
       const on = sel.has(r.key);
-      const tier = r.fusion >= FUSION_MAX ? ' <span style="color:#ffd76a;font-size:11px;font-weight:800">· ★ Rayonnant</span>'
+      const tier = isRadiant(r.fusion) ? ` <span style="color:#ffd76a;font-size:11px;font-weight:800">· ★ ${fusionName(r.fusion)}</span>`
         : r.fusion ? ` <span style="color:#e2b04a;font-size:11px">· Tiers ${r.fusion + 1}</span>` : '';
       const note = r.bound ? `<span style="color:#7cb7e8;font-size:11px">lié jusqu’à ${esc(new Date(r.boundUntil).toLocaleString('fr-FR', { weekday: 'short', hour: '2-digit', minute: '2-digit' }))}</span>` : r.locked ? '<span style="font-size:11px">🔒</span>' : '';
       const qty = r.qty > 1 && !r.bound
@@ -456,6 +456,7 @@ function scanModules() {
   scanManualWeightsButton();
   scanAscPanel();
   scanDeckButton();
+  scanPrestigeAdvice();
 }
 
 let lockScanQueued = false;
