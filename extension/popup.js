@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 const NUM = ['minEnergy', 'resumeEnergy', 'delayMin', 'delayMax', 'fastFightMinSec', 'huntRetries', 'errorReloadSec', 'reloadGapSec', 'updateCheckMin', 'equipCheckMin'];
-const BOOL = ['sellKeepAbove', 'bossAuto', 'fastFight'];
+const BOOL = ['sellKeepAbove', 'bossAuto', 'fastFight', 'combatUpload'];
 
 async function render() {
   const s = await DM.getAll();
@@ -219,6 +219,43 @@ $('openRepo').onclick = () => chrome.tabs.create({ url: DM.REPO_URL });
 loadForm();
 render();
 
+// ---------- Synchro des mesures de rentabilité (Worker Cloudflare) ----------
+async function renderSync() {
+  const s = await DM.getAll();
+  if (document.activeElement !== $('syncUrl')) $('syncUrl').value = s.syncUrl || '';
+  if (document.activeElement !== $('syncKey')) $('syncKey').value = s.syncKey || '';
+  const st = s.syncStatus;
+  const shared = Object.values(s.farmShared || {}).reduce((n, a) => n + a.length, 0);
+  $('syncMsg').textContent = !s.syncUrl ? 'Non configurée.'
+    : !st ? 'Jamais synchronisée.'
+    : `${st.ok ? '✔' : `⚠️ ${st.error} —`} ${DM.hhmm(st.at)} · ${shared} combat(s) partagé(s) de ${Object.keys(s.farmShared || {}).length} joueur(s)`
+      + (st.sent || st.got ? ` · dernier passage : ${st.sent} envoyé(s), ${st.got} reçu(s)` : '');
+  const cs = s.combatStatus, q = (s.combatQueue || []).length;
+  $('combatMsg').textContent = s.combatUpload === false ? '' : [cs && `${cs.ok ? '✔' : `⚠️ ${cs.error} —`} ${DM.hhmm(cs.at)} · ${cs.total} combat(s) enregistré(s)`,
+    q && `${q} en attente${s.syncUrl && s.syncKey ? '' : ' (adresse + clé à renseigner)'}`].filter(Boolean).join(' · ');
+}
+$('syncNow').onclick = async () => {
+  const syncUrl = $('syncUrl').value.trim().replace(/\/+$/, '');
+  const syncKey = $('syncKey').value.trim();
+  if (syncUrl && !/^https:\/\/[^/]+$/.test(syncUrl)) { $('syncMsg').textContent = 'Adresse attendue : https://nom-du-worker… (sans chemin).'; return; }
+  // domaine perso (pas *.workers.dev) : autorisation à demander, depuis ce clic
+  if (syncUrl && !/\.workers\.dev$/.test(syncUrl) && !(await chrome.permissions.request({ origins: [`${syncUrl}/*`] }))) {
+    $('syncMsg').textContent = 'Autorisation refusée pour ce domaine.';
+    return;
+  }
+  const prev = await DM.getAll();
+  // autre Worker : on repart de zéro (curseur, envois, combats reçus)
+  const reset = syncUrl !== (prev.syncUrl || '') ? { syncSince: 0, syncPushed: {}, farmShared: {}, syncStatus: null } : {};
+  await chrome.storage.local.set({ syncUrl, syncKey, ...reset });
+  if (!syncUrl || !syncKey) return renderSync();
+  $('syncMsg').textContent = 'Synchronisation…';
+  await chrome.runtime.sendMessage({ type: 'farmSync' });
+  renderSync();
+};
+$('combatUpload').onchange = () => chrome.storage.local.set({ combatUpload: $('combatUpload').checked });
+chrome.storage.onChanged.addListener((ch) => { if (ch.syncStatus || ch.farmShared || ch.combatStatus || ch.combatQueue) renderSync(); });
+renderSync();
+
 // ---------- Journal de débogage ----------
 async function renderLog() {
   const { debugLog = [] } = await chrome.storage.local.get('debugLog');
@@ -228,7 +265,7 @@ $('logCopy').onclick = async () => {
   const { debugLog = [] } = await chrome.storage.local.get('debugLog');
   const s = await DM.getAll();
   // contexte utile, sans le webhook Discord ni le journal lui-même
-  const { webhookUrl, debugLog: _, huntZones, wantedScan, lockedItems, tradeQueues, tradeHistory, tradeLastRun, buildSaves, buildFavs, ...state } = s;
+  const { webhookUrl, debugLog: _, huntZones, wantedScan, lockedItems, lockState, farmLog, farmShared, syncKey, syncPushed, combatQueue, tradeQueues, tradeHistory, tradeLastRun, buildSaves, buildFavs, ...state } = s;
   await navigator.clipboard.writeText(`version ${chrome.runtime.getManifest().version}\nétat ${JSON.stringify(state)}\n\n${debugLog.join('\n')}`);
   $('logInfo').textContent = `Copié (${debugLog.length} lignes) : colle-le dans la discussion.`;
 };

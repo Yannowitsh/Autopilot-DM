@@ -1,0 +1,13 @@
+{
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "dm-sync",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "dm-sync",
+      "database_id": "1afdcdf6-f76e-42c2-8d9c-8922813bd362"
+    }
+  ]
+}

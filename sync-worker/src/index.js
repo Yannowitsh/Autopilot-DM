@@ -1,0 +1,151 @@
+// Autopilot-DM — synchro des mesures de « Rentabilité des zones » entre joueurs (Worker Cloudflare + D1).
+// Chaque combat de chasse gagné est envoyé une fois (clé unique : personnage + horodatage) ; chacun récupère ceux des
+// autres depuis son dernier curseur (seq). Accès : clé partagée (secret SYNC_KEY) dans l'en-tête Authorization.
+//   POST /fights  { player, fights: [rec…] }  → { ok, added }
+//   GET  /fights?since=<seq>                  → { fights: [{ p, r }], next }
+//   GET  /fights/counts                       → { zones: { zone: { n, sizes: { nb de monstres: combats } } } }  tous joueurs
+//   POST /combats { player, combat: rec }     → { ok, added }  combat complet (stats, build, journal) pour l'analyse des dégâts
+//   GET  /combats?since=<seq>&limit=<n>&full=1 → { combats: [{ seq, p, at, kind, status, r? }], next }  (r seulement avec full=1)
+//   GET  /asc?floor=<n>                       → { rows: [{ p, at, status, d }] }  tentatives d'Ascension à cet étage (mécaniques vues)
+//   GET  /health                              → ok (sans clé)
+
+const PAGE = 1000;          // combats renvoyés au plus par requête
+const PUSH_MAX = 500;       // combats acceptés au plus par envoi
+const REC_MAX = 4096;       // taille max d'un combat (JSON)
+const PLAYER_RE = /^[^\u0000-\u001f]{1,64}$/;
+
+let ready = false;
+async function init(db) {
+  if (ready) return;
+  await db.exec('CREATE TABLE IF NOT EXISTS fights (seq INTEGER PRIMARY KEY AUTOINCREMENT, player TEXT NOT NULL, at INTEGER NOT NULL, rec TEXT NOT NULL, UNIQUE(player, at))');
+  await db.exec('CREATE TABLE IF NOT EXISTS combats (seq INTEGER PRIMARY KEY AUTOINCREMENT, player TEXT NOT NULL, id TEXT NOT NULL, at INTEGER NOT NULL, kind TEXT, status TEXT, rec TEXT NOT NULL, UNIQUE(player, id))');
+  await db.exec('CREATE TABLE IF NOT EXISTS asc_seen (floor INTEGER NOT NULL, player TEXT NOT NULL, at INTEGER NOT NULL, status TEXT, data TEXT NOT NULL, UNIQUE(player, at))');
+  await db.exec('CREATE INDEX IF NOT EXISTS asc_seen_floor ON asc_seen (floor, at)');
+  ready = true;
+}
+
+const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'Content-Type': 'application/json' } });
+
+function authorized(req, key) {
+  const got = new TextEncoder().encode((req.headers.get('Authorization') || '').replace(/^Bearer\s+/i, ''));
+  const want = new TextEncoder().encode(key || '');
+  return want.byteLength > 0 && got.byteLength === want.byteLength && crypto.subtle.timingSafeEqual(got, want);
+}
+
+async function push(req, db) {
+  const body = await req.json().catch(() => null);
+  const player = typeof body?.player === 'string' ? body.player.trim() : '';
+  if (!PLAYER_RE.test(player) || !Array.isArray(body.fights)) return json({ error: 'player / fights attendus' }, 400);
+  if (body.fights.length > PUSH_MAX) return json({ error: `${PUSH_MAX} combats au plus par envoi` }, 413);
+  const stmt = db.prepare('INSERT OR IGNORE INTO fights (player, at, rec) VALUES (?, ?, ?)');
+  const rows = [];
+  for (const r of body.fights) {
+    const at = Number(r?.at);
+    const rec = JSON.stringify(r);
+    if (!Number.isSafeInteger(at) || !Array.isArray(r.m) || rec.length > REC_MAX) continue;
+    rows.push(stmt.bind(player, at, rec));
+  }
+  if (!rows.length) return json({ ok: true, added: 0 });
+  const res = await db.batch(rows);
+  return json({ ok: true, added: res.reduce((s, x) => s + (x.meta?.changes || 0), 0) });
+}
+
+// Combats mesurés par zone et par nombre de monstres, tous joueurs (échantillonnage des zones, sans plafond local).
+async function counts(db) {
+  const { results } = await db.prepare("SELECT json_extract(rec, '$.z') AS z, json_array_length(rec, '$.m') AS k, COUNT(*) AS n FROM fights GROUP BY z, k").all();
+  const zones = {};
+  for (const { z, k, n } of results) {
+    if (z == null) continue;
+    const e = zones[z] ||= { n: 0, sizes: {} };
+    e.n += n;
+    e.sizes[k] = n;
+  }
+  return json({ zones });
+}
+
+async function pull(url, db) {
+  const since = Math.max(0, Number(url.searchParams.get('since')) || 0);
+  const { results } = await db.prepare('SELECT seq, player, rec FROM fights WHERE seq > ? ORDER BY seq LIMIT ?').bind(since, PAGE).all();
+  return json({ fights: results.map((x) => ({ p: x.player, r: JSON.parse(x.rec) })), next: results.length ? results[results.length - 1].seq : since });
+}
+
+const COMBAT_MAX = 1500000;   // taille max d'un combat (JSON) ; D1 accepte 2 Mo par valeur
+async function pushCombat(req, db) {
+  const body = await req.json().catch(() => null);
+  const player = typeof body?.player === 'string' ? body.player.trim() : '';
+  const c = body?.combat;
+  const rec = JSON.stringify(c ?? null);
+  if (!PLAYER_RE.test(player) || typeof c?.id !== 'string' || !/^[0-9a-z]{1,16}$/.test(c.id) || !Number.isSafeInteger(Number(c.at)) || !c.state) {
+    return json({ error: 'player / combat { id, at, state } attendus' }, 400);
+  }
+  if (rec.length > COMBAT_MAX) return json({ error: 'combat trop gros' }, 413);
+  const res = await db.prepare('INSERT OR IGNORE INTO combats (player, id, at, kind, status, rec) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(player, c.id, Number(c.at), String(c.kind ?? ''), String(c.status ?? ''), rec).run();
+  // Ascension : résumé de la tentative (étage, boss, mécaniques vues, cause d'une défaite), partagé par étage
+  const a = c.asc;
+  if (a && Number.isSafeInteger(Number(a.floor)) && Number(a.floor) > 0) {
+    const data = JSON.stringify({ floor: a.floor, diff: a.diff ?? null, engine: a.engine ?? null, rounds: a.rounds ?? null, bosses: a.bosses ?? [], seen: a.seen ?? [], cause: a.cause ?? null });
+    if (data.length < 20000) await db.prepare('INSERT OR IGNORE INTO asc_seen (floor, player, at, status, data) VALUES (?, ?, ?, ?, ?)')
+      .bind(Number(a.floor), player, Number(c.at), String(c.status ?? ''), data).run();
+  }
+  return json({ ok: true, added: res.meta?.changes || 0 });
+}
+
+async function pullCombats(url, db) {
+  const since = Math.max(0, Number(url.searchParams.get('since')) || 0);
+  const full = url.searchParams.get('full') === '1';
+  const limit = Math.min(full ? 20 : 500, Math.max(1, Number(url.searchParams.get('limit')) || 100));
+  const { results } = await db.prepare(`SELECT seq, player, at, kind, status${full ? ', rec' : ''} FROM combats WHERE seq > ? ORDER BY seq LIMIT ?`)
+    .bind(since, limit).all();
+  return json({ combats: results.map((x) => ({ seq: x.seq, p: x.player, at: x.at, kind: x.kind, status: x.status, ...(full ? { r: JSON.parse(x.rec) } : {}) })),
+    next: results.length ? results[results.length - 1].seq : since });
+}
+
+// Drops des combats de chasse gagnés (tous joueurs), en version compacte, pour les statistiques de drop par monstre
+// (👑 Drops d'archimonstres de l'extension) : m = [[nom, niveau, grade]], it = [[id, nom, icône, niveau, fusion, rareté, type]],
+// pr / ch = Prospection brute et Chance du joueur (prospection totale = 100 + pr + floor(ch / 10)).
+const DROPS_PAGE = 1000;
+async function pullDrops(url, db) {
+  const since = Math.max(0, Number(url.searchParams.get('since')) || 0);
+  const { results } = await db.prepare(`SELECT c.seq, c.player, c.at,
+      (SELECT json_group_array(json_array(json_extract(f.value, '$.name'), json_extract(f.value, '$.level'), json_extract(f.value, '$.grade')))
+        FROM json_each(c.rec, '$.state.fighters') f WHERE json_extract(f.value, '$.team') = 1) AS m,
+      (SELECT json_group_array(json_array(json_extract(i.value, '$.id'), json_extract(i.value, '$.n'), json_extract(i.value, '$.icon'),
+        json_extract(i.value, '$.lvl'), json_extract(i.value, '$.f'), json_extract(i.value, '$.r'), json_extract(i.value, '$.s')))
+        FROM json_each(c.rec, '$.rewards.items') i) AS it,
+      json_extract(c.rec, '$.state.fighters.p.stats.prospection') AS pr, json_extract(c.rec, '$.state.fighters.p.stats.chance') AS ch,
+      json_extract(c.rec, '$.rewards.kamas') AS k, json_extract(c.rec, '$.rewards.card.n') AS card
+    FROM combats c WHERE c.seq > ? AND c.kind = 'pve' AND c.status = 'won' ORDER BY c.seq LIMIT ?`).bind(since, DROPS_PAGE).all();
+  const last = await db.prepare('SELECT MAX(seq) AS s FROM combats').first();
+  return json({ drops: results.map((x) => ({ seq: x.seq, p: x.player, at: x.at, m: JSON.parse(x.m || '[]'), it: JSON.parse(x.it || '[]'),
+    pr: x.pr || 0, ch: x.ch || 0, k: x.k || 0, card: x.card || null })),
+    next: results.length === DROPS_PAGE ? results[results.length - 1].seq : Math.max(since, last?.s || 0) });
+}
+
+async function pullAsc(url, db) {
+  const floor = Number(url.searchParams.get('floor'));
+  if (!Number.isSafeInteger(floor) || floor <= 0) return json({ error: 'floor attendu' }, 400);
+  const { results } = await db.prepare('SELECT player, at, status, data FROM asc_seen WHERE floor = ? ORDER BY at DESC LIMIT 30').bind(floor).all();
+  return json({ rows: results.map((x) => ({ p: x.player, at: x.at, status: x.status, d: JSON.parse(x.data) })) });
+}
+
+export default {
+  async fetch(req, env) {
+    const url = new URL(req.url);
+    if (url.pathname === '/health') return new Response('ok');
+    if (!['/fights', '/fights/counts', '/combats', '/asc', '/drops'].includes(url.pathname)) return json({ error: 'introuvable' }, 404);
+    if (!authorized(req, env.SYNC_KEY)) return json({ error: 'clé invalide' }, 401);
+    await init(env.DB);
+    if (url.pathname === '/fights/counts') return req.method === 'GET' ? counts(env.DB) : json({ error: 'méthode non gérée' }, 405);
+    if (url.pathname === '/asc') return req.method === 'GET' ? pullAsc(url, env.DB) : json({ error: 'méthode non gérée' }, 405);
+    if (url.pathname === '/drops') return req.method === 'GET' ? pullDrops(url, env.DB) : json({ error: 'méthode non gérée' }, 405);
+    if (url.pathname === '/combats') {
+      if (req.method === 'POST') return pushCombat(req, env.DB);
+      if (req.method === 'GET') return pullCombats(url, env.DB);
+      return json({ error: 'méthode non gérée' }, 405);
+    }
+    if (req.method === 'POST') return push(req, env.DB);
+    if (req.method === 'GET') return pull(url, env.DB);
+    return json({ error: 'méthode non gérée' }, 405);
+  },
+};

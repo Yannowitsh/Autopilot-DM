@@ -236,6 +236,139 @@ async function checkUpdate(force = false) {
   }
 }
 
+// ---------- Synchro des mesures de « Rentabilité des zones » (Worker Cloudflare partagé, voir sync-worker/) ----------
+// Envoie les combats de chasse de tes personnages (farmLog) pas encore envoyés (syncPushed : dernier `at` par perso),
+// puis reçoit ceux des autres joueurs depuis le curseur syncSince → farmShared[joueur] (jamais mélangés à farmLog).
+const SYNC_EVERY_MS = 5 * 60000;
+const SYNC_PUSH = 500;            // combats par envoi (limite du Worker)
+const SYNC_SHARED_MAX = 5000;     // combats gardés au plus par joueur partagé
+let syncing = false;
+
+async function farmSync(force = false) {
+  const s = await DM.getAll();
+  const url = (s.syncUrl || '').trim().replace(/\/+$/, '');
+  if (!url || !s.syncKey) return { ok: false, error: 'synchro non configurée (adresse + clé)' };
+  if (syncing || (!force && Date.now() - (s.syncStatus?.at || 0) < SYNC_EVERY_MS)) return { ok: true, skipped: true };
+  syncing = true;
+  const headers = { Authorization: `Bearer ${s.syncKey}`, 'Content-Type': 'application/json' };
+  let sent = 0, got = 0;
+  try {
+    const log = s.farmLog || {}, pushed = { ...(s.syncPushed || {}) };
+    for (const [p, recs] of Object.entries(log)) {
+      const todo = (recs || []).filter((r) => r.at > (pushed[p] || 0));
+      for (let i = 0; i < todo.length; i += SYNC_PUSH) {
+        const chunk = todo.slice(i, i + SYNC_PUSH);
+        const r = await DM.fetchT(`${url}/fights`, { method: 'POST', headers, body: JSON.stringify({ player: p, fights: chunk }) });
+        if (!r.ok) throw new Error(r.status === 401 ? 'clé refusée' : `envoi : HTTP ${r.status}`);
+        pushed[p] = chunk[chunk.length - 1].at;
+        sent += chunk.length;
+        await chrome.storage.local.set({ syncPushed: pushed });
+      }
+    }
+    const mine = new Set([...Object.keys(log), ...Object.keys(pushed)]);
+    const shared = { ...(s.farmShared || {}) };
+    let since = s.syncSince || 0;
+    for (let page = 0; page < 50; page++) {
+      const r = await DM.fetchT(`${url}/fights?since=${since}`, { headers, cache: 'no-store' });
+      if (!r.ok) throw new Error(r.status === 401 ? 'clé refusée' : `réception : HTTP ${r.status}`);
+      const { fights = [], next } = await r.json();
+      for (const { p, r: rec } of fights) {
+        if (mine.has(p) || !rec?.at || !Array.isArray(rec.m)) continue;
+        (shared[p] ||= []).push(rec);
+        got++;
+      }
+      if (!(next > since)) break;
+      since = next;
+    }
+    for (const p of Object.keys(shared)) {
+      if (mine.has(p)) { delete shared[p]; continue; }
+      shared[p] = shared[p].sort((a, b) => a.at - b.at).slice(-SYNC_SHARED_MAX);
+    }
+    // combats par zone, tous joueurs, sans plafond (🧪 échantillonnage) ; Worker d'avant 2.1 : pas de compteurs
+    let syncCounts = s.syncCounts || null;
+    try {
+      const r = await DM.fetchT(`${url}/fights/counts`, { headers, cache: 'no-store' });
+      if (r.ok) syncCounts = { at: Date.now(), zones: (await r.json()).zones || {} };
+    } catch (e) { DM.log(`synchro : compteurs par zone illisibles (${e.message})`); }
+    const syncStatus = { at: Date.now(), ok: true, sent, got, players: Object.keys(shared).length };
+    await chrome.storage.local.set({ farmShared: shared, syncSince: since, syncStatus, syncCounts });
+    return syncStatus;
+  } catch (e) {
+    const syncStatus = { at: Date.now(), ok: false, error: e.message, sent, got };
+    await chrome.storage.local.set({ syncStatus });
+    DM.log(`synchro : ${e.message}`);
+    return syncStatus;
+  } finally {
+    syncing = false;
+  }
+}
+
+// ---------- Enregistrement en ligne des combats (option combatUpload, même Worker et même clé que la synchro) ----------
+// Les onglets du jeu remettent chaque combat terminé (content/combatrec.js) ; file d'attente gardée ici jusqu'à l'envoi
+// (POST /combats), réessayée à chaque alarme. Sans adresse / clé de synchro : les combats restent en file (COMBAT_QUEUE_MAX).
+const COMBAT_QUEUE_MAX = 30;
+const COMBAT_REC_MAX = 1500000;   // taille max d'un combat (JSON), limite du Worker
+let combatChain = Promise.resolve();
+const combatLocked = (fn) => (combatChain = combatChain.then(fn, fn));
+
+function combatEnqueue(rec) {
+  return combatLocked(async () => {
+    const { combatQueue = [] } = await chrome.storage.local.get('combatQueue');
+    if (JSON.stringify(rec).length > COMBAT_REC_MAX) { DM.log(`combat en ligne : combat trop gros, ignoré (${rec.kind})`); return; }
+    if (!combatQueue.some((r) => r.id === rec.id)) combatQueue.push(rec);
+    await chrome.storage.local.set({ combatQueue: combatQueue.slice(-COMBAT_QUEUE_MAX) });
+  });
+}
+
+function combatPush() {
+  return combatLocked(async () => {
+    const s = await DM.getAll();
+    const queue = s.combatQueue || [];
+    if (!queue.length) return;
+    if (s.combatUpload === false) { await chrome.storage.local.set({ combatQueue: [] }); return; }
+    const url = (s.syncUrl || '').trim().replace(/\/+$/, '');
+    if (!url || !s.syncKey) return;
+    const headers = { Authorization: `Bearer ${s.syncKey}`, 'Content-Type': 'application/json' };
+    let sent = 0;
+    try {
+      for (const rec of queue) {
+        const r = await DM.fetchT(`${url}/combats`, { method: 'POST', headers, body: JSON.stringify({ player: rec.player || rec.acct || '?', combat: rec }) });
+        if (!r.ok) throw new Error(r.status === 401 ? 'clé refusée' : r.status === 404 ? 'Worker pas à jour (npx wrangler deploy)' : `HTTP ${r.status}`);
+        sent++;
+      }
+      await chrome.storage.local.set({ combatQueue: [], combatStatus: { at: Date.now(), ok: true, sent, total: (s.combatStatus?.total || 0) + sent } });
+    } catch (e) {
+      await chrome.storage.local.set({ combatQueue: queue.slice(sent),
+        combatStatus: { at: Date.now(), ok: false, error: e.message, sent, total: (s.combatStatus?.total || 0) + sent } });
+      DM.log(`combat en ligne : ${e.message}`);
+    }
+  });
+}
+
+// Tentatives d'Ascension partagées (Worker /asc) : mécaniques vues à un étage par tous les joueurs de la synchro.
+async function ascShared(floor) {
+  const s = await DM.getAll();
+  const url = (s.syncUrl || '').trim().replace(/\/+$/, '');
+  if (!url || !s.syncKey || !(+floor > 0)) return { ok: false, rows: [] };
+  try {
+    const r = await DM.fetchT(`${url}/asc?floor=${+floor}`, { headers: { Authorization: `Bearer ${s.syncKey}` }, cache: 'no-store' });
+    if (!r.ok) return { ok: false, rows: [], error: `HTTP ${r.status}` };
+    return { ok: true, rows: (await r.json()).rows || [] };
+  } catch (e) { return { ok: false, rows: [], error: e.message }; }
+}
+
+// Drops partagés (Worker /drops) : combats de chasse gagnés de tous les joueurs, compacts, à partir de `since`.
+async function dropsShared(since) {
+  const s = await DM.getAll();
+  const url = (s.syncUrl || '').trim().replace(/\/+$/, '');
+  if (!url || !s.syncKey) return { ok: false, error: 'synchro non configurée (adresse + clé, popup de l’extension)' };
+  try {
+    const r = await DM.fetchT(`${url}/drops?since=${Math.max(0, +since || 0)}`, { headers: { Authorization: `Bearer ${s.syncKey}` }, cache: 'no-store' });
+    if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
+    return { ok: true, ...(await r.json()) };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   ensureAlarm();
   checkUpdate(true);
@@ -250,6 +383,8 @@ chrome.runtime.onStartup.addListener(() => { ensureAlarm(); checkUpdate(); });
 chrome.alarms.onAlarm.addListener(async (a) => {
   if (a.name !== 'main') return;
   checkUpdate();
+  farmSync();
+  combatPush();
   await bossCheck();
   await buyWatchdog();
   await pilotWatchdog();
@@ -287,6 +422,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return !enabled;
       }
       case 'refreshBoss': await refreshBoss(); return true;
+      case 'farmSync': return farmSync(true);
+      case 'ascShared': return ascShared(msg.floor);
+      case 'dropsShared': return dropsShared(msg.since);
+      case 'combatRec': await combatEnqueue({ ...msg.rec, player: msg.rec.player || msg.rec.acct }); combatPush(); return { ok: true };
       case 'checkUpdate': {   // msg.force : bouton « Vérifier maintenant » ; sinon (ouverture de la popup) seulement si la vérif auto est active
         const { updateCheckMin } = await DM.getAll();
         if (msg.force || updateCheckMin > 0) await checkUpdate(true);

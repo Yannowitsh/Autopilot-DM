@@ -1,6 +1,6 @@
 // Code partagé entre le service worker, le content script et la popup.
 const DM = {
-  ORIGIN: 'https://dofusmasters.houk.fr',
+  ORIGIN: 'https://rpgmasters.houk.fr',
 
   // Mises à jour : le manifest du dépôt GitHub public fait foi (vérifié toutes les `updateCheckMin` minutes).
   REPO: 'Yannowitsh/Autopilot-DM',
@@ -51,6 +51,10 @@ const DM = {
     notifyEnergy: true,
     notifyErrors: true,
     notifyDrop: true,
+    notifySample: true,
+    notifyLevel: true,
+    levelStopAt200: true, // 📈 Leveling : pilote arrêté au niveau 200
+    levelNotifyEvery: 0,  // 📈 Leveling : notification tous les N niveaux (0 = seulement au début et à 200)
     wantedMinPerGroup: 1, // avis de recherche : nb minimum de monstres recherchés dans le même groupe
     bossPreAlertMin: 0,  // pré-alerte N minutes avant (0 = désactivé)
     bossAuto: true,      // pilote actif : tente le boss de chasse dans un nouvel onglet à son apparition, puis reprend le farm
@@ -60,6 +64,9 @@ const DM = {
     huntZone: null,      // id de zone (/chasse?zone=…)
     huntGroup: null,     // n° de groupe choisi à la main en jeu (null = le plus dur)
     huntZoneName: '',
+    combatUpload: true,
+    ascAutoDeck: false,
+    ascEngine: 'best',   // Ascension : 'best' (celui qui gagne le plus à l'étage), 'game' (Auto du jeu) ou 'ours' (notre moteur)  // Ascension (pilote) : deck conseillé enregistré dans le Deck 6 et activé avant chaque étage  // enregistre chaque combat terminé (stats, build, journal des coups) sur le Worker de synchro
     updateCheckMin: 180, // vérification d'une nouvelle version sur GitHub, en minutes (0 = jamais automatiquement)
     wins: 0,
     losses: 0,
@@ -95,6 +102,10 @@ const DM = {
       tip: 'Message quand le pilote se met en pause faute d’énergie, puis quand il reprend.' },
     { kind: 'drop', key: 'notifyDrop', label: '🐉 Farm de drop',
       tip: 'Message à chaque objet voulu obtenu, quand une zone est abandonnée (5 défaites), et à la fin du farm (tout droppé, ou arrêt avec la raison).' },
+    { kind: 'sample', key: 'notifySample', label: '🧪 Échantillonnage des zones',
+      tip: 'Message quand une zone atteint l’objectif de combats, quand une zone est abandonnée (3 défaites), et à la fin.' },
+    { kind: 'level', key: 'notifyLevel', label: '📈 Leveling',
+      tip: 'Message au lancement, à l’arrivée au niveau 200 (avec le temps mis et la moyenne), à l’arrêt (défaites), et tous les N niveaux si réglé dans le menu 🤖.' },
     { kind: 'errors', key: 'notifyErrors', label: '⚠️ Problèmes (déconnexion, énergie illisible)',
       tip: 'Message en cas de souci technique : déconnexion du jeu, énergie impossible à lire, etc.' },
   ],
@@ -240,7 +251,9 @@ const DM = {
   // dans le payload RSC (la page n'affiche qu'une partie des zones). Sinon, liens « /chasse?zone=… » de la page.
   // Utilise DOMParser : popup ou content script uniquement (pas le service worker).
   async fetchZones({ all = false } = {}) {
-    const r = await DM.fetchT(DM.ORIGIN + '/chasse', { credentials: 'include', cache: 'no-store' });
+    // toutes les zones : /chasse?toutes=1 (/chasse seul ne liste que celles à ton niveau depuis que le site ne donne plus
+    // les props du ZoneBrowser : le scan « archis seuls » croisait 54 zones de niveau 190–200 avec des zones d'archis bas niveau)
+    const r = await DM.fetchT(DM.ORIGIN + (all ? '/chasse?toutes=1' : '/chasse'), { credentials: 'include', cache: 'no-store' });
     if (r.redirected && /connexion/.test(r.url)) throw new Error('déconnecté');
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const html = await r.text();

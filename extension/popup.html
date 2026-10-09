@@ -107,6 +107,20 @@
   </div>
 
   <div class="panel">
+    <strong>Synchro des mesures<span class="dm-i" data-tip="Partage les combats de chasse enregistrés (📈 Rentabilité des zones) avec tes amis via ton Worker Cloudflare (dossier sync-worker/ du dépôt). Toutes les 5 min : tes nouveaux combats sont envoyés, ceux des autres reçus. Ils servent au classement (XP ramenée à 0 de Sagesse, drops recalculés à ta Prospection) ; la durée des combats reste la tienne.">i</span></strong>
+    <label><span>Adresse du Worker</span></label>
+    <input type="text" id="syncUrl" placeholder="https://dm-sync.<ton-compte>.workers.dev">
+    <label><span>Clé partagée<span class="dm-i" data-tip="La même clé que le secret SYNC_KEY du Worker, identique chez tous ceux qui partagent.">i</span></span></label>
+    <input type="password" id="syncKey" placeholder="clé (SYNC_KEY)">
+    <div class="btns">
+      <button id="syncNow" data-tip="Enregistre l’adresse et la clé, puis synchronise tout de suite.">🔄 Enregistrer + synchroniser</button>
+    </div>
+    <div id="syncMsg" class="muted">—</div>
+    <label><span>Enregistrer mes combats en ligne<span class="dm-i" data-tip="À chaque fin de combat, envoie au Worker (même adresse et clé) le combat complet : stats de tous les combattants, journal des coups, cartes jouées et photo du build (fiche, prestige, Bouclier de forge, équipement porté et fusions). Sert à vérifier et affiner le calcul des dégâts. Seuls ceux qui ont la clé peuvent les lire. Enregistré dès que tu coches.">i</span></span> <input type="checkbox" id="combatUpload"></label>
+    <div id="combatMsg" class="muted"></div>
+  </div>
+
+  <div class="panel">
     <strong>Journal (débogage)<span class="dm-i" data-tip="Historique technique de ce que fait l’extension. En cas de problème, copie-le et colle-le à la personne qui t’aide. Ton webhook n’y figure pas.">i</span></strong>
     <span class="muted" id="logInfo">—</span>
     <div class="btns">
