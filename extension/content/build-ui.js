@@ -478,6 +478,28 @@ async function openBuildOptimizer({ load = null } = {}) {
 }
 
 // Favoris : chaque objet se déplie sur ses sources (bestiaire) ; une zone ouvre ses groupes de chasse.
+// HDV, vue « par objet » (/hdv, props.groups) : une ligne par objet et par fusion, au prix le plus bas, avec le nombre
+// d'offres. Fusion du jeu depuis le 08/10 : 0 = T1, 1 = T2, 2 = Rayonnant, 3 à 7 = Rayonnant +1 à +5.
+const HDV_GROUPS_MS = 2 * 60000;
+let hdvGroupsCache = null;   // { at, map: Map(id → [{ fusion, price, offers }] du moins cher au plus cher) }
+const hdvTierName = (f) => (f <= 1 ? `T${f + 1}` : f === 2 ? 'Rayonnant' : `Rayonnant +${f - 2}`);
+async function fetchHdvGroups() {
+  if (hdvGroupsCache && Date.now() - hdvGroupsCache.at < HDV_GROUPS_MS) return hdvGroupsCache.map;
+  const { flight } = await fetchFlight('/hdv');
+  const { rows, props } = rscProps(flight, (x) => Array.isArray(x.groups));
+  if (!props) throw new Error('annonces introuvables sur /hdv');
+  const map = new Map();
+  for (const raw of rscResolve(rows, props.groups) || []) {
+    const g = rscResolve(rows, raw), it = rscResolve(rows, g?.item);
+    if (!it?.id) continue;
+    if (!map.has(it.id)) map.set(it.id, []);
+    map.get(it.id).push({ fusion: +g.fusion || 0, price: +g.price || 0, offers: +g.offers || 0 });
+  }
+  for (const l of map.values()) l.sort((a, b) => a.price - b.price);
+  hdvGroupsCache = { at: Date.now(), map };
+  return map;
+}
+
 async function openFavorites() {
   document.querySelector('.dm-picker')?.remove();
   const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -575,6 +597,7 @@ async function openFavorites() {
         ${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:24px;height:24px;object-fit:contain">` : ''}
         <span style="flex:1">${esc(c.name)}${it?.lvl ? ` <span style="color:#8a7d66;font-size:12px">niv. ${it.lvl}${it.setName ? ` · ${esc(it.setName)}` : ''}</span>` : ''}${b && !huntable(c.id) ? ' <span style="color:#e08a5a;font-size:11px" title="Aucun monstre de chasse ne le lâche : le farm de drop l’ignore (HDV, coffres, boss…)">pas en chasse</span>' : ''}</span>
         <select data-tier="${+c.id}" style="background:#2a231a;color:#f0c04a;border:1px solid #5a4a33;border-radius:6px;font:12px system-ui,sans-serif" title="Tier voulu (fusion 3 → 1)">${[1, 2, 3, 4, 5].map((n) => `<option value="${n}"${n === (tiers[c.id] || 1) ? ' selected' : ''}>T${n}${n === 5 ? ' (Rayonnant)' : ''}</option>`).join('')}</select>
+        ${hdvCell(c.id, c.name)}
         <button data-uncart="${+c.id}" style="${btn}" title="Retirer de la liste de courses">✕</button></div>`;
       }).join('')
         : '<div style="color:#8a7d66;font-size:12px">Vide : ajoute des objets avec 🛒 sur un favori, depuis 🐉 Aller dropper, ou à la main ci-dessous.</div>');
@@ -613,12 +636,26 @@ async function openFavorites() {
     }).join('') + hits.map((it) => `<div style="display:flex;gap:8px;align-items:center;background:#1f1a13;border:1px solid #3a3024;border-radius:8px;padding:3px 8px">
         ${it.icon ? `<img src="/img/items/${+it.icon}.png" alt="" style="width:22px;height:22px;object-fit:contain">` : ''}
         <span style="flex:1">${esc(it.n)} <span style="color:#8a7d66;font-size:12px">${esc(SLOT_NAMES[it.s] || it.s || '')} · niv. ${it.lvl || '?'}${it.setName ? ` · ${esc(it.setName)}` : ''}</span>${huntable(it.id) ? '' : ' <span style="color:#e08a5a;font-size:11px">pas en chasse</span>'}</span>
+        ${hdvCell(it.id, it.n)}
         <button data-add="${+it.id}" style="${btn};${inCart.has(it.id) ? 'background:#6a5a1a' : ''}" title="${inCart.has(it.id) ? 'Dans la liste (cliquer pour retirer)' : 'Ajouter à la liste de courses'}">${inCart.has(it.id) ? '🛒 ✔' : '🛒 +'}</button></div>`).join('')
       + (all.length > hits.length ? `<div style="color:#8a7d66;font-size:12px">… ${all.length - hits.length} autre(s) : précise la recherche.</div>` : '')
       + (searching ? '<div style="color:#8a7d66;font-size:12px">Recherche dans tous les objets du jeu…</div>' : '')
       || '<div style="color:#8a7d66;font-size:12px">Aucun objet trouvé.</div>';
   }
   // emplacement / niveau / panoplie gardés dans la liste : un objet hors bestiaire reste rangé à la réouverture
+  // Prix HDV des objets de la liste et des résultats de recherche (chargé une fois à l'ouverture, ~0,5 Mo)
+  let hdv = null, hdvErr = '';
+  const hdvCell = (id, name) => {
+    const link = `<a href="/hdv?q=${encodeURIComponent(name)}" target="_blank" style="${btn};text-decoration:none;background:#2b5d8a" title="Ouvrir l’HDV sur cet objet (nouvel onglet) : toutes les offres, achat">🏛️ HDV</a>`;
+    if (!hdv) return `<span style="color:#8a7d66;font-size:11px">${hdvErr ? 'HDV illisible' : 'HDV…'}</span>${link}`;
+    const l = hdv.get(id);
+    if (!l?.length) return `<span style="color:#8a7d66;font-size:11px">pas en vente</span>${link}`;
+    const n = l.reduce((x, g) => x + g.offers, 0);
+    const tip = l.slice().sort((a, b) => a.fusion - b.fusion).map((g) => `${hdvTierName(g.fusion)} : dès ${g.price.toLocaleString('fr-FR')} K (${g.offers} offre${g.offers > 1 ? 's' : ''})`).join('\n');
+    return `<span style="color:#f0c04a;font-size:12px;white-space:nowrap" title="${esc(tip)}">dès ${l[0].price.toLocaleString('fr-FR')} K · ${n} offre${n > 1 ? 's' : ''}</span>${link}`;
+  };
+  fetchHdvGroups().then((m) => { hdv = m; }).catch((e) => { hdvErr = e.message; DM.log(`liste de courses : HDV illisible (${e.message})`); })
+    .finally(() => { if (ov.isConnected) render(); });
   const cartEntry = (id) => { const it = itemById.get(id); return { id, name: it?.n || `Objet ${id}`, icon: it?.icon, s: it?.s, lvl: it?.lvl, setName: it?.setName || undefined }; };
   render();
   ov.addEventListener('input', (e) => { if (e.target.dataset.a === 'cartSearch') renderHits(); });
