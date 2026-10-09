@@ -185,12 +185,21 @@ function planTurn(st, cand, rules) {
   // Échange de vie : boss à ménager avant son tour… sauf si on peut l'abattre d'ici là (plus d'échange, ni de ses
   // autres mécaniques : il ne mène plus). Nos tours jusqu'au sien compris (on joue avant lui) ; dégâts possibles par tour
   // sur lui : nos 4 meilleures cartes + l'arme.
+  // Bouclier d'un boss (sa « garde », souvent pour 1 tour) : il absorbe chaque coup sauf la part de notre Perforation
+  // (0,05 % par point de Fuite + Tacle, 25 % au plus : ~10 % vérifié à l'étage 36). Ce qu'il absorbe est perdu s'il expire
+  // avant d'être cassé : dans la recherche, seuls les dégâts qui atteignent ses PV comptent.
+  const enemyShield = (f) => (f.shields || []).reduce((t, x) => t + (+x.value || +x.v || +x.amount || 0), 0);
+  const perfo = Math.min(0.25, ((fighterStat(p)('fuite') || 0) + (fighterStat(p)('tacle') || 0)) * 0.0005);
+  const ehpOf = (f) => (+f.hp || 0) + enemyShield(f);
+  // dégâts d qui atteignent les PV de f, bouclier restant sh : [vers les PV, bouclier après]
+  const throughShield = (d, sh) => { const abs = sh > 0 ? Math.min(sh, d * (1 - perfo)) : 0; return [d - abs, sh - abs]; };
+  for (const f of enemies) if (enemyShield(f) > 0) notes.push(`${f.name} sous bouclier (${Math.round(enemyShield(f))})`);
   const killableBy = (id, turns) => {
     const f = st.fighters[id];
     const per = cand.filter((x) => !x.weapon && damageLines(x.c, fighterStat(p)).length).map((x) => cardEffect(x.c, p, f).dmg).sort((a, b) => b - a)
       .slice(0, 4).reduce((t, d) => t + d, 0)   // 4 cartes : la Fureur se paie (bouclier), cf. Auto du jeu
       + cand.filter((x) => x.weapon).reduce((t, x) => t + cardEffect(x.c, p, f).dmg, 0);
-    return (+f.hp || 0) <= per * turns;
+    return ehpOf(f) <= per * turns;
   };
   const swapProt = new Set(has('swap').filter((r) => round < r.turn && !killableBy(r.boss, r.turn - round + 1)).map((r) => r.boss));
   const swapRush = has('swap').filter((r) => round < r.turn && !swapProt.has(r.boss));
@@ -263,11 +272,12 @@ function planTurn(st, cand, rules) {
         // cible : celle qu'on achève, sinon la plus menaçante par PV effectif (attaque × dégâts du coup / PV restants, un
         // boss qui se relèvera compte ses PV de résurrection en plus) — pas simplement la moins entamée
         const threat = (f) => {
-          const d = cardEffect(x.c, p, f).dmg;
+          const raw = cardEffect(x.c, p, f).dmg, d = throughShield(raw, nh[`s:${f.id}`] || 0)[0];
+          const waste = raw > 0 ? d / raw : 1;   // part du coup qui atteint ses PV (le reste se perd dans son bouclier)
           if (d >= nh[f.id] && !(reviveAt[f.id] && !nh[`r:${f.id}`])) return 1e12 + d;   // coup fatal
           const extra = reviveAt[f.id] && !nh[`r:${f.id}`] ? (+f.maxHp || 0) * reviveAt[f.id] / 100 : 0;
           const rush = swapRush.some((q) => q.boss === f.id) ? 10 : 1;   // à abattre avant son Échange de vie : en priorité
-          return rush * leadW(f.id) * Math.max(1, +f.atk || incomingOf(f) || 1) * d / Math.max(1, nh[f.id] + extra);
+          return rush * leadW(f.id) * waste * Math.max(1, +f.atk || incomingOf(f) || 1) * d / Math.max(1, nh[f.id] + extra);
         };
         target = ok.sort((a, b) => threat(b) - threat(a))[0];
         const pass = shieldRule && !shieldUp ? shieldRule.pass / 100 : 1;
@@ -277,8 +287,10 @@ function planTurn(st, cand, rules) {
           const d = e.dmg * part * pass * cm;
           if (mirrored.has(f.id)) { self += d; return e; }   // Miroir : le coup nous revient
           const before = nh[f.id];
-          nh[f.id] -= d;
-          gain += Math.min(before, d);
+          const [toHp, shLeft] = throughShield(d, nh[`s:${f.id}`] || 0);
+          nh[`s:${f.id}`] = shLeft;
+          nh[f.id] -= toHp;
+          gain += Math.min(before, toHp);
           if (nh[f.id] <= 0) {
             // Deuxième souffle : il se relève une fois avec x % de ses PV
             if (reviveAt[f.id] && !nh[`r:${f.id}`]) { nh[f.id] = (+f.maxHp || 0) * reviveAt[f.id] / 100; nh[`r:${f.id}`] = 1; }
@@ -321,7 +333,7 @@ function planTurn(st, cand, rules) {
         left, nh, shieldUp || x.shield, score + gain - SELF_W * self, tr2);
     }
   };
-  dfs([], 0, +p.ap || 0, startLast, cardsDone, +p.hp || 0, Object.fromEntries(enemies.map((f) => [f.id, +f.hp || 0])), shieldUp0, 0, tr0);
+  dfs([], 0, +p.ap || 0, startLast, cardsDone, +p.hp || 0, Object.fromEntries(enemies.flatMap((f) => [[f.id, +f.hp || 0], [`s:${f.id}`, enemyShield(f)]])), shieldUp0, 0, tr0);
   const first = best?.seq[0];
   return { pick: first?.x || null, target: first?.target || null, plan: best?.seq || [], notes, score: best?.s || 0 };
 }
