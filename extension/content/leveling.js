@@ -68,7 +68,8 @@ async function levelSpendPoints(sh) {
 async function levelBestGroup(lvl, danger, say = () => {}) {
   const all = await DM.fetchZones({ all: true });
   const mine = new Set((await DM.fetchZones().catch(() => [])).map((z) => z.id));
-  const zones = all.filter((z) => mine.has(z.id) || (z.lvlMin != null && (z.lvlMax ?? z.lvlMin) >= lvl - 20 && z.lvlMin <= lvl + 20));
+  const zones = all.filter((z) => !(z.lvlReq > lvl)   // zone réservée à un niveau plus haut : pas attaquable
+    && (mine.has(z.id) || (z.lvlMin != null && (z.lvlMax ?? z.lvlMin) >= lvl - 20 && z.lvlMin <= lvl + 20)));
   if (!zones.length) throw new Error(`aucune zone autour du niveau ${lvl}`);
   const log = cfg.farmLog?.[fightAcct()] || [];
   const shared = Object.entries(cfg.farmShared || {}).flatMap(([p, l]) => l.map((r) => ({ ...r, src: p })));

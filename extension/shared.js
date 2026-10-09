@@ -280,7 +280,9 @@ const DM = {
       const name = a.querySelector('.font-bold')?.textContent.trim() || `Zone ${id}`;
       const region = a.querySelector('.text-dim')?.textContent.trim() || '';
       const lvl = a.textContent.match(/Niveau\s*(\d+)\s*–\s*(\d+)/);
-      zones.push({ id, name, region, lvlMin: lvl ? +lvl[1] : null, lvlMax: lvl ? +lvl[2] : null, label: lvl ? `${name} (${lvl[1]}–${lvl[2]})` : name });
+      const req = a.textContent.match(/Niveau\s*(\d+)\s*requis/);   // zone verrouillée : niveau du perso requis
+      zones.push({ id, name, region, lvlMin: lvl ? +lvl[1] : null, lvlMax: lvl ? +lvl[2] : null, lvlReq: req ? +req[1] : null,
+        label: lvl ? `${name} (${lvl[1]}–${lvl[2]})` : name });
     }
     if (!zones.length) throw new Error('aucune zone trouvée');
     if (!all) await chrome.storage.local.set({ huntZones: zones });

@@ -31,6 +31,10 @@ async function scanZone(id) {
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const html = await r.text();
   const doc = new DOMParser().parseFromString(html, 'text/html');
+  // zone au-dessus du niveau du perso (« Zone réservée aux joueurs de niveau 30 et plus ») : ses groupes ne sont pas
+  // attaquables → aucun groupe pour le leveling, le farm de drop, le scan…
+  const req = doc.body?.textContent.match(/Zone réservée aux joueurs de niveau (\d+)/);
+  if (req) throw Object.assign(new Error(`zone réservée au niveau ${req[1]}`), { empty: true, lvlReq: +req[1] });
   const groups = [];
   for (const p of groupCards(doc)) {
     const n = groupNumber(p);
