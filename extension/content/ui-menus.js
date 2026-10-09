@@ -315,7 +315,25 @@ function renderFuse() {
   }
 }
 
+// Téléphone : la barre de navigation du jeu, fixée en bas de l'écran, passerait sous les bulles et le menu →
+// on les remonte de sa hauteur (variable CSS --dm-lift sur <html>, héritée par les shadow roots). 0 sur ordinateur.
+let liftAt = 0;
+function updateLift() {
+  if (Date.now() - liftAt < 2000) return;
+  liftAt = Date.now();
+  let lift = 0;
+  for (let el = document.elementFromPoint(innerWidth / 2, innerHeight - 4); el && el !== document.body; el = el.parentElement) {
+    if (!/fixed|sticky/.test(getComputedStyle(el).position)) continue;
+    const r = el.getBoundingClientRect();
+    if (r.bottom >= innerHeight - 2 && r.height < innerHeight / 4) lift = Math.round(innerHeight - r.top);
+    break;
+  }
+  const v = `${lift}px`;
+  if (document.documentElement.style.getPropertyValue('--dm-lift') !== v) document.documentElement.style.setProperty('--dm-lift', v);
+}
+
 function renderUi() {
+  updateLift();
   if (dead || !document.body) return;
   if (!ui || !ui.host.isConnected) ui = buildUi();   // le site peut remplacer le <body>
   const mine = cfg.ownerTabId === myTabId;

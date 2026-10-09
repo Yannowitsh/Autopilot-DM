@@ -121,7 +121,7 @@ function notifyFound(f) {
 const CARD_CSS = `
   :host { all: initial; }
   * { box-sizing: border-box; font-family: system-ui, sans-serif; }
-  .stack { position: fixed; left: 12px; bottom: 64px; z-index: 2147483646; display: flex; flex-direction: column-reverse; gap: 8px;
+  .stack { position: fixed; left: 12px; bottom: calc(64px + var(--dm-lift, 0px)); z-index: 2147483646; display: flex; flex-direction: column-reverse; gap: 8px;
     width: 300px; max-width: calc(100vw - 24px); }
   .card { background: #1b1d22; color: #e8e6e1; border: 1px solid #e0b040; border-radius: 10px; padding: 10px;
     box-shadow: 0 0 18px rgba(224,176,64,.35), 0 6px 24px rgba(0,0,0,.55); font-size: 12px; animation: pop .25s ease-out; }

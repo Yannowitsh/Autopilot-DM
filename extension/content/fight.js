@@ -135,6 +135,7 @@ async function keepAwake() {
 async function tick() {
   if (!contextAlive()) { shutdown(); return; }
   keepAwake();
+  updateLift();   // la barre du jeu apparaît ou disparaît selon la page
   if (!isOwner()) return;
   if (stuckCheck() || busy) return;
   busy = true;

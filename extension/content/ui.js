@@ -73,18 +73,18 @@ async function onGearPreset(slot, el) {
 const MENU_CSS = `
   :host { all: initial; }
   * { box-sizing: border-box; font-family: system-ui, sans-serif; }
-  .bubble { position: fixed; left: 12px; bottom: 12px; z-index: 2147483647; width: 44px; height: 44px; border-radius: 50%;
+  .bubble { position: fixed; left: 12px; bottom: calc(12px + var(--dm-lift, 0px)); z-index: 2147483647; width: 44px; height: 44px; border-radius: 50%;
     display: grid; place-items: center; font-size: 22px; cursor: pointer; user-select: none;
     background: #262a31; border: 3px solid var(--st, #666); box-shadow: 0 2px 10px rgba(0,0,0,.5); transition: transform .15s; }
   .bubble:hover { transform: scale(1.08); }
-  .bubble.play { bottom: 64px; left: 16px; width: 36px; height: 36px; font-size: 15px; border-width: 2px; color: #fff; }
+  .bubble.play { bottom: calc(64px + var(--dm-lift, 0px)); left: 16px; width: 36px; height: 36px; font-size: 15px; border-width: 2px; color: #fff; }
   .panel:not([hidden]) ~ .bubble.play, .panel:not([hidden]) ~ .bubble.gear { display: none; }
-  .bubble.gear { bottom: 64px; width: 36px; height: 36px; font-size: 16px; border-width: 2px; border-color: #8a6d3b; }
+  .bubble.gear { bottom: calc(64px + var(--dm-lift, 0px)); width: 36px; height: 36px; font-size: 16px; border-width: 2px; border-color: #8a6d3b; }
   .bubble.gear.g0 { left: 60px; } .bubble.gear.g1 { left: 104px; }
   .bubble.gear.busy { opacity: .5; cursor: progress; }
-  .bubble.fav { left: 64px; width: 36px; height: 36px; bottom: 16px; font-size: 16px; border-width: 2px; border-color: #c0485a; }
-  .panel { position: fixed; left: 12px; bottom: 64px; z-index: 2147483647; width: 290px; max-width: calc(100vw - 24px);
-    max-height: calc(100vh - 80px); overflow-y: auto; background: #1b1d22; color: #e8e6e1;
+  .bubble.fav { left: 64px; width: 36px; height: 36px; bottom: calc(16px + var(--dm-lift, 0px)); font-size: 16px; border-width: 2px; border-color: #c0485a; }
+  .panel { position: fixed; left: 12px; bottom: calc(64px + var(--dm-lift, 0px)); z-index: 2147483647; width: 290px; max-width: calc(100vw - 24px);
+    max-height: calc(100vh - 80px - var(--dm-lift, 0px)); overflow-y: auto; background: #1b1d22; color: #e8e6e1;
     border: 1px solid #3a3f48; border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.55);
     font-size: 13px; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
   .panel[hidden], .row[hidden] { display: none; }

@@ -271,7 +271,7 @@ function scanAscPanel() {
   const aside = [...document.querySelectorAll('aside')].find((x) => /Comment ça marche/.test(x.querySelector('h3')?.textContent || ''));
   const el = ascPanelEl;
   if (!aside) {   // repli : panneau flottant
-    el.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:2147483600;width:min(420px,calc(100vw - 24px));max-height:70vh;overflow:auto;background:#1d1812;border:1px solid #5a4a33;border-radius:12px;padding:10px 12px;font:13px system-ui,sans-serif;color:#eee;box-shadow:0 8px 30px #000a';
+    el.style.cssText = 'position:fixed;right:12px;bottom:calc(12px + var(--dm-lift,0px));z-index:2147483600;width:min(420px,calc(100vw - 24px));max-height:70vh;overflow:auto;background:#1d1812;border:1px solid #5a4a33;border-radius:12px;padding:10px 12px;font:13px system-ui,sans-serif;color:#eee;box-shadow:0 8px 30px #000a';
     if (el.parentNode !== document.body) document.body.appendChild(el);
     return;
   }
