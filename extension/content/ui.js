@@ -284,6 +284,7 @@ function buildUi() {
         <div class="status" data-k="scanMsg"></div>
         <ul class="wanted" data-k="wanted"></ul>
         <button data-k="farmStats" style="margin-top:6px;width:100%" data-tip="XP et drops (revente marchand) de chaque combat de chasse, calculés monstre par monstre (le nombre de monstres compte), ramenés à ta Sagesse / Prospection actuelles ; mesures partagées via la synchro ; estimations pour les groupes du dernier scan. Bouton ▶ pour y envoyer le pilote.">📈 Rentabilité des zones</button>
+        <button data-k="archiDrops" style="margin-top:6px;width:100%" data-tip="Tout ce qui est tombé dans les combats contre des archimonstres (ou des avis de recherche), les tiens et ceux de tes amis de la synchro : par monstre, nombre de combats et taux de chaque objet ; ★ = objet que le bestiaire attribue à ce monstre.">👑 Drops d’archimonstres</button>
         <button data-k="levelStart" style="margin-top:6px;width:100%" data-tip="Monte au niveau 200 le plus vite possible, tout seul : scan régulier des zones autour de ton niveau (à chaque renouvellement des groupes), attaque du groupe qui rapporte le plus d’XP (XP mesurée, sinon estimée : les archimonstres et avis de recherche en donnent environ 3 fois plus) et du plus haut niveau que tu bats — la prudence monte toutes les 5 victoires, baisse à chaque défaite. Équipement automatique Sagesse > Puissance > Vitalité, points de caractéristiques en Sagesse dès que tu en gagnes. Au niveau 200 : arrêt et notification Discord. Chrono de chaque montée, et moyenne par Prestige.">📈 Leveling jusqu’au niveau 200</button>
         <button data-k="sampleOpen" style="margin-top:6px;width:100%" data-tip="Le pilote farme en chasse jusqu’à avoir au moins N combats mesurés dans chaque zone d’une plage de niveaux (les tiens + ceux de la synchro), en allant toujours dans la zone la moins mesurée et en variant le nombre de monstres. Pour fiabiliser 📈 Rentabilité des zones.">🧪 Échantillonner les zones</button>
         <button data-k="selfDiag" style="margin-top:6px;width:100%" data-tip="Auto-diagnostic : l'extension vérifie seule si son calcul des dégâts dérive (formule du jeu changée), si une mécanique de boss ou un effet de carte inconnu apparaît, ou si une page du jeu devient illisible. Elle prévient une fois par problème (message + Discord). Ce bouton copie le récap à transmettre.">🩺 Diagnostic</button>
@@ -361,6 +362,7 @@ function buildUi() {
   for (const k of ['sampleOpen', 'sampleOpen2']) $(k).addEventListener('click', () => { setOpen(false); openSampleFarm(); });
   $('sampleStop').addEventListener('click', () => sampleStop('arrêté à la main'));
   $('levelStopBtn').addEventListener('click', () => levelStop('arrêté à la main'));
+  $('archiDrops').addEventListener('click', () => { setOpen(false); openArchiDrops(); });
   $('levelStart').addEventListener('click', async (e) => {
     const b = e.currentTarget;
     if (b.dataset.busy) return;

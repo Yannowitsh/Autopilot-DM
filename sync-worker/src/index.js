@@ -101,6 +101,27 @@ async function pullCombats(url, db) {
     next: results.length ? results[results.length - 1].seq : since });
 }
 
+// Drops des combats de chasse gagnés (tous joueurs), en version compacte, pour les statistiques de drop par monstre
+// (👑 Drops d'archimonstres de l'extension) : m = [[nom, niveau, grade]], it = [[id, nom, icône, niveau, fusion, rareté, type]],
+// pr / ch = Prospection brute et Chance du joueur (prospection totale = 100 + pr + floor(ch / 10)).
+const DROPS_PAGE = 1000;
+async function pullDrops(url, db) {
+  const since = Math.max(0, Number(url.searchParams.get('since')) || 0);
+  const { results } = await db.prepare(`SELECT c.seq, c.player, c.at,
+      (SELECT json_group_array(json_array(json_extract(f.value, '$.name'), json_extract(f.value, '$.level'), json_extract(f.value, '$.grade')))
+        FROM json_each(c.rec, '$.state.fighters') f WHERE json_extract(f.value, '$.team') = 1) AS m,
+      (SELECT json_group_array(json_array(json_extract(i.value, '$.id'), json_extract(i.value, '$.n'), json_extract(i.value, '$.icon'),
+        json_extract(i.value, '$.lvl'), json_extract(i.value, '$.f'), json_extract(i.value, '$.r'), json_extract(i.value, '$.s')))
+        FROM json_each(c.rec, '$.rewards.items') i) AS it,
+      json_extract(c.rec, '$.state.fighters.p.stats.prospection') AS pr, json_extract(c.rec, '$.state.fighters.p.stats.chance') AS ch,
+      json_extract(c.rec, '$.rewards.kamas') AS k, json_extract(c.rec, '$.rewards.card.n') AS card
+    FROM combats c WHERE c.seq > ? AND c.kind = 'pve' AND c.status = 'won' ORDER BY c.seq LIMIT ?`).bind(since, DROPS_PAGE).all();
+  const last = await db.prepare('SELECT MAX(seq) AS s FROM combats').first();
+  return json({ drops: results.map((x) => ({ seq: x.seq, p: x.player, at: x.at, m: JSON.parse(x.m || '[]'), it: JSON.parse(x.it || '[]'),
+    pr: x.pr || 0, ch: x.ch || 0, k: x.k || 0, card: x.card || null })),
+    next: results.length === DROPS_PAGE ? results[results.length - 1].seq : Math.max(since, last?.s || 0) });
+}
+
 async function pullAsc(url, db) {
   const floor = Number(url.searchParams.get('floor'));
   if (!Number.isSafeInteger(floor) || floor <= 0) return json({ error: 'floor attendu' }, 400);
@@ -112,11 +133,12 @@ export default {
   async fetch(req, env) {
     const url = new URL(req.url);
     if (url.pathname === '/health') return new Response('ok');
-    if (!['/fights', '/fights/counts', '/combats', '/asc'].includes(url.pathname)) return json({ error: 'introuvable' }, 404);
+    if (!['/fights', '/fights/counts', '/combats', '/asc', '/drops'].includes(url.pathname)) return json({ error: 'introuvable' }, 404);
     if (!authorized(req, env.SYNC_KEY)) return json({ error: 'clé invalide' }, 401);
     await init(env.DB);
     if (url.pathname === '/fights/counts') return req.method === 'GET' ? counts(env.DB) : json({ error: 'méthode non gérée' }, 405);
     if (url.pathname === '/asc') return req.method === 'GET' ? pullAsc(url, env.DB) : json({ error: 'méthode non gérée' }, 405);
+    if (url.pathname === '/drops') return req.method === 'GET' ? pullDrops(url, env.DB) : json({ error: 'méthode non gérée' }, 405);
     if (url.pathname === '/combats') {
       if (req.method === 'POST') return pushCombat(req, env.DB);
       if (req.method === 'GET') return pullCombats(url, env.DB);

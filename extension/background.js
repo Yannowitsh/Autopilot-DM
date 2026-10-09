@@ -354,6 +354,18 @@ async function ascShared(floor) {
   } catch (e) { return { ok: false, rows: [], error: e.message }; }
 }
 
+// Drops partagés (Worker /drops) : combats de chasse gagnés de tous les joueurs, compacts, à partir de `since`.
+async function dropsShared(since) {
+  const s = await DM.getAll();
+  const url = (s.syncUrl || '').trim().replace(/\/+$/, '');
+  if (!url || !s.syncKey) return { ok: false, error: 'synchro non configurée (adresse + clé, popup de l’extension)' };
+  try {
+    const r = await DM.fetchT(`${url}/drops?since=${Math.max(0, +since || 0)}`, { headers: { Authorization: `Bearer ${s.syncKey}` }, cache: 'no-store' });
+    if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
+    return { ok: true, ...(await r.json()) };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   ensureAlarm();
   checkUpdate(true);
@@ -409,6 +421,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case 'refreshBoss': await refreshBoss(); return true;
       case 'farmSync': return farmSync(true);
       case 'ascShared': return ascShared(msg.floor);
+      case 'dropsShared': return dropsShared(msg.since);
       case 'combatRec': await combatEnqueue({ ...msg.rec, player: msg.rec.player || msg.rec.acct }); combatPush(); return { ok: true };
       case 'checkUpdate': {   // msg.force : bouton « Vérifier maintenant » ; sinon (ouverture de la popup) seulement si la vérif auto est active
         const { updateCheckMin } = await DM.getAll();
