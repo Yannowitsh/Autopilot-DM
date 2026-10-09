@@ -369,8 +369,9 @@ function highlightWanted() {
 // XP : gain = Σ xp des monstres (champ « xp » de l'état du combat) × bonus de groupe × bonus du joueur × (1 + Sagesse / 100).
 // Mesuré sur ~2 800 combats : bonus de groupe = 2 × (1 + 0,1 × (monstres − 1)) ; bonus du joueur = ×1,1 si le compte est lié à
 // Discord (patch du 08/10, aussi +10 % de butin), × les événements (« Week-end de folie » XP ×2…). Il change d'un joueur à
-// l'autre et dans le temps : il est appris par joueur (farmModel). Écart de niveau : l'XP fond (jusqu'à ×0,1) quand on dépasse
-// de loin les monstres — relevé sur tes propres combats récents de la zone. Ramenée à 0 de Sagesse pour comparer.
+// l'autre et dans le temps : il est appris par joueur (farmModel). Écart de niveau (xpLevelPen, 162 combats sur 163 de la
+// remontée 1 → 200 après un Prestige) : × (1 − 0,04 par niveau au-delà de [plus haut monstre du groupe + 10]), ×0,1 au moins ;
+// aucun bonus quand les monstres sont plus forts. Ramenée à 0 de Sagesse pour comparer.
 // Drops : valeur de revente au marchand (prix du jeu depuis le 08/10 : min(2 000, 10 × niveau), quel que soit le tier ; avant :
 // min(4 000, 20 × niveau) → combats sans `sp` divisés par 2). Règle du jeu : chance = chance de base × Prospection / 100, 90 %
 // au plus par objet ; l'objet bonus de victoire et les coffres n'en dépendent pas. Chaque objet lâché est gardé avec sa chance
@@ -379,10 +380,15 @@ function highlightWanted() {
 // victoire) : ils ne dépendent pas de la Prospection (mesuré : même butin à 322 et 1 564). Kamas : tels quels.
 // Tout est réaffiché à TA Sagesse / Prospection actuelles (dernier combat). Durée : écart avec le combat précédent dans la
 // même zone (relance, animation et délais compris), sinon depuis le lancement.
-// cfg.farmLog[perso] = [{ at, z, zn, g, m: [[nom, niveau, xp]], xp, sag, pp, k, v, it: [[prix, chance de base]], n, d, sp }].
+// cfg.farmLog[perso] = [{ at, z, zn, g, m: [[nom, niveau, xp]], xp, sag, pp, k, v, it: [[prix, chance de base]], n, d, sp, lvl }].
 const FARM_LOG_MAX = 3000;
 const FARM_GAP_MS = 10 * 60000;
-const FARM_CHAR_KEY = 'dmFarmChar';   // Sagesse / Prospection du dernier combat, par personnage (localStorage de la page)
+const FARM_CHAR_KEY = 'dmFarmChar';   // Sagesse / Prospection / niveau du dernier combat, par personnage (localStorage de la page)
+// Part de l'XP gardée selon ton niveau et celui du plus haut monstre du groupe (niveaux inconnus : 1).
+const xpLevelPen = (lvl, mobLvls) => {
+  const top = Math.max(0, ...mobLvls.map((l) => +l || 0));
+  return lvl > 0 && top > 0 ? Math.max(0.1, Math.min(1, 1 - 0.04 * (lvl - top - 10))) : 1;
+};
 const sellPrice = (lvl) => Math.min(2000, 10 * Math.max(1, +lvl || 0));
 const SELL_PRICE_V = 2;   // `sp` des combats : 2 = prix ci-dessus ; absent = ancien prix (×2)
 const groupCoef = (n) => 1 + 0.1 * (Math.max(1, n) - 1);   // bonus de groupe mesuré de 1 à 4 monstres (×2 en plus), extrapolé au-delà
@@ -417,9 +423,10 @@ function farmOnRewards(st, rewards) {
     if (!st?.fighters?.p || !rewards || st.status === 'ongoing') return;
     const S = st.fighters.p.stats || {};
     const sag = +S.sagesse || 0, pp = 100 + (+S.prospection || 0) + Math.floor((+S.chance || 0) / 10);
+    const plvl = +st.fighters.p.level || 0;   // niveau au début du combat (celui qui compte pour l'écart de niveau)
     try {
       const all = JSON.parse(localStorage.getItem(FARM_CHAR_KEY) || '{}');
-      all[fightAcct()] = { sag, pp, at: Date.now() };
+      all[fightAcct()] = { sag, pp, lvl: plvl, at: Date.now() };
       localStorage.setItem(FARM_CHAR_KEY, JSON.stringify(all));
     } catch { /* stockage indisponible */ }
     if (st.status !== 'won') return;
@@ -442,7 +449,7 @@ function farmOnRewards(st, rewards) {
       : cfg.lastLaunchAt && now - cfg.lastLaunchAt < FARM_GAP_MS ? now - cfg.lastLaunchAt : null;
     const rec = { at: now, z: t.zone, zn: cfg.huntZone === t.zone ? cfg.huntZoneName || '' : '', g: t.group,
       m: mobs.map((m) => [m.name, +m.level || 0, +m.xp || 0]), xp: +rewards.xp || 0, sag, pp,
-      k: (+rewards.kamas || 0) + (+rewards.cardKamas || 0), v: it.reduce((s, x) => s + x[0], 0), it, n: items.length, d, sp: SELL_PRICE_V };
+      k: (+rewards.kamas || 0) + (+rewards.cardKamas || 0), v: it.reduce((s, x) => s + x[0], 0), it, n: items.length, d, sp: SELL_PRICE_V, lvl: plvl || undefined };
     save({ farmLog: { ...(cfg.farmLog || {}), [me]: [...log, rec].slice(-FARM_LOG_MAX) } });
   } catch (e) {
     DM.log(`rentabilité : ${e.message}`);
@@ -461,8 +468,8 @@ const farmValueAt = (r, pp) => (r.sp >= SELL_PRICE_V ? 1 : 0.5) * (r.it
 // Modèle par monstre, appris de TOUS les combats (les tiens + ceux partagés par la synchro) :
 // - XP de base de chaque monstre (nom|niveau) et bonus de groupe réel par nombre de monstres ;
 // - bonus d'XP de chaque joueur (r.src : 'me' = toi, sinon pseudo de la synchro) : compte Discord lié, événements… ; pris sur
-//   ses 100 derniers combats, sans ceux amputés par l'écart de niveau. Le tien multiplie les prévisions ;
-// - écart de niveau : XP mesurée / prévue sur tes 20 derniers combats de chaque zone (appliquée si < 0,9) ;
+//   ses 50 derniers combats, ramenés sans écart de niveau. Le tien multiplie les prévisions ;
+// - écart de niveau (xpLevelPen) au niveau demandé (cur.lvl : le tien, ou celui choisi pour préparer une remontée) ;
 // - kamas par niveau de monstre (médiane, par zone si ≥ 3 combats, sinon toutes zones) ;
 // - drops : valeur moyenne par monstre d'après le bestiaire (à ta Prospection), recalée sur les drops réellement mesurés
 //   (Σ mesuré / Σ prévu, objets bonus de victoire compris) dès 5 combats.
@@ -479,13 +486,14 @@ function farmModel(all, best, cur) {
       lvl += +l || 0;
       pred += best?.get(normName(n)) || 0;
     }
-    if (sum && r.xp) xr.push([r.src || 'me', r.m.length, r.xp / (sum * (1 + r.sag / 100)), r.at, r.z]);
+    // XP ramenée sans écart de niveau quand le niveau du joueur est connu (combats depuis 2.1.4)
+    if (sum && r.xp) xr.push([r.src || 'me', r.m.length, r.xp / (sum * (1 + r.sag / 100) * xpLevelPen(r.lvl, r.m.map((x) => x[1]))), r.at]);
     if (lvl) { kpl.all.push(r.k / lvl); (kpl[r.z] ||= []).push(r.k / lvl); }
     if (pred) { dropMeas += farmValueAt(r, cur.pp); dropPred += pred; nPred++; }
   }
   // Bonus de chaque joueur (×2 de base, ×1,1 Discord, événements…) = médiane de ses 50 derniers combats rapportés au bonus de
-  // groupe, sans ceux sous 90 % de son 3e quartile (écart de niveau). Le tien sert aux prévisions ; sans combat à toi, la
-  // médiane des autres joueurs.
+  // groupe, sans ceux sous 90 % de son 3e quartile (écart de niveau des combats sans niveau connu). Le tien sert aux
+  // prévisions ; sans combat à toi, la médiane des autres joueurs.
   const per = {};
   for (const [s, n, x, at] of xr) (per[s] ||= []).push([at, x / groupCoef(n)]);
   const mult = Object.fromEntries(Object.entries(per).map(([s, a]) => {
@@ -495,13 +503,6 @@ function farmModel(all, best, cur) {
   }));
   const myMult = mult.me || median(Object.values(mult)) || 2;
   const coef = groupCoef;
-  // Écart de niveau : tes 20 derniers combats de chaque zone, XP réelle / XP prévue.
-  const penAcc = {};
-  for (const [s, n, x, at, z] of xr) if (s === 'me') (penAcc[z] ||= []).push([at, x / (coef(n) * myMult)]);
-  const pen = Object.fromEntries(Object.entries(penAcc).map(([z, a]) => {
-    const p = median(a.sort((u, v) => v[0] - u[0]).slice(0, 20).map((u) => u[1]));
-    return [z, p < 0.9 ? p : 1];
-  }));
   const dropCal = nPred >= 5 && dropPred ? Math.min(4, Math.max(0.25, dropMeas / dropPred)) : 1;
   const kamasPerLvl = (z) => median(kpl[z]?.length >= 3 ? kpl[z] : kpl.all) || 0;
   const sagMul = 1 + (cur.sag || 0) / 100;
@@ -510,11 +511,12 @@ function farmModel(all, best, cur) {
     const xs = mons.map((m) => mobXp.get(`${normName(m.name)}|${m.lvl}`));
     const lvl = mons.reduce((s, m) => s + (+m.lvl || 0), 0);
     return {
-      xp: mons.length && xs.every(Boolean) ? xs.reduce((a, b) => a + b, 0) * coef(mons.length) * myMult * (pen[z] || 1) * sagMul : null,
+      xp: mons.length && xs.every(Boolean)
+        ? xs.reduce((a, b) => a + b, 0) * coef(mons.length) * myMult * xpLevelPen(cur.lvl, mons.map((m) => m.lvl)) * sagMul : null,
       val: best ? mons.reduce((s, m) => s + (best.get(normName(m.name)) || 0), 0) * dropCal + kamasPerLvl(z) * lvl : null,
     };
   };
-  return { predict, dropCal, myMult, pen };
+  return { predict, dropCal, myMult };
 }
 
 // Lignes du classement, par zone + n° de groupe (ce que farme ▶ : le groupe n° N, renouvelé toutes les ~3 min).
@@ -524,7 +526,7 @@ function farmModel(all, best, cur) {
 // Durée : tes combats seulement (elle dépend de ton build) — ce groupe, sinon la zone, sinon ta durée type.
 function farmRows(log, shared, scan, best, cur) {
   const all = [...log, ...shared];
-  const { predict, dropCal, myMult, pen } = farmModel(all, best, cur);
+  const { predict, dropCal, myMult } = farmModel(all, best, cur);
   const sagMul = 1 + (cur.sag || 0) / 100;
   const cycle = median(log.map((r) => r.d).filter(Boolean)) || null;   // ta durée type d'un combat
   const zoneDur = {};
@@ -571,7 +573,7 @@ function farmRows(log, shared, scan, best, cur) {
     o.dur = median(m?.d || []) || median(zoneDur[o.z] || []) || cycle;
     o.estOnly = !m;
   }
-  for (const o of rows.values()) o.pen = pen[o.z] || 1;
+  for (const o of rows.values()) o.pen = mean(o.samples.map((mons) => xpLevelPen(cur.lvl, mons.map((m) => m.lvl))));
   return { rows: [...rows.values()], cycle, dropCal, myMult };
 }
 
@@ -605,13 +607,14 @@ async function openFarmStats() {
   const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:4px 9px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
   const inp = 'background:#241e16;color:#eee;border:1px solid #5a4a33;border-radius:6px;padding:3px 6px;font:12px system-ui,sans-serif';
   ov.innerHTML = `<div style="width:min(900px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
-    <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📈 Rentabilité des zones${DM.tip('Chaque victoire en chasse est enregistrée (XP, kamas, objets lâchés au prix de revente marchand), ramenée à 0 de Sagesse puis remise à ta Sagesse actuelle : changer d’équipement ne fausse pas le classement. Ton bonus d’XP personnel (compte Discord lié ×1,1, événements) est appris sur tes derniers combats, et la perte d’XP quand tu dépasses de loin le niveau des monstres sur tes derniers combats de la zone.&#10;Drops : revente au marchand (10 K × niveau, 2 000 K au plus ; anciens combats ramenés à ce prix). Le bestiaire ne publie pas de chance pour la plupart des objets lâchés (bonus de victoire) : ceux-là ne dépendent pas de ta Prospection et restent tels que mesurés.&#10;Le nombre de monstres compte : un n° de groupe change de composition à chaque renouvellement (2 monstres puis 6…). Pour chaque composition vue sous ce n° (combats + dernier scan), on calcule ce qu’elle rapporte monstre par monstre — XP de base × bonus de groupe appris en jeu, drops du bestiaire recalés sur tes drops réels, kamas par niveau de monstre — puis on fait la moyenne. La moyenne brute est en info-bulle.&#10;≈ : groupe jamais combattu (composition du dernier scan seulement ; XP si chaque monstre a déjà été combattu à ce niveau).&#10;Combats : les tiens, + ceux reçus par la synchro (en bleu). /min : avec TA durée réelle entre deux combats.&#10;▶ envoie le pilote farmer ce groupe en mode chasse.')}</b>
+    <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📈 Rentabilité des zones${DM.tip('Chaque victoire en chasse est enregistrée (XP, kamas, objets lâchés au prix de revente marchand), ramenée à 0 de Sagesse puis remise à ta Sagesse actuelle : changer d’équipement ne fausse pas le classement. Ton bonus d’XP personnel (compte Discord lié ×1,1, événements) est appris sur tes derniers combats, et la perte d’XP quand tu dépasses de plus de 10 niveaux le plus haut monstre du groupe (−4 % par niveau, ×0,1 au moins) est comptée à ton niveau, ou à celui choisi dans « XP à mon niveau ».&#10;Drops : revente au marchand (10 K × niveau, 2 000 K au plus ; anciens combats ramenés à ce prix). Le bestiaire ne publie pas de chance pour la plupart des objets lâchés (bonus de victoire) : ceux-là ne dépendent pas de ta Prospection et restent tels que mesurés.&#10;Le nombre de monstres compte : un n° de groupe change de composition à chaque renouvellement (2 monstres puis 6…). Pour chaque composition vue sous ce n° (combats + dernier scan), on calcule ce qu’elle rapporte monstre par monstre — XP de base × bonus de groupe appris en jeu, drops du bestiaire recalés sur tes drops réels, kamas par niveau de monstre — puis on fait la moyenne. La moyenne brute est en info-bulle.&#10;≈ : groupe jamais combattu (composition du dernier scan seulement ; XP si chaque monstre a déjà été combattu à ce niveau).&#10;Combats : les tiens, + ceux reçus par la synchro (en bleu). /min : avec TA durée réelle entre deux combats.&#10;▶ envoie le pilote farmer ce groupe en mode chasse.')}</b>
       <button data-a="x" style="${btn};background:transparent">✕</button></div>
     <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:12px">
       <label>Trier par <select data-f="sort" style="${inp}"><option value="xpMin">XP / min</option><option value="xp">XP / combat</option><option value="valMin">Kamas + drops / min</option><option value="val">Kamas + drops / combat</option></select></label>
       <label><input type="checkbox" data-f="est"> estimations (≈)</label>
       <label title="Combats reçus par la synchro (popup de l’extension)"><input type="checkbox" data-f="shared"> mesures partagées</label>
       <label>Niveau max <input type="number" data-f="lvl" min="0" max="200" style="${inp};width:60px" placeholder="—"></label>
+      <label title="XP calculée à ce niveau de personnage (perte d’XP quand tu dépasses de plus de 10 niveaux le plus haut monstre du groupe : −4 % par niveau, ×0,1 au moins). Vide = ton niveau actuel. Pratique pour préparer une remontée après un Prestige. Si « Niveau max » est vide, les zones au-dessus de ce niveau sont masquées. La durée par combat reste la tienne actuelle.">XP à mon niveau <input type="number" data-f="atLvl" min="1" max="200" style="${inp};width:60px" placeholder="actuel"></label>
       <span data-k="cur" style="color:#b9a98c;margin-left:auto"></span>
     </div>
     <div data-k="msg" style="font-size:12px;color:#b9a98c"></div>
@@ -620,12 +623,13 @@ async function openFarmStats() {
       <button data-a="clear" style="${btn}" title="Effacer toutes les mesures de ce personnage — 2e clic pour confirmer">🗑️ Effacer les mesures</button></div></div>`;
   document.body.appendChild(ov);
   const $ = (q) => ov.querySelector(q);
-  let prefs = { sort: 'xpMin', est: true, shared: true, lvl: '' };
+  let prefs = { sort: 'xpMin', est: true, shared: true, lvl: '', atLvl: '' };
   try { prefs = { ...prefs, ...JSON.parse(localStorage.getItem('dmFarmStatsPrefs') || '{}') }; } catch { /* défaut */ }
   $('[data-f="sort"]').value = prefs.sort;
   $('[data-f="est"]').checked = prefs.est;
   $('[data-f="shared"]').checked = prefs.shared;
   $('[data-f="lvl"]').value = prefs.lvl;
+  $('[data-f="atLvl"]').value = prefs.atLvl;
   let bc = null, bz = null, best = null, bestPp = null;
   try {
     $('[data-k="msg"]').textContent = 'Lecture du bestiaire…';
@@ -638,13 +642,14 @@ async function openFarmStats() {
   const render = () => {
     const log = cfg.farmLog?.[fightAcct()] || [];
     const last = log[log.length - 1];
-    const cur = farmChar() || (last ? { sag: last.sag, pp: last.pp } : { sag: 0, pp: 100 });
-    $('[data-k="cur"]').textContent = `Sagesse ${fmt(cur.sag)} · Prospection ${fmt(cur.pp)}`;
+    const cur = { ...(farmChar() || (last ? { sag: last.sag, pp: last.pp, lvl: last.lvl } : { sag: 0, pp: 100 })) };
+    if (+prefs.atLvl > 0) cur.lvl = +prefs.atLvl;
+    $('[data-k="cur"]').textContent = `Sagesse ${fmt(cur.sag)} · Prospection ${fmt(cur.pp)}${cur.lvl ? ` · niveau ${cur.lvl}${+prefs.atLvl > 0 ? ' (choisi)' : ''}` : ''}`;
     if (bc && bestPp !== cur.pp) { best = bestiaryMobValue(bc, cur.pp); bestPp = cur.pp; }
     // chaque combat partagé garde son joueur (src) : son bonus d'XP personnel est appris à part
     const shared = prefs.shared ? Object.entries(cfg.farmShared || {}).flatMap(([p, l]) => l.map((r) => ({ ...r, src: p }))) : [];
     const { rows, cycle, dropCal, myMult } = farmRows(log, shared, cfg.wantedScan, best, cur);
-    const lvlMax = +prefs.lvl || 0;
+    const lvlMax = +prefs.lvl || +prefs.atLvl || 0;   // « XP à mon niveau » sans niveau max : zones au-dessus masquées
     const zoneLvl = (z) => bz?.[z]?.[1];
     for (const r of rows) {
       r.name = r.zn || bz?.[r.z]?.[0] || `Zone ${r.z}`;
@@ -661,7 +666,7 @@ async function openFarmStats() {
         const tip = [r.meas && `${r.meas.mine} combat(s) à toi${r.meas.n > r.meas.mine ? ` + ${r.meas.n - r.meas.mine} partagé(s)` : ''}, dernier ${new Date(r.meas.last).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}`,
           `moyenne de ${r.comps} composition(s) vue(s) sous ce n° de groupe`,
           r.meas && `moyenne brute mesurée : ${fmt(r.measXp)} XP, ${fmt(r.measVal)} K`,
-          r.pen < 1 && `écart de niveau : tes derniers combats ici rapportent ×${r.pen.toFixed(2)} de l’XP normale (déjà compté)`,
+          r.pen < 1 && `écart de niveau : ×${r.pen.toFixed(2)} de l’XP à ton niveau (déjà compté)`,
           r.dur && `durée type ${Math.round(r.dur / 1000)} s`,
           r.now && `groupe du dernier scan : ${r.now.mons.join(', ')} → ≈ ${fmt(r.now.xp)} XP, ${fmt(r.now.val)} K`].filter(Boolean).join('\n');
         return `<tr title="${esc(tip)}" style="${r.estOnly ? 'color:#b9a98c;font-style:italic' : ''}"><td style="${td}">${i + 1}</td>
