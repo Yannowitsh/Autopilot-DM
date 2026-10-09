@@ -506,8 +506,32 @@ async function openFavorites() {
   let b = null;
   try { b = await fetchBestiary(say); say(''); } catch (e) { say(`Bestiaire illisible (${e.message}) : sources indisponibles.`); }
   ov.addEventListener('keydown', (e) => { if (e.key !== 'Escape') e.stopPropagation(); });   // la frappe ne va pas aux raccourcis du jeu
-  // Builder manuel : n'importe quel objet du jeu (bestiaire) ajouté à la liste de courses, rangée par emplacement.
-  const itemById = new Map((b?.items || []).map((it) => [it.id, it]));
+  // Builder manuel : n'importe quel objet du jeu ajouté à la liste de courses, rangée par emplacement. Le bestiaire local ne
+  // connaît que les objets lâchés par des monstres ou des boss (~1 000 sur ~3 300) : la recherche interroge aussi l'onglet
+  // Objets de l'encyclopédie (/bestiaire?onglet=objets&q=…, recherche faite par le serveur sur tous les objets du jeu).
+  const itemById = new Map([...(cfg.dropCart || []).filter((c) => c.s).map((c) => [c.id, { id: c.id, n: c.name, icon: c.icon, s: c.s, lvl: c.lvl, setName: c.setName }]),
+    ...(b?.items || []).map((it) => [it.id, it])]);
+  const siteHits = new Map();   // recherche normalisée → ids trouvés par le site (null = en cours)
+  let siteTimer = null;
+  const siteSearch = (raw, q) => {
+    if (siteHits.has(q)) return;
+    siteHits.set(q, null);
+    fetchFlight(`/bestiaire?onglet=objets&q=${encodeURIComponent(raw.trim())}`).then(({ flight }) => {
+      const { rows } = rscProps(flight, () => false);
+      const ids = new Set();
+      const walk = (x) => {
+        if (x == null || typeof x !== 'object') return;
+        if (!Array.isArray(x) && Number.isInteger(x.id) && typeof x.n === 'string' && x.s && x.st && typeof x.st === 'object') {
+          if (!itemById.has(x.id)) itemById.set(x.id, { id: x.id, n: x.n, lvl: x.lvl, s: x.s, icon: x.icon, setName: x.setName || null });
+          ids.add(x.id);
+        }
+        for (const k in x) walk(x[k]);
+      };
+      for (const id in rows) walk(rows[id]);
+      siteHits.set(q, [...ids]);
+    }).catch((e) => { siteHits.set(q, []); DM.log(`recherche d’objets du site : ${e.message}`); })
+      .finally(() => { if (normName($('[data-a="cartSearch"]').value || '') === q) renderHits(); });
+  };
   const SLOT_ORDER = Object.keys(SLOT_NAMES);
   const slotRank = (id) => { const k = SLOT_ORDER.indexOf(itemById.get(id)?.s); return k < 0 ? 99 : k; };
   const huntable = (id) => (b?.drops[id] || []).some(([, , , , zs]) => zs?.length);
@@ -545,7 +569,7 @@ async function openFavorites() {
         <button data-a="fuseCart" style="${btn}" title="Fusionne maintenant les objets de la liste jusqu’à leur tier voulu (seulement ceux-là)">⚡ Fusionner la liste</button>` : ''}
         <button data-a="drop" style="${btn};background:#6a3fa0" title="Ouvre la liste de courses complète : objets du build et favoris, tiers voulus, exemplaires déjà possédés, puis lancer le farm">🐉 ${cart.length ? 'Modifier / lancer le farm' : 'Composer la liste'}</button></div>`
       + (cart.length ? [...cart].sort((x, y) => slotRank(x.id) - slotRank(y.id)).map((c) => {
-        const it = itemById.get(c.id);
+        const it = itemById.get(c.id) || { s: c.s, lvl: c.lvl, setName: c.setName };
         return `<div style="display:flex;gap:8px;align-items:center;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:4px 8px">
         <span style="width:70px;color:#8a7d66;font-size:11px">${esc(SLOT_NAMES[it?.s] || it?.s || '')}</span>
         ${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:24px;height:24px;object-fit:contain">` : ''}
@@ -571,13 +595,19 @@ async function openFavorites() {
     const q = normName($('[data-a="cartSearch"]').value || '');
     const box = $('[data-k="cartHits"]');
     if (q.length < 2) { box.innerHTML = ''; return; }
-    if (!b) { box.innerHTML = '<div style="color:#8a7d66;font-size:12px">Bestiaire indisponible : recherche impossible.</div>'; return; }
+    if (q.length >= 3 && !siteHits.has(q)) {   // tous les objets du jeu, après une courte pause de frappe
+      clearTimeout(siteTimer);
+      const raw = $('[data-a="cartSearch"]').value;
+      siteTimer = setTimeout(() => siteSearch(raw, q), 400);
+    }
     const inCart = new Set((cfg.dropCart || []).map((c) => c.id));
-    const all = b.items.filter((it) => normName(it.n).includes(q) || (it.setName && normName(it.setName).includes(q)));
+    const all = [...itemById.values()].filter((it) => normName(it.n).includes(q) || (it.setName && normName(it.setName).includes(q))
+      || siteHits.get(q)?.includes(it.id));
     const hits = all.sort((x, y) => (y.lvl || 0) - (x.lvl || 0) || slotRank(x.id) - slotRank(y.id)).slice(0, 30);
     const sets = [...new Set(all.map((it) => it.setName).filter((n) => n && normName(n).includes(q)))].slice(0, 3);
+    const searching = q.length >= 3 && siteHits.get(q) === undefined || siteHits.get(q) === null;
     box.innerHTML = sets.map((n) => {
-      const ids = b.items.filter((it) => it.setName === n).map((it) => it.id);
+      const ids = [...itemById.values()].filter((it) => it.setName === n).map((it) => it.id);
       const missing = ids.filter((id) => !inCart.has(id)).length;
       return `<button data-addset="${esc(n)}" style="${btn};background:#6a5a1a;text-align:left"${missing ? '' : ' disabled'}>🛒 + toute la ${esc(n)} (${ids.length} objets${missing < ids.length ? `, ${ids.length - missing} déjà dans la liste` : ''})</button>`;
     }).join('') + hits.map((it) => `<div style="display:flex;gap:8px;align-items:center;background:#1f1a13;border:1px solid #3a3024;border-radius:8px;padding:3px 8px">
@@ -585,9 +615,11 @@ async function openFavorites() {
         <span style="flex:1">${esc(it.n)} <span style="color:#8a7d66;font-size:12px">${esc(SLOT_NAMES[it.s] || it.s || '')} · niv. ${it.lvl || '?'}${it.setName ? ` · ${esc(it.setName)}` : ''}</span>${huntable(it.id) ? '' : ' <span style="color:#e08a5a;font-size:11px">pas en chasse</span>'}</span>
         <button data-add="${+it.id}" style="${btn};${inCart.has(it.id) ? 'background:#6a5a1a' : ''}" title="${inCart.has(it.id) ? 'Dans la liste (cliquer pour retirer)' : 'Ajouter à la liste de courses'}">${inCart.has(it.id) ? '🛒 ✔' : '🛒 +'}</button></div>`).join('')
       + (all.length > hits.length ? `<div style="color:#8a7d66;font-size:12px">… ${all.length - hits.length} autre(s) : précise la recherche.</div>` : '')
+      + (searching ? '<div style="color:#8a7d66;font-size:12px">Recherche dans tous les objets du jeu…</div>' : '')
       || '<div style="color:#8a7d66;font-size:12px">Aucun objet trouvé.</div>';
   }
-  const cartEntry = (id) => { const it = itemById.get(id); return { id, name: it?.n || `Objet ${id}`, icon: it?.icon }; };
+  // emplacement / niveau / panoplie gardés dans la liste : un objet hors bestiaire reste rangé à la réouverture
+  const cartEntry = (id) => { const it = itemById.get(id); return { id, name: it?.n || `Objet ${id}`, icon: it?.icon, s: it?.s, lvl: it?.lvl, setName: it?.setName || undefined }; };
   render();
   ov.addEventListener('input', (e) => { if (e.target.dataset.a === 'cartSearch') renderHits(); });
   ov.addEventListener('change', (e) => {
@@ -633,7 +665,7 @@ async function openFavorites() {
     const addSet = e.target.closest('[data-addset]');
     if (addSet) {
       const cart = cfg.dropCart || [], have = new Set(cart.map((c) => c.id));
-      const ids = b.items.filter((it) => it.setName === addSet.dataset.addset && !have.has(it.id)).map((it) => it.id);
+      const ids = [...itemById.values()].filter((it) => it.setName === addSet.dataset.addset && !have.has(it.id)).map((it) => it.id);
       await save({ dropCart: [...cart, ...ids.map(cartEntry)] });
       render();
       return;
