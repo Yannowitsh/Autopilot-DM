@@ -89,6 +89,10 @@ function stuckCheck() {
   if (end && cfg.stuckReloads) save({ stuckReloads: 0 });   // un combat s'est terminé : compteur remis à zéro
   oddPage(now);
   const waitingPresence = !!presenceDialog();
+  // Auto par poids : le combat dure bien plus que les ~10 s de l'Auto du jeu, et ses actions partent de l'extension
+  // (invisibles pour netwatch.js). Tant qu'il joue (une action il y a moins de FIGHT_STALL_MS), le combat n'est ni figé ni perdu ;
+  // à la fin, il recharge lui-même la page (10 s de marge).
+  const weightsPlaying = (weightedBusy || now - weightedDoneAt < 10000) && now - lastProgress < FIGHT_STALL_MS;
   let why = null;
   if (launchAt && now - launchAt > LAUNCH_TIMEOUT_MS) why = 'lancement du combat sans réponse';
   else if (busy && now - busySince > BUSY_TIMEOUT_MS + cfg.delayMax * 1000) why = 'pilote bloqué';
@@ -96,10 +100,10 @@ function stuckCheck() {
   else if (oddKind === 'blank' && now - oddSince > BLANK_STALL_MS) why = 'page vide';
   else if (pendingFor(now) > PENDING_MAX_MS) why = `requête sans réponse depuis ${Math.round(pendingFor(now) / 1000)} s`;
   else if (!waitingPresence && presenceAt && inFight && now - presenceAt > PRESENCE_STALL_MS) why = 'combat figé après la vérification de présence';
-  else if (!waitingPresence && inFight && cfg.botFight && now - fightSince > FIGHT_STALL_MS) why = 'combat figé';
+  else if (!waitingPresence && !weightsPlaying && inFight && cfg.botFight && now - fightSince > FIGHT_STALL_MS) why = 'combat figé';
   // Combat disparu côté serveur : la page /combat ne lance plus rien → inutile de recharger, on repart de l'accueil.
   // (seulement si netwatch.js tourne dans la page, sinon le compteur de requêtes reste à 0)
-  if (!why && !waitingPresence && inFight && cfg.botFight && document.documentElement.dataset.dmNetwatch
+  if (!why && !waitingPresence && !weightsPlaying && inFight && cfg.botFight && document.documentElement.dataset.dmNetwatch
       && !pageActions() && !pendingFor(now) && now - pageLoadedAt > LOST_FIGHT_MS) why = 'combat introuvable (perdu par le serveur)';
   if (!why || now - (cfg.lastStuckReload || 0) < reloadGapMs()) return false;
   launchAt = 0;

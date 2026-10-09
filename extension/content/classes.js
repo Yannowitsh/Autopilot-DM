@@ -56,7 +56,9 @@ function classTracker(breed, at = Date.now()) {
     // l'annonce vaut pour le tour : Masques change chaque tour (« Masque Pleutre : −25 % de dégâts subis » = aucun bonus)
     turn() { s.myTurns++; s.turnCasts = 0; s.turnDmgCasts = 0; s.logged = null; },
     passiveLog(text) {
-      if (/passe par un portail/.test(text)) return;   // Portails : propre au lancer qui vient d'avoir lieu (après la ligne play)
+      if (/passe par un portail/.test(text)) return;
+      // Proie : l'annonce suit le coup et ne vaut que contre cette cible (changer de cible la remet à zéro) → le modèle suffit
+      if (/est sa Proie/.test(text)) return;   // Portails : propre au lancer qui vient d'avoir lieu (après la ligne play)
       const m = String(text).match(/\+(\d+(?:[.,]\d+)?) ?% de dégâts(?! subis)/);
       if (m) s.logged = +m[1].replace(',', '.');
       else if (/% de dégâts subis/.test(text)) s.logged = 0;

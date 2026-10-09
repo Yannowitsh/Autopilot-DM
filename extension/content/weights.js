@@ -121,7 +121,7 @@ function chooseFightAction(st, casts, blocked, rules = null) {
 }
 
 // useGameAuto : sur cette page, on laisse l'Auto du jeu (état illisible, combat déjà en Auto, erreur…).
-let weightedBusy = false, useGameAuto = false;
+let weightedBusy = false, useGameAuto = false, weightedDoneAt = 0;
 // État de départ du combat, capté par netwatch dans la réponse de lancement : évite de recharger /combat.
 let fightInit = null;
 window.addEventListener('message', (e) => {
@@ -236,6 +236,7 @@ async function weightedFight(manual = null) {
     fallback(e.message);
   } finally {
     weightedBusy = false;
+    weightedDoneAt = Date.now();   // l'anti-blocage laisse la page se recharger d'elle-même (voir stuckCheck)
     // la page n'a rien vu de nos actions : on la recharge, elle affiche l'écran de fin (ou l'état à jour)
     if (reload && (manual || isOwner())) location.reload();
   }
