@@ -319,7 +319,7 @@ function renderFuse() {
 // on les remonte de sa hauteur (variable CSS --dm-lift sur <html>, héritée par les shadow roots). 0 sur ordinateur.
 let liftAt = 0;
 function updateLift() {
-  if (Date.now() - liftAt < 2000) return;
+  if (!DM.IS_MOBILE || Date.now() - liftAt < 2000) return;
   liftAt = Date.now();
   let lift = 0;
   for (let el = document.elementFromPoint(innerWidth / 2, innerHeight - 4); el && el !== document.body; el = el.parentElement) {
@@ -409,6 +409,7 @@ function renderUi() {
     b.disabled = seasonOn() && b.dataset.mode !== 'chasse';   // saison : Aventure / Ascension (boss) interdites
   }
   $('season').checked = seasonOn();
+  $('season').disabled = seasonTab === true;   // perso de saison : toujours protégé
   for (const b of ui.root.querySelectorAll('[data-engine]')) b.classList.toggle('on', b.dataset.engine === (cfg.fightEngine || 'game'));
   // modules désactivés dans la popup : leurs sections du menu sont masquées
   for (const el of ui.root.querySelectorAll('[data-mod]')) {

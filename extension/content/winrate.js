@@ -13,6 +13,7 @@
 // dès le lancement, l'estimation de départ reste affichée à côté.
 const WIN_SIMS = 300, WIN_MAX_ROUNDS = 40, WIN_LEARN_RATE = 0.2, WIN_MIN_FIGHTS = 3;
 const WIN_KIND_DEFAULT = { attack: 1, heavy: 1.6, drain: 0.8 };   // dégâts / atk, avant apprentissage (rage, soins… : 0)
+const WIN_HIT_KINDS = new Set(['attack', 'heavy', 'drain', 'rage']);   // intentions dont la valeur est un coup
 // modèle par personnage et par moteur (l'Auto par poids ne frappe pas comme l'Auto du jeu)
 const winAcct = () => `${fightAcct()}|${weightsOn() ? 'poids' : 'auto'}`;
 const winModelOf = () => cfg.winModel?.[winAcct()] || {};
@@ -34,7 +35,6 @@ function winObserve(st) {
   return { turns, dealt, healed, kinds };
 }
 const winKey = (st) => `${st.kind}|${Object.values(st.fighters || {}).filter((f) => f.id !== 'p').map((f) => f.name).join(',')}`;
-const shieldSum = (f) => (f.shields || []).reduce((t, x) => t + (+x.value || +x.v || +x.amount || 0), 0);
 const noise = (sd) => {   // 1 ± sd (loi normale, Box-Muller), jamais négatif
   const g = Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
   return Math.max(0, 1 + sd * g);
@@ -59,7 +59,7 @@ function winSim(st) {
   const obs = winObserve(st);
   if (obs.turns >= 2) { dpt = 0.7 * (obs.dealt / obs.turns) + 0.3 * dpt; hpt = 0.7 * (obs.healed / obs.turns) + 0.3 * hpt; }
   const ratio = (k) => ((m.kinds?.[k]?.n || 0) >= 3 ? m.kinds[k].r : WIN_KIND_DEFAULT[k] ?? 0);
-    if (!(dpt > 0)) return 0;
+  if (!(dpt > 0)) return 0;
   let wins = 0;
   for (let s = 0; s < WIN_SIMS; s++) {
     let hp = +P.hp + shieldSum(P);
@@ -79,7 +79,9 @@ function winSim(st) {
       hp = Math.min(maxHp, hp + hpt * noise(0.3));
       for (const f of foes) {
         if (f.hp <= 0) continue;
-        let v = f.next ? (+f.next.value || f.atk * ratio(f.next.k)) : f.atk * ratio(f.pat[f.i % f.pat.length]);
+        // intention annoncée : sa valeur pour une attaque (comme incomingOf), rien pour un soin, un bouclier…
+        const k = f.next ? f.next.k : f.pat[f.i % f.pat.length];
+        let v = f.next && WIN_HIT_KINDS.has(k) && +f.next.value ? +f.next.value : f.atk * ratio(k);
         f.next = null;
         f.i++;
         if (Math.random() < 0.1) v *= 1.5;

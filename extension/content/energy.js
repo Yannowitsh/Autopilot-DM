@@ -179,7 +179,10 @@ const spendEnergy = (cost = 1) => { if (cfg.energy != null) save({ energy: Math.
 
 // ---------- Conditions pour lancer un combat ----------
 async function gate() {
-  if (seasonOn()) return true;   // saison Héroïque : pas d'énergie, combats gratuits
+  if (seasonOn()) {   // saison Héroïque : pas d'énergie, combats gratuits (une pause énergie d'avant est levée)
+    if (cfg.pauseReason === 'energy') await save({ pauseReason: null });
+    return true;
+  }
   const now = Date.now();
 
   if (cfg.pauseReason === 'energy' && !energyFails && now - lastEnergyCheck < ENERGY_POLL_MS) return false;

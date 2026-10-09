@@ -31,6 +31,7 @@ async function onPlayPause() {
   try {
     const ctx = await playContext();
     if (ctx.error) { tradeToast(`▶ ${ctx.error}`, 'err'); return; }
+    seasonDetect();
     if (seasonOn() && ctx.mode && ctx.mode !== 'chasse') { tradeToast(`▶ ${SEASON_ONLY_HUNT}`, 'err'); return; }
     if (dropOn() && ctx.mode) await dropStop('remplacé par ▶ sur une autre activité');
     if (sampleOn() && ctx.mode) await sampleStop('remplacé par ▶ sur une autre activité');
@@ -324,7 +325,7 @@ function buildUi() {
   $('settings').addEventListener('click', () => send({ type: 'openSettings' }).catch(() => {}));
   $('season').addEventListener('change', async () => {
     const on = $('season').checked;
-    await save(on ? { seasonMode: true, seasonAuto: false, mode: 'chasse' } : { seasonMode: false, seasonAuto: false });
+    await save(on ? { seasonMode: true, mode: 'chasse' } : { seasonMode: false });
     renderUi();
     if (on && !cfg.huntZones?.length) await loadZones();
   });

@@ -3,6 +3,7 @@
 // Une requête sans réponse est publiée dans <html data-dm-pending="nombre:début le plus ancien"> ;
 // content/fight.js (monde isolé) la lit et recharge la page si elle traîne (voir stuckCheck).
 // <html data-dm-actions="n"> : nombre de server actions lancées par la page depuis son chargement.
+// <html data-dm-season-char="true|false"> : perso de saison joué ou non, d'après la dernière réponse qui le dit.
 // <html data-dm-fight-end="won|lost:heure"> : une réponse de combat contient l'état final (le serveur joue tout le
 // combat Auto d'un coup ; la page ne fait ensuite que rejouer l'animation) → utilisé par le « combat rapide ».
 // Chaque état de combat reçu est aussi transmis au content script (postMessage « dm-fight ») : stats du personnage
@@ -53,8 +54,15 @@
     const done = () => { pending.delete(id); publish(); };
     const p = orig.apply(this, arguments);
     p.then(done, done);
+    // perso joué (perso de saison ou non) : écrit dans l'en-tête de chaque page, aussi après une navigation côté client
+    const season = (t) => {
+      const m = t.match(/seasonChar\\?":(true|false)/);
+      if (m && document.documentElement) document.documentElement.dataset.dmSeasonChar = m[1];
+    };
+    if (kind === 'rsc') p.then((r) => r.clone().text()).then(season).catch(() => {});
     if (kind === 'action') {
       p.then((r) => r.clone().text()).then((t) => {
+        season(t);
         const m = t.match(/"logCount":\d+,"status":"(won|lost)"/);   // état final du combat (pas « ongoing »)
         if (m && document.documentElement) document.documentElement.dataset.dmFightEnd = `${m[1]}:${Date.now()}`;
         // ligne du résultat de l'action (souvent la 1, pas toujours : la 1 peut être une référence de module « I[…] »)

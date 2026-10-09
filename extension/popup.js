@@ -69,7 +69,6 @@ async function saveForm() {
   for (const k of BOOL) o[k] = $(k).checked;
   if (o.delayMax < o.delayMin) o.delayMax = o.delayMin;
   if (o.seasonMode) o.mode = 'chasse';   // saison : chasse uniquement (les boss tuent le perso de saison)
-  if (o.seasonMode !== !!(await DM.getAll()).seasonMode) o.seasonAuto = false;   // case changée à la main
   await chrome.storage.local.set(o);
   $('msg').textContent = 'Réglages enregistrés.';
 }

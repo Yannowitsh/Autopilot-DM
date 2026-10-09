@@ -193,7 +193,7 @@ function planTurn(st, cand, rules) {
   // Bouclier d'un boss (sa « garde », souvent pour 1 tour) : il absorbe chaque coup sauf la part de notre Perforation
   // (0,05 % par point de Fuite + Tacle, 25 % au plus : ~10 % vérifié à l'étage 36). Ce qu'il absorbe est perdu s'il expire
   // avant d'être cassé : dans la recherche, seuls les dégâts qui atteignent ses PV comptent.
-  const enemyShield = (f) => (f.shields || []).reduce((t, x) => t + (+x.value || +x.v || +x.amount || 0), 0);
+  const enemyShield = shieldSum;
   const perfo = Math.min(0.25, ((fighterStat(p)('fuite') || 0) + (fighterStat(p)('tacle') || 0)) * 0.0005);
   const ehpOf = (f) => (+f.hp || 0) + enemyShield(f);
   // dégâts d qui atteignent les PV de f, bouclier restant sh : [vers les PV, bouclier après]
@@ -385,7 +385,8 @@ function reflectTracker() {
   return {
     cur,
     line(L) {
-      if (L.t === 'round') { for (const [id, e] of next) cur.set(id, e); next.clear(); return; }
+      // nouveau tour : seul l'élément annoncé reste renvoyé (sans annonce, le Reflet s'arrête jusqu'au prochain message)
+      if (L.t === 'round') { cur.clear(); for (const [id, e] of next) cur.set(id, e); next.clear(); return; }
       if (L.t !== 'mechanic' || !L.who) return;
       const t = L.text || '';
       const m = t.match(/dégâts (Neutre|Terre|Feu|Eau|Air) lui sont renvoyés/) || t.match(/renvoie les dégâts (Neutre|Terre|Feu|Eau|Air)/);
@@ -395,6 +396,8 @@ function reflectTracker() {
     },
   };
 }
+// Bouclier total d'un combattant (format des boucliers selon les versions du jeu : value, v ou amount).
+const shieldSum = (f) => (f.shields || []).reduce((t, x) => t + (+x.value || +x.v || +x.amount || 0), 0);
 const reflectNow = (st) => { const r = reflectTracker(); for (const L of st.log || []) r.line(L); return r.cur; };
 // Part des lignes de dégâts d'une carte dans l'élément renvoyé (0 : pas concernée, 1 : entièrement renvoyée).
 function reflFrac(card, el) {

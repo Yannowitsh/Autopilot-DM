@@ -251,7 +251,7 @@ const DM = {
 
   // Libellé court de l'activité du pilote (bouton Démarrer…).
   modeLabel(s) {
-    if (s.seasonMode && !(s.mode === 'chasse' && s.huntZone)) return '🛡️ saison : choisis une zone de chasse';
+    if ((s.seasonMode || s.seasonPilot) && !(s.mode === 'chasse' && s.huntZone)) return '🛡️ saison : choisis une zone de chasse';
     if (s.mode === 'ascension') return 'ascension';
     return s.mode === 'chasse' && s.huntZone ? `chasse : ${s.huntZoneName || 'zone ' + s.huntZone}${s.huntGroup ? ` · G${s.huntGroup}` : ''}` : 'aventure';
   },

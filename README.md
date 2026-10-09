@@ -41,13 +41,13 @@ Les fichiers `.xpi` sont fabriqués par GitHub Actions (`.github/workflows/firef
 
 ## Mode saison (saison Héroïque)
 
-Pendant une saison Héroïque, une défaite contre un **boss** tue définitivement le perso de saison ; une défaite contre des monstres de chasse ne coûte rien. Le mode **🛡️ Mode saison** s'active **tout seul** dès que l'extension voit que tu joues ton perso de saison (le jeu l'indique dans chaque page), et se désactive quand tu repasses sur ton perso principal. Tu peux aussi le cocher à la main (menu 🤖 → Activité, ou popup → Réglages) ; coché à la main, il reste coché. Avec le mode saison :
+Pendant une saison Héroïque, une défaite contre un **boss** tue définitivement le perso de saison ; une défaite contre des monstres de chasse ne coûte rien. Le mode **🛡️ Mode saison** s'active **tout seul** dans chaque onglet où tu joues ton perso de saison (le jeu l'indique dans chaque page) : sa case est alors cochée et grisée. Un autre onglet ou une fenêtre privée sur ton perso principal n'est pas concerné et garde l'Aventure et l'Ascension. Tu peux aussi le cocher à la main (menu 🤖 → Activité, ou popup → Réglages) : il s'applique alors à tous les onglets. Avec le mode saison :
 
 - le pilote ne fait **que de la chasse** (zone choisie) : Aventure (étapes de boss) et Ascension sont grisées, et le pilote s'arrête avec un message s'il n'est pas en chasse ; le bouton **▶** refuse les pages Aventure et Ascension ;
 - le boss de chasse automatique n'est jamais tenté ;
 - l'énergie n'est plus surveillée (combats gratuits en saison).
 
-Le farm de drop, le 📈 Leveling et l'échantillonnage passent par la chasse : ils restent disponibles et ne font que des chasses.
+Le farm de drop, le 📈 Leveling et l'échantillonnage passent par la chasse : ils restent disponibles et ne font que des chasses (le pilote attend qu'ils aient choisi leur zone). Une pause énergie en cours est levée dès que le mode saison s'active.
 
 ## Farm de drop
 

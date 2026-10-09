@@ -76,15 +76,15 @@ const drawLabel = (p, pool) => `pioche (${(+p.drawsLeft || 0) - 1}/${+p.drawsMax
 // prudence (jets bas, pas de coup critique) ; passif de classe et dégâts de zone sur les autres ennemis ignorés (bonus).
 // Renvoie la première carte à jouer et sa cible, ou null (le choix par poids reprend : buffs compris).
 const KILL_MARGIN = 0.85;
-function lethalPlan(st, cand) {
+function lethalPlan(st, cand, reflected) {
   const p = st.fighters.p;
   const foes = Object.values(st.fighters).filter((f) => f.team !== p.team && f.alive && f.id !== 'p');
   const hits = cand.filter((x) => cardKind(x.c) === 'dmg' && !apGainOf(x.c));
   if (!foes.length || !hits.length || hits.length > 10) return null;
   let ap = +p.ap || 0, left = hits, first = null;
   for (const f of foes.sort((a, b) => a.hp - b.hp)) {
-    const need = (+f.hp || 0) + (f.shields || []).reduce((t, x) => t + (+x.value || +x.v || +x.amount || 0), 0);
-    const refl = reflectNow(st).get(f.id);   // Reflet : la part de l'élément renvoyé ne compte pas
+    const need = (+f.hp || 0) + shieldSum(f);
+    const refl = reflected.get(f.id);   // Reflet : la part de l'élément renvoyé ne compte pas
     const dm = left.map((x) => cardEffect(x.c, p, f).dmg * KILL_MARGIN * (1 - reflFrac(x.c, refl)));
     let best = null;
     for (let m = 1; m < 1 << left.length; m++) {
@@ -141,7 +141,7 @@ function chooseFightAction(st, casts, blocked, rules = null) {
       label: `${plan.pick.c.name}${tg ? ` → ${tg.name}` : ''}${why}` };
   }
   // coup final possible sans buff : on ne joue que les dégâts (PA et temps gagnés), cible choisie par le plan
-  const fin = lethalPlan(st, cand);
+  const fin = lethalPlan(st, cand, reflected);
   if (fin) return { action: { type: 'play', card: fin.x.c.uid, target: fin.tgt.id }, pick: fin.x, label: `${fin.x.c.name} → ${fin.tgt.name} (coup final, sans buff)` };
   // meilleure combinaison (main de quelques cartes : on les essaie toutes) ; à égalité, la moins chère en PA
   let best = null;
@@ -197,13 +197,14 @@ async function weightedFight(manual = null) {
     // des cartes ont pu être jouées depuis le lancement)
     let st = !manual && fightInit && Date.now() - fightInit.at < 60000 && fightInit.st?.status === 'ongoing' ? fightInit.st : null;
     fightInit = null;
+    const fromInit = !!st;   // état de lancement : winrate.js l'a déjà estimé (message dm-fight-init)
     if (!st) {
       const { flight } = await fetchFlight('/combat');
       const { rows, props } = rscProps(flight, (x) => 'initial' in x && 'charId' in x);
       st = props && rscDeep(rows, props.initial);
     }
     if (!st?.fighters?.p) return fallback('état du combat introuvable');
-    winUpdate(st);
+    if (!fromInit) winUpdate(st);
     if (st.status !== 'ongoing') return;   // déjà fini : le rechargement affiche l'écran de fin
     if (st.auto) return fallback('combat déjà lancé en Auto');
     let actionId = cachedFightId(), idChecked = false;
