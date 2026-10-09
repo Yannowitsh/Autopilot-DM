@@ -11,6 +11,9 @@
 // - archimonstres de grade 6 : 0 XP (jeu ; Tronkoneuz, Crognan, Boostif, Pissdane — le même Pissdane donne 11 200 XP en
 //   grade 5). Le grade n'est pas affiché sur la page de zone : un monstre vu à 0 XP (nom|niveau) est retenu
 //   (cfg.levelNoXp) et compté à 0, et un combat à 0 XP fait rechoisir un groupe tout de suite ;
+// - archimonstre jamais vu : estimé à 90 % (≈ 1 sur 10 est de grade 6, sans XP : 37 sur 380 vus) ;
+// - nouveau choix à chaque niveau gagné (zones débloquées, perte d'écart de niveau) : les groupes déjà lus sont gardés
+//   jusqu'au renouvellement de leur zone (levelScanCache), seules les nouvelles zones sont lues ;
 // - prudence : seuls les groupes dont la somme des niveaux ≤ ton niveau × `danger` sont pris. `danger` monte de 10 % toutes
 //   les 5 victoires d'affilée (plus haut niveau possible), baisse de 25 % à chaque défaite (et nouveau choix tout de suite) ;
 // - équipement auto forcé : Sagesse > Puissance > Vitalité ; points de caractéristiques mis en Sagesse dès qu'il y en a ;
@@ -28,6 +31,7 @@ const levelChar = () => myName() || fightAcct();
 // Niveau vu dans le dernier combat terminé (combatOnEnd) : { lvl, at }. Pas lastFight() : l'Auto par poids ne le met pas à
 // jour (il gardait le niveau 200 d'une Ascension d'avant le Prestige → montée « finie » au 1er combat, 2.3.0).
 let levelSeen = null;
+const levelScanCache = new Map();   // zone → { at, groups, rotateAt } : valable jusqu'au renouvellement des groupes
 // montées enregistrées par erreur (2.3.0) : moins d'une minute
 const levelHistOf = (who) => (cfg.levelHistory?.[who] || []).filter((x) => x.ms >= 60000);
 
@@ -72,7 +76,9 @@ async function levelBestGroup(lvl, danger, say = () => {}) {
     while (queue.length) {
       const z = queue.shift();
       try {
-        const { groups, rotateAt } = await scanZone(z.id);
+        let c = levelScanCache.get(z.id);
+        if (!c || Date.now() > (c.rotateAt || c.at + 3 * 60000) + 1000) { c = { at: Date.now(), ...(await scanZone(z.id)) }; levelScanCache.set(z.id, c); }
+        const { groups, rotateAt } = c;
         for (const g of groups) {
           const mons = g.monsters.map((m) => ({ name: m.name, lvl: +m.lvl || 1 }));
           if (!mons.length) continue;
@@ -80,7 +86,8 @@ async function levelBestGroup(lvl, danger, say = () => {}) {
           if (total > Math.max(lvl * danger, 3)) continue;   // trop dangereux pour l'instant
           const target = (m) => !!targetMatch(m.name, ALL_KINDS);
           const noXp = (m) => !!cfg.levelNoXp?.[`${normName(m.name)}|${m.lvl}`];
-          const base = mons.reduce((t, m) => t + (mobXpOf(m) || (noXp(m) ? 0 : levelEstXp(m.lvl) * (target(m) ? 1 : 1 / 3))), 0);
+          const est = (m) => levelEstXp(m.lvl) * (!target(m) ? 1 / 3 : targetMatch(m.name, ALL_KINDS)?.kind === 'archi' ? 0.9 : 1);
+          const base = mons.reduce((t, m) => t + (mobXpOf(m) || (noXp(m) ? 0 : est(m))), 0);
           if (!(base > 0)) continue;
           const xp = base * groupCoef(mons.length) * xpLevelPen(lvl, mons.map((m) => m.lvl));
           out.push({ zone: z.id, zn: z.name, g: g.n, xp, mons, total, rotateAt, targets: mons.filter(target).map((m) => m.name) });
@@ -116,7 +123,7 @@ async function levelPick(why) {
   if (!best) return levelStop(`aucun groupe trouvé autour du niveau ${lvl}`);
   if (danger !== run.danger) await save({ levelRun: { ...cfg.levelRun, danger } });
   DM.log(`leveling : ${why} → ${best.zn} groupe ${best.g} (${best.mons.map((m) => `${m.name} ${m.lvl}`).join(', ')}) ≈ ${Math.round(best.xp).toLocaleString('fr-FR')} XP de base, prudence ×${danger.toFixed(2)}`);
-  await save({ levelRun: { ...cfg.levelRun, pickedAt: Date.now(), rotateAt: best.rotateAt || null, pick: best },
+  await save({ levelRun: { ...cfg.levelRun, pickedAt: Date.now(), pickLvl: lvl, rotateAt: best.rotateAt || null, pick: best },
     mode: 'chasse', huntZone: best.zone, huntZoneName: best.zn, huntGroup: best.g, huntTarget: null });
   setStatus(`Leveling : ${best.zn}, groupe ${best.g}${best.targets.length ? ` (🎯 ${best.targets.join(', ')})` : ''}…`);
   progress();
@@ -152,6 +159,7 @@ async function levelAfterWin() {
   const rotated = (run.rotateAt && Date.now() > run.rotateAt + 2000) || Date.now() - (run.pickedAt || 0) > 4 * 60000;
   if (fresh && fresh.xp === 0) { await levelPick('0 XP sur ce groupe (archimonstre de grade 6 ?)'); return true; }
   if (rotated) { await levelPick('groupes renouvelés'); return true; }
+  if (lvl > (run.pickLvl || lvl)) { await levelPick(`niveau ${lvl} : zones et groupes revus`); return true; }
   return false;
 }
 
