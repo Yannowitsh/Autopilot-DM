@@ -47,6 +47,9 @@ const DM = {
     notifyErrors: true,
     notifyDrop: true,
     notifySample: true,
+    notifyLevel: true,
+    levelStopAt200: true, // 📈 Leveling : pilote arrêté au niveau 200
+    levelNotifyEvery: 0,  // 📈 Leveling : notification tous les N niveaux (0 = seulement au début et à 200)
     wantedMinPerGroup: 1, // avis de recherche : nb minimum de monstres recherchés dans le même groupe
     bossPreAlertMin: 0,  // pré-alerte N minutes avant (0 = désactivé)
     bossAuto: true,      // pilote actif : tente le boss de chasse dans un nouvel onglet à son apparition, puis reprend le farm
@@ -96,6 +99,8 @@ const DM = {
       tip: 'Message à chaque objet voulu obtenu, quand une zone est abandonnée (5 défaites), et à la fin du farm (tout droppé, ou arrêt avec la raison).' },
     { kind: 'sample', key: 'notifySample', label: '🧪 Échantillonnage des zones',
       tip: 'Message quand une zone atteint l’objectif de combats, quand une zone est abandonnée (3 défaites), et à la fin.' },
+    { kind: 'level', key: 'notifyLevel', label: '📈 Leveling',
+      tip: 'Message au lancement, à l’arrivée au niveau 200 (avec le temps mis et la moyenne), à l’arrêt (défaites), et tous les N niveaux si réglé dans le menu 🤖.' },
     { kind: 'errors', key: 'notifyErrors', label: '⚠️ Problèmes (déconnexion, énergie illisible)',
       tip: 'Message en cas de souci technique : déconnexion du jeu, énergie impossible à lire, etc.' },
   ],

@@ -33,6 +33,7 @@ async function onPlayPause() {
     if (ctx.error) { tradeToast(`▶ ${ctx.error}`, 'err'); return; }
     if (dropOn() && ctx.mode) await dropStop('remplacé par ▶ sur une autre activité');
     if (sampleOn() && ctx.mode) await sampleStop('remplacé par ▶ sur une autre activité');
+    if (levelOn() && ctx.mode) await levelStop('remplacé par ▶ sur une autre activité');
     await save({ ...ctx, pauseReason: null, lossStreak: 0 });
     await send({ type: 'claim', start: true, status: 'Démarrage…' }).catch(() => {});
     // combat en cours sur la page : le pilote le prend en main (Auto du jeu ou par poids), puis relance en boucle
@@ -166,6 +167,14 @@ function buildUi() {
             <button data-k="sampleStop" style="padding:2px 7px;font-size:12px" data-tip="Arrête l’échantillonnage (le pilote s’arrête aussi).">■ Arrêter</button>
           </div>
         </div>
+        <div data-k="levelBox" class="muted" style="display:none;flex-direction:column;gap:3px;border:1px solid #6a8a2b;border-radius:6px;padding:6px">
+          <div data-k="levelInfo"></div>
+          <div class="row" style="gap:6px;flex-wrap:wrap;font-size:12px">
+            <label class="check" style="margin:0"><input type="checkbox" data-k="levelStop200"> arrêter à 200${DM.tip("Au niveau 200, le leveling s’arrête toujours (notification Discord avec le temps mis). Coché : le pilote s’arrête aussi. Décoché : il continue en chasse sur le dernier groupe.")}</label>
+            <span>notif tous les <input type="number" data-k="levelEvery" min="0" max="100" class="num" style="width:44px"> niv.${DM.tip("Notification Discord tous les N niveaux pendant la montée (0 = seulement au lancement, à l’arrêt et au niveau 200). Type « 📈 Leveling » dans la popup de l’extension.")}</span>
+            <button data-k="levelStopBtn" style="padding:2px 7px;font-size:12px;margin-left:auto" data-tip="Arrête le leveling (le pilote s’arrête aussi). Le chrono de cette montée est gardé : relancer le reprend.">■ Arrêter</button>
+          </div>
+        </div>
         <details data-k="timesBox">
           <summary class="muted">⏱ Chronomètre des combats${DM.tip("Durée moyenne d’un combat du pilote (du lancement à l’écran de fin) et de la boucle complète (d’un lancement au suivant, pauses de plus de 5 min exclues), par activité et par mode de combat. Pour comparer l’Auto du jeu et l’Auto par poids sur la durée.")}</summary>
           <div class="muted" data-k="times" style="display:flex;flex-direction:column;gap:3px;margin-top:4px"></div>
@@ -275,6 +284,7 @@ function buildUi() {
         <div class="status" data-k="scanMsg"></div>
         <ul class="wanted" data-k="wanted"></ul>
         <button data-k="farmStats" style="margin-top:6px;width:100%" data-tip="XP et drops (revente marchand) de chaque combat de chasse, calculés monstre par monstre (le nombre de monstres compte), ramenés à ta Sagesse / Prospection actuelles ; mesures partagées via la synchro ; estimations pour les groupes du dernier scan. Bouton ▶ pour y envoyer le pilote.">📈 Rentabilité des zones</button>
+        <button data-k="levelStart" style="margin-top:6px;width:100%" data-tip="Monte au niveau 200 le plus vite possible, tout seul : scan régulier des zones autour de ton niveau (à chaque renouvellement des groupes), attaque du groupe qui rapporte le plus d’XP (XP mesurée, sinon estimée : les archimonstres et avis de recherche en donnent environ 3 fois plus) et du plus haut niveau que tu bats — la prudence monte toutes les 5 victoires, baisse à chaque défaite. Équipement automatique Sagesse > Puissance > Vitalité, points de caractéristiques en Sagesse dès que tu en gagnes. Au niveau 200 : arrêt et notification Discord. Chrono de chaque montée, et moyenne par Prestige.">📈 Leveling jusqu’au niveau 200</button>
         <button data-k="sampleOpen" style="margin-top:6px;width:100%" data-tip="Le pilote farme en chasse jusqu’à avoir au moins N combats mesurés dans chaque zone d’une plage de niveaux (les tiens + ceux de la synchro), en allant toujours dans la zone la moins mesurée et en variant le nombre de monstres. Pour fiabiliser 📈 Rentabilité des zones.">🧪 Échantillonner les zones</button>
         <button data-k="selfDiag" style="margin-top:6px;width:100%" data-tip="Auto-diagnostic : l'extension vérifie seule si son calcul des dégâts dérive (formule du jeu changée), si une mécanique de boss ou un effet de carte inconnu apparaît, ou si une page du jeu devient illisible. Elle prévient une fois par problème (message + Discord). Ce bouton copie le récap à transmettre.">🩺 Diagnostic</button>
       </div>
@@ -350,6 +360,16 @@ function buildUi() {
   $('farmStats').addEventListener('click', () => { setOpen(false); openFarmStats(); });
   for (const k of ['sampleOpen', 'sampleOpen2']) $(k).addEventListener('click', () => { setOpen(false); openSampleFarm(); });
   $('sampleStop').addEventListener('click', () => sampleStop('arrêté à la main'));
+  $('levelStopBtn').addEventListener('click', () => levelStop('arrêté à la main'));
+  $('levelStart').addEventListener('click', async (e) => {
+    const b = e.currentTarget;
+    if (b.dataset.busy) return;
+    b.dataset.busy = '1';
+    b.textContent = '📈 Démarrage…';
+    try { await startLeveling(); } catch (err) { tradeToast(`📈 ${err.message}`, 'err'); } finally { delete b.dataset.busy; renderUi(); }
+  });
+  $('levelStop200').addEventListener('change', (e) => save({ levelStopAt200: e.target.checked }));
+  $('levelEvery').addEventListener('change', (e) => save({ levelNotifyEvery: Math.max(0, Math.round(+e.target.value || 0)) }));
   $('selfDiag').addEventListener('click', () => selfCopy());
   // Appliqué aussitôt à la liste affichée (le scan garde tous les groupes) et aux prochaines notifications.
   $('minPerGroup').addEventListener('change', () => {

@@ -4,7 +4,8 @@
 // ---------- Auto-équipement (menu) ----------
 let equipBusy = false, eqPlanState = null, eqState = null, eqMsg = '', eqMsgCls = '';
 const setEqMsg = (text, cls = '') => { eqMsg = text; eqMsgCls = cls; renderUi(); };
-const equipStats = () => [...(cfg.equipStats || []), '', '', '', '', ''].slice(0, 5);
+// 📈 Leveling : Sagesse > Puissance > Vitalité, en automatique, le temps de la montée
+const equipStats = () => (levelOn() ? LEVEL_STATS : [...(cfg.equipStats || []), '', '', '', '', ''].slice(0, 5));
 const equipEnabled = () => cfg.equipSlots || {};
 const statShort = (k) => STAT_LABELS[k] || k;
 
@@ -73,7 +74,7 @@ function fullDiff(c, state) {
 }
 
 async function autoEquipTick(force = false) {
-  const mode = cfg.equipAuto || 'off';
+  const mode = levelOn() ? 'auto' : cfg.equipAuto || 'off';
   if (dead || mode === 'off' || !modOn('equip') || eqAutoBusy || equipBusy || !equipStats()[0] || eqAsk?.host.isConnected) return;
   const path = location.pathname;
   if (/^\/(inventaire|connexion)/.test(path) || (path.startsWith('/combat') && !endTitle())) return;
@@ -361,6 +362,22 @@ function renderUi() {
         + `<div>${done}/${run.zones.length} zone(s) à l’objectif${run.skipped?.length ? ` · ${run.skipped.length} abandonnée(s)` : ''}</div>`;
       if ($('sampleInfo').innerHTML !== h) $('sampleInfo').innerHTML = h;
     }
+  }
+  {
+    const run = cfg.levelRun, c = cfg.levelChrono?.[levelChar()];
+    $('levelBox').style.display = run?.active || c || cfg.levelHistory?.[levelChar()]?.length ? 'flex' : 'none';
+    $('levelStart').textContent = run?.active ? '📈 Leveling en cours' : c ? `📈 Reprendre le leveling (niv. ${c.lastLvl || c.fromLvl})` : '📈 Leveling jusqu’au niveau 200';
+    $('levelStart').disabled = !!run?.active;
+    $('levelStopBtn').style.display = run?.active ? '' : 'none';
+    const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) => `&#${ch.charCodeAt(0)};`);
+    const a = levelAverages();
+    const pick = run?.active && run.pick ? `<div>${esc(run.pick.zn)} · groupe ${run.pick.g}${run.pick.targets?.length ? ` · 🎯 ${esc(run.pick.targets.join(', '))}` : ''} · prudence ×${(+run.danger || 1).toFixed(2)}</div>` : '';
+    const h = `<b>📈 Leveling</b>${run?.active ? ` · niveau ${run.lastLvl || '?'}` : ' · arrêté'}${pick}`
+      + (c ? `<div>⏱ cette montée : <b>${fmtDur(Date.now() - c.startedAt)}</b> depuis le niveau ${c.fromLvl}${c.prestige ? ` (Prestige ${c.prestige})` : ''}</div>` : '')
+      + (a.n ? `<div>Moyenne ${fmtDur(a.all)} (${a.n} montée${a.n > 1 ? 's' : ''}) — ${Object.entries(a.by).map(([p, x]) => `P${p} : ${fmtDur(x.avg)}${x.n > 1 ? ` ×${x.n}` : ''}`).join(' · ')}</div>` : '');
+    if ($('levelInfo').innerHTML !== h) $('levelInfo').innerHTML = h;
+    if (ui.root.activeElement !== $('levelStop200')) $('levelStop200').checked = cfg.levelStopAt200 !== false;
+    if (ui.root.activeElement !== $('levelEvery')) $('levelEvery').value = +cfg.levelNotifyEvery || 0;
   }
   $('status').textContent = on ? (cfg.status || '—') : cfg.enabled ? 'Actif dans un autre onglet' : 'Arrêté';
   const tg = $('toggle');

@@ -59,6 +59,7 @@ async function step() {
           const stop = streak > maxRetries();
           timeFightEnd();
           await save({ botFight: false, losses: (cfg.losses || 0) + 1, lossStreak: stop ? 0 : streak });
+          if (levelOn() && isHunt()) return levelOnDefeat(streak, hint());   // leveling : prudence en baisse, autre groupe
           if (stop && dropOn() && isHunt()) {   // farm de drop : zone abandonnée, on passe à la suivante
             const z = cfg.huntZone;
             notify('drop', `❌ Farm de drop : ${streak} défaites d’affilée dans **${dropZoneName(z)}** — zone abandonnée, passage à la suivante.${hint() ? `\n> 💡 ${hint()}` : ''}`);
@@ -108,6 +109,7 @@ async function step() {
       }
       // échantillonnage : zone suivante si l'objectif est atteint, sinon retour à la zone pour rechoisir le groupe
       if (sampleOn() && isHunt()) { endRetries = 0; if (await sampleAfterWin()) return; }
+      if (levelOn() && isHunt()) { endRetries = 0; if (await levelAfterWin()) return; }   // leveling : niveau, points, nouveau groupe
       if (!(await gate())) return progress();
       // Auto-équipement : entre deux combats (le seul moment où le jeu l'accepte), avant la relance
       await autoEquipTick();
@@ -174,6 +176,7 @@ async function step() {
 
   if (isHunt()) {
     if (!onHome()) return goHome();
+    if (levelOn() && await levelNeedPick()) return;
     if (dropOn()) {
       const g = dropPickGroup();
       if (g === null) return;   // page pas encore chargée
@@ -195,7 +198,7 @@ async function step() {
     // attaquer le nouveau groupe n'a pas de sens → arrêt.
     const t = cfg.huntTarget;
     const isTarget = (m) => targetMatch(m, ALL_KINDS);
-    if (!dropOn() && !sampleOn() && cfg.huntGroup && t?.zone === cfg.huntZone && t.group === cfg.huntGroup && t.monsters?.some(isTarget)) {
+    if (!dropOn() && !sampleOn() && !levelOn() && cfg.huntGroup && t?.zone === cfg.huntZone && t.group === cfg.huntGroup && t.monsters?.some(isTarget)) {
       const now = groupMonsters(group);
       if (now.length && now.join('|') !== t.monsters.join('|')) {
         await save({ enabled: false, paused: false, botFight: false, huntTarget: null,
@@ -211,7 +214,7 @@ async function step() {
     const attack = () => [...targetGroup()?.querySelectorAll('button') || []]
       .find((b) => !b.disabled && b.offsetParent !== null && /^Attaquer$/.test(b.textContent.trim()));
     if (!attack()) return;
-    setStatus(`${dropOn() ? `Farm de drop (${dropLeft().length} objet(s) restant(s))` : sampleOn() ? `Échantillonnage (${sampleCount(cfg.huntZone)}/${cfg.sampleRun.target})` : 'Chasse'} : attaque du groupe ${cfg.huntGroup || groupNumber(group)} (${cfg.huntZoneName || 'zone ' + cfg.huntZone})…`);
+    setStatus(`${dropOn() ? `Farm de drop (${dropLeft().length} objet(s) restant(s))` : sampleOn() ? `Échantillonnage (${sampleCount(cfg.huntZone)}/${cfg.sampleRun.target})` : levelOn() ? `📈 Leveling niv. ${cfg.levelRun.lastLvl || '?'}` : 'Chasse'} : attaque du groupe ${cfg.huntGroup || groupNumber(group)} (${cfg.huntZoneName || 'zone ' + cfg.huntZone})…`);
     await sleep(humanDelay());
     const btn = isOwner() && attack();
     if (!btn) return;

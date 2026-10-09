@@ -516,7 +516,9 @@ function farmModel(all, best, cur) {
       val: best ? mons.reduce((s, m) => s + (best.get(normName(m.name)) || 0), 0) * dropCal + kamasPerLvl(z) * lvl : null,
     };
   };
-  return { predict, dropCal, myMult };
+  // XP de base d'un monstre déjà combattu à ce niveau (null sinon)
+  const mobXpOf = (m) => mobXp.get(`${normName(m.name)}|${m.lvl}`) || null;
+  return { predict, dropCal, myMult, mobXpOf };
 }
 
 // Lignes du classement, par zone + n° de groupe (ce que farme ▶ : le groupe n° N, renouvelé toutes les ~3 min).
