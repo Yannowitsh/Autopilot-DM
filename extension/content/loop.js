@@ -44,6 +44,10 @@ async function step() {
     const end = endTitle();
 
     if (!end) endRetries = 0;
+    if (end && (weightedBusy || Date.now() - relaunchAt < RELAUNCH_WAIT_MS)) {
+      setStatus(weightedBusy ? 'Combat relancé (auto par poids) en cours…' : 'Relance envoyée — on attend le combat…');
+      return progress();
+    }
     if (end) {
       const hunt = huntEnd();
       const asc = !hunt && visibleButtons().some((b) => ASC_END.test(b.textContent.trim()));
@@ -94,6 +98,7 @@ async function step() {
         spendEnergy();
         lastAutoClick = autoRetry ? Date.now() : 0;
         markLaunch();
+        relaunchAt = Date.now();
         retry.click();
         progress();
         await sleep(3000);
@@ -130,6 +135,7 @@ async function step() {
       spendEnergy();
       lastAutoClick = autoNext ? Date.now() : 0;
       markLaunch();
+      relaunchAt = Date.now();
       next.click();
       progress();
       await sleep(3000);

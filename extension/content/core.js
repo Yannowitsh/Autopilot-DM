@@ -13,6 +13,12 @@ let lastProgress = Date.now();
 let lastEnergyCheck = 0;
 let lastAutoClick = 0;
 let endRetries = 0;   // clics de relance sur le même écran de fin
+// Dernier clic de relance (« Refaire ce combat », « Étape suivante »…). Pendant RELAUNCH_WAIT_MS, ou tant qu'un combat par
+// poids se joue en arrière-plan (l'ancien écran de fin reste affiché jusqu'au rechargement), l'écran de fin n'est pas
+// retraité : avant, 3 passages (~6 s) suffisaient pour croire la relance refusée et repartir à la zone en plein combat
+// (groupe perdu), et la même victoire était comptée deux fois.
+let relaunchAt = 0;
+const RELAUNCH_WAIT_MS = 15000;
 let ticker = null;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
