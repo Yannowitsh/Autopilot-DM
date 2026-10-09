@@ -37,7 +37,8 @@ async function bossMechanics(force = false) {
 function parseMechanic(m) {
   const x = m.x || '', num = (re) => { const r = x.match(re); return r ? +r[1] : null; };
   switch (m.n) {
-    case 'Fureur': return { k: 'fureur', max: num(/plus de (\d+) cartes/) ?? 3, mult: +(x.match(/×(\d+(?:,\d+)?)/)?.[1] || '2').replace(',', '.') };
+    // ×2,5 mesuré (2026-10-09, 29 coups « se déchaîne » ; ×1,375 quand le boss est Affaibli de 45 %)
+    case 'Fureur': return { k: 'fureur', max: num(/plus de (\d+) cartes/) ?? 3, mult: +(x.match(/×(\d+(?:,\d+)?)/)?.[1] || '2.5').replace(',', '.') };
     case 'Peau dure': return { k: 'shield', pass: num(/seuls (\d+) ?%/) ?? 50 };
     case 'Onde de choc': return { k: 'onde', pct: num(/(\d+) ?% de tes PV/) ?? 25 };
     case 'Malédiction des soins': return { k: 'curse', from: num(/tour (\d+)/) ?? 1, half: /divisés par deux/.test(x) };
@@ -138,7 +139,7 @@ function shieldOf(card, p) {
   return { v, dur };
 }
 const apGainOf = (card) => (card.eff || []).reduce((t, e) => t + (e?.k === 'apGain' && e.tgt === 'self' ? +e.min || 0 : 0), 0);
-const AP_REMOVE_CUT = 0.3;   // PA retirés à l'ennemi : sa prochaine attaque est affaiblie (~30 %, estimation)
+const AP_REMOVE_CUT = 0.15;   // par PA retiré à l'ennemi : état Affaibli, sa prochaine attaque −15 % (Précipitation 3 PA → « weaken 45 », vérifié)
 // Coût d'une mécanique pour nous, en part de nos PV max par tour (estimation) : sert à choisir l'ordre d'abattage, puisque
 // seul le premier boss encore debout (le plus à gauche) impose ses mécaniques. Malédiction : selon la part de nos cartes
 // qui soignent ou volent de la vie (elles deviennent des dégâts sur nous).
@@ -222,19 +223,35 @@ function planTurn(st, cand, rules) {
   const maxHp = +p.maxHp || 1;
   // dégâts annoncés par les boss pour leur prochain tour (intentions) : ne jamais se blesser en dessous
   const incomingOf = (f) => (['attack', 'heavy', 'drain', 'rage'].includes(f.intent?.k) ? +f.intent.value || +f.atk || 0 : 0);
-  // prochaine VRAIE attaque du boss (après nos résistances, plafonnées à 50 %) : s'il se garde ou enrage ce tour-ci, la
-  // suivante — par prudence une attaque lourde (×1,7). C'est elle que la Fureur amplifie.
-  const nextHitOf = (f) => {
+  // coup brut d'un boss → PV qu'il nous retire : (brut − rés. fixe) × (1 − rés. % plafonnée à 50) (vérifié au point près)
+  const hitOn = (f, raw) => {
+    const el = Number.isInteger(f?.element) ? f.element : 1, S = fighterStat(p);
+    return Math.max(0, raw - S(EL_RES[el])) * (1 - Math.min(+p.resCap || 50, S(EL_RES_PCT[el])) / 100);
+  };
+  // prochaine VRAIE attaque du boss, brute (intent.value compte déjà l'état Affaibli) : s'il se garde ou enrage ce tour-ci,
+  // la suivante — par prudence une attaque lourde (×1,7). C'est elle que la Fureur amplifie (avant nos résistances).
+  const rawNextOf = (f) => {
     if (['attack', 'heavy', 'drain'].includes(f.intent?.k) && +f.intent.value) return +f.intent.value;
-    const el = Number.isInteger(f.element) ? f.element : 1;
-    const rp = Math.min(50, fighterStat(p)(EL_RES_PCT[el]));
-    return (+f.atk || 0) * 1.7 * (1 - rp / 100);
+    return (+f.atk || 0) * 1.7 * (1 - Math.min(0.6, +f.weaken || 0));
   };
   // passif de classe : rejoué sur le journal, puis suivi carte par carte dans la recherche (Iop, Forgelance, Enutrof…)
   const tr0 = classTrackerFromLog(st);
-  const safety = enemies.reduce((t, f) => t + incomingOf(f), 0) * tr0.taken() + maxHp * 0.05;   // Féca, Zobal : dégâts subis réduits
+  const safety = enemies.reduce((t, f) => t + hitOn(f, incomingOf(f)), 0) * tr0.taken() + maxHp * 0.05;   // Féca, Zobal : dégâts subis réduits
   const ondePct = Math.max(0, ...has('onde').map((r) => r.pct));
-  const fureurRules = has('fureur');
+  // Fureur déjà chargée : un tour précédent à plus de N cartes dont l'attaque amplifiée n'est pas encore venue (le boss s'est
+  // gardé ou a enragé entre-temps, seq 2017 : « se déchaîne » après un tour à 2 cartes). Elle viendra quoi qu'on joue :
+  // inutile de se brider ce tour-ci.
+  const furyPending = (r) => {
+    let pend = false, who = null, n = 0;
+    for (const L of st.log || []) {
+      if (L.t === 'turn') { if (who === 'p' && n > r.max) pend = true; who = L.who; n = 0; }
+      if (L.t === 'play' && L.who === 'p') n++;
+      if (L.t === 'mechanic' && L.who === r.boss && /se déchaîne/.test(L.text || '')) pend = false;
+    }
+    return pend;
+  };
+  const fureurRules = has('fureur').filter((r) => !furyPending(r));
+  if (has('fureur').length > fureurRules.length) notes.push('Fureur déjà chargée');
   let best = null;
   const n = Math.min(info.length, 9);
   // Recherche en profondeur : ordre des cartes, cible de chacune, PV des ennemis et du joueur estimés au fil de la suite.
@@ -248,7 +265,7 @@ function planTurn(st, cand, rules) {
     // Fureur : au-delà de N cartes, la prochaine attaque du boss (s'il vit encore) est multipliée ; interdit si elle nous tue
     if (!allDead) for (const r of fureurRules) {
       if (!(count > r.max && ehp[r.boss] > 0)) continue;
-      const boosted = nextHitOf(st.fighters[r.boss]) * (r.mult || 2);
+      const f = st.fighters[r.boss], boosted = hitOn(f, rawNextOf(f) * (r.mult || 2.5)) * tr0.taken();
       const shieldNow = (p.shields || []).reduce((t, x) => t + (+x.v || +x.value || +x.amount || 0), 0) + (seq.some((q) => q.x.shield) ? Math.max(...seq.filter((q) => q.x.shield).map((q) => shieldOf(q.x.c, p).v)) : 0);
       // surcoût de l'attaque amplifiée, en partie absorbé par le bouclier posé ce tour
       s -= boosted >= hp + shieldNow ? 1e9 : SELF_W * Math.max(0, boosted * (1 - 1 / (r.mult || 2)) - shieldNow / 2);
@@ -305,7 +322,12 @@ function planTurn(st, cand, rules) {
         if (x.zone) for (const f of enemies) if (f !== target && (nh[f.id] > 0 || mirrored.has(f.id))) hit(f, ZONE_FALLOFF);
         if (curse) self += eff.self;   // vols et soins blessent
         else healed += (eff.steal + eff.heal) * (halfHeal ? 0.5 : 1);   // vol de vie : 50 % des dégâts rendus
-        if ((x.c.eff || []).some((e) => e?.k === 'apRemove' && e.tgt === 'enemy')) gain += AP_REMOVE_CUT * incomingOf(target);
+        const apCut = (x.c.eff || []).reduce((t, e) => t + (e?.k === 'apRemove' && e.tgt === 'enemy' ? Math.abs(+e.min || 0) || 1 : 0), 0);
+        // Affaibli se cumule jusqu'à 60 % (Comte Razof : 45 puis 60, seq 2024) ; le coup annoncé compte déjà l'état actuel
+        if (apCut && target) {
+          const w0 = Math.min(0.6, +target.weaken || 0), w1 = Math.min(0.6, w0 + AP_REMOVE_CUT * apCut);
+          gain += (1 - (1 - w1) / (1 - w0)) * hitOn(target, rawNextOf(target)) * tr0.taken();
+        }
       } else if (cardKind(x.c) === 'heal') {
         const h = cardEffect(x.c, p, null).heal;
         if (curse) self += h; else healed += h * (halfHeal ? 0.5 : 1);
