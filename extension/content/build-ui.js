@@ -495,6 +495,9 @@ async function openFavorites() {
     <div style="overflow-y:auto;display:flex;flex-direction:column;gap:10px">
       <div data-k="saves" style="display:flex;flex-direction:column;gap:4px"></div>
       <div data-k="cart" style="display:flex;flex-direction:column;gap:4px"></div>
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <input data-a="cartSearch" type="search" autocomplete="off" placeholder="➕ Ajouter à la main : nom d’objet ou de panoplie…" style="background:#241e16;color:#eee;border:1px solid #5a4a33;border-radius:8px;padding:5px 8px;font:13px system-ui,sans-serif">
+        <div data-k="cartHits" style="display:flex;flex-direction:column;gap:3px"></div></div>
       <b style="font-size:13px">❤️ Objets favoris</b>
       <div data-k="list" style="display:flex;flex-direction:column;gap:6px"></div></div></div>`;
   document.body.appendChild(ov);
@@ -502,6 +505,12 @@ async function openFavorites() {
   const say = (t) => { $('[data-k="msg"]').textContent = t; };
   let b = null;
   try { b = await fetchBestiary(say); say(''); } catch (e) { say(`Bestiaire illisible (${e.message}) : sources indisponibles.`); }
+  ov.addEventListener('keydown', (e) => { if (e.key !== 'Escape') e.stopPropagation(); });   // la frappe ne va pas aux raccourcis du jeu
+  // Builder manuel : n'importe quel objet du jeu (bestiaire) ajouté à la liste de courses, rangée par emplacement.
+  const itemById = new Map((b?.items || []).map((it) => [it.id, it]));
+  const SLOT_ORDER = Object.keys(SLOT_NAMES);
+  const slotRank = (id) => { const k = SLOT_ORDER.indexOf(itemById.get(id)?.s); return k < 0 ? 99 : k; };
+  const huntable = (id) => (b?.drops[id] || []).some(([, , , , zs]) => zs?.length);
   const pctTxt = (x) => `${(x >= 1 ? x.toFixed(1) : x.toFixed(2)).replace('.', ',')} %`;
   const zoneBtn = (id) => `<button data-zone="${+id}" style="${btn};background:#2e6fbf" title="Ouvrir les groupes de chasse de cette zone">🗺️ ${esc(b?.zones[id]?.[0] || `Zone ${id}`)}${b?.zones[id] ? ` <span style="font-weight:400;color:#cfe0ff">niv. ${b.zones[id][1]}–${b.zones[id][2]}</span>` : ''}</button>`;
   const sources = (id) => {
@@ -535,11 +544,17 @@ async function openFavorites() {
         <label style="font-size:12px;color:#b9a98c;display:flex;align-items:center;gap:4px" title="Verrouille d’office (cadenas du jeu) les objets de la liste, tous tiers confondus : ni vendus, ni brisés, ni mis à l’HDV. Un objet retiré de la liste est déverrouillé, sauf s’il était verrouillé à la main ou fait partie d’un équipement enregistré. La fusion auto les déverrouille le temps de fusionner."><input type="checkbox" data-a="lockCart"${cfg.dropLockCart !== false ? ' checked' : ''}> 🔒 verrouiller</label>
         <button data-a="fuseCart" style="${btn}" title="Fusionne maintenant les objets de la liste jusqu’à leur tier voulu (seulement ceux-là)">⚡ Fusionner la liste</button>` : ''}
         <button data-a="drop" style="${btn};background:#6a3fa0" title="Ouvre la liste de courses complète : objets du build et favoris, tiers voulus, exemplaires déjà possédés, puis lancer le farm">🐉 ${cart.length ? 'Modifier / lancer le farm' : 'Composer la liste'}</button></div>`
-      + (cart.length ? cart.map((c) => `<div style="display:flex;gap:8px;align-items:center;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:4px 8px">
+      + (cart.length ? [...cart].sort((x, y) => slotRank(x.id) - slotRank(y.id)).map((c) => {
+        const it = itemById.get(c.id);
+        return `<div style="display:flex;gap:8px;align-items:center;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:4px 8px">
+        <span style="width:70px;color:#8a7d66;font-size:11px">${esc(SLOT_NAMES[it?.s] || it?.s || '')}</span>
         ${c.icon ? `<img src="/img/items/${+c.icon}.png" alt="" style="width:24px;height:24px;object-fit:contain">` : ''}
-        <span style="flex:1">${esc(c.name)}</span><span style="color:#f0c04a;font-size:12px">T${tiers[c.id] || 1}${(tiers[c.id] || 1) === 5 ? ' (Rayonnant)' : ''}</span>
-        <button data-uncart="${+c.id}" style="${btn}" title="Retirer de la liste de courses">✕</button></div>`).join('')
-        : '<div style="color:#8a7d66;font-size:12px">Vide : ajoute des objets avec 🛒 sur un favori, ou depuis 🐉 Aller dropper.</div>');
+        <span style="flex:1">${esc(c.name)}${it?.lvl ? ` <span style="color:#8a7d66;font-size:12px">niv. ${it.lvl}${it.setName ? ` · ${esc(it.setName)}` : ''}</span>` : ''}${b && !huntable(c.id) ? ' <span style="color:#e08a5a;font-size:11px" title="Aucun monstre de chasse ne le lâche : le farm de drop l’ignore (HDV, coffres, boss…)">pas en chasse</span>' : ''}</span>
+        <select data-tier="${+c.id}" style="background:#2a231a;color:#f0c04a;border:1px solid #5a4a33;border-radius:6px;font:12px system-ui,sans-serif" title="Tier voulu (fusion 3 → 1)">${[1, 2, 3, 4, 5].map((n) => `<option value="${n}"${n === (tiers[c.id] || 1) ? ' selected' : ''}>T${n}${n === 5 ? ' (Rayonnant)' : ''}</option>`).join('')}</select>
+        <button data-uncart="${+c.id}" style="${btn}" title="Retirer de la liste de courses">✕</button></div>`;
+      }).join('')
+        : '<div style="color:#8a7d66;font-size:12px">Vide : ajoute des objets avec 🛒 sur un favori, depuis 🐉 Aller dropper, ou à la main ci-dessous.</div>');
+    renderHits();
     const favs = Object.entries(buildFavs()).sort((x, y) => (y[1].lvl || 0) - (x[1].lvl || 0));
     $('[data-a="clear"]').style.display = favs.length ? '' : 'none';
     $('[data-k="list"]').innerHTML = favs.length ? favs.map(([id, f]) => `<details style="background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:6px 8px">
@@ -551,8 +566,37 @@ async function openFavorites() {
       <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;font-size:12px">${sources(+id)}</div></details>`).join('')
       : '<div style="color:#b9a98c">Aucun objet favori : dans l’optimiseur de build, clique sur le cœur ♡ à côté d’un objet.</div>';
   };
+  // Recherche du builder manuel : nom d'objet ou de panoplie, sans accents ; 30 résultats au plus, plus haut niveau d'abord.
+  function renderHits() {
+    const q = normName($('[data-a="cartSearch"]').value || '');
+    const box = $('[data-k="cartHits"]');
+    if (q.length < 2) { box.innerHTML = ''; return; }
+    if (!b) { box.innerHTML = '<div style="color:#8a7d66;font-size:12px">Bestiaire indisponible : recherche impossible.</div>'; return; }
+    const inCart = new Set((cfg.dropCart || []).map((c) => c.id));
+    const all = b.items.filter((it) => normName(it.n).includes(q) || (it.setName && normName(it.setName).includes(q)));
+    const hits = all.sort((x, y) => (y.lvl || 0) - (x.lvl || 0) || slotRank(x.id) - slotRank(y.id)).slice(0, 30);
+    const sets = [...new Set(all.map((it) => it.setName).filter((n) => n && normName(n).includes(q)))].slice(0, 3);
+    box.innerHTML = sets.map((n) => {
+      const ids = b.items.filter((it) => it.setName === n).map((it) => it.id);
+      const missing = ids.filter((id) => !inCart.has(id)).length;
+      return `<button data-addset="${esc(n)}" style="${btn};background:#6a5a1a;text-align:left"${missing ? '' : ' disabled'}>🛒 + toute la ${esc(n)} (${ids.length} objets${missing < ids.length ? `, ${ids.length - missing} déjà dans la liste` : ''})</button>`;
+    }).join('') + hits.map((it) => `<div style="display:flex;gap:8px;align-items:center;background:#1f1a13;border:1px solid #3a3024;border-radius:8px;padding:3px 8px">
+        ${it.icon ? `<img src="/img/items/${+it.icon}.png" alt="" style="width:22px;height:22px;object-fit:contain">` : ''}
+        <span style="flex:1">${esc(it.n)} <span style="color:#8a7d66;font-size:12px">${esc(SLOT_NAMES[it.s] || it.s || '')} · niv. ${it.lvl || '?'}${it.setName ? ` · ${esc(it.setName)}` : ''}</span>${huntable(it.id) ? '' : ' <span style="color:#e08a5a;font-size:11px">pas en chasse</span>'}</span>
+        <button data-add="${+it.id}" style="${btn};${inCart.has(it.id) ? 'background:#6a5a1a' : ''}" title="${inCart.has(it.id) ? 'Dans la liste (cliquer pour retirer)' : 'Ajouter à la liste de courses'}">${inCart.has(it.id) ? '🛒 ✔' : '🛒 +'}</button></div>`).join('')
+      + (all.length > hits.length ? `<div style="color:#8a7d66;font-size:12px">… ${all.length - hits.length} autre(s) : précise la recherche.</div>` : '')
+      || '<div style="color:#8a7d66;font-size:12px">Aucun objet trouvé.</div>';
+  }
+  const cartEntry = (id) => { const it = itemById.get(id); return { id, name: it?.n || `Objet ${id}`, icon: it?.icon }; };
   render();
+  ov.addEventListener('input', (e) => { if (e.target.dataset.a === 'cartSearch') renderHits(); });
   ov.addEventListener('change', (e) => {
+    if (e.target.dataset.tier) {
+      let tiers = {};
+      try { tiers = JSON.parse(localStorage.getItem(DROP_TIERS_KEY) || '{}'); } catch { /* stockage indisponible */ }
+      tiers[+e.target.dataset.tier] = +e.target.value;
+      try { localStorage.setItem(DROP_TIERS_KEY, JSON.stringify(tiers)); } catch { /* idem */ }
+    }
     if (e.target.dataset.a === 'autoFuse') save({ dropAutoFuse: e.target.checked });
     if (e.target.dataset.a === 'lockCart') save({ dropLockCart: e.target.checked });
   });
@@ -577,6 +621,21 @@ async function openFavorites() {
       } catch (err) { say(`❌ ${err.message}`); }
       fz.disabled = false;
       fz.textContent = '⚡ Fusionner la liste';
+      return;
+    }
+    const add = e.target.closest('[data-add]');
+    if (add) {
+      const id = +add.dataset.add, cart = cfg.dropCart || [];
+      await save({ dropCart: cart.some((c) => c.id === id) ? cart.filter((c) => c.id !== id) : [...cart, cartEntry(id)] });
+      render();
+      return;
+    }
+    const addSet = e.target.closest('[data-addset]');
+    if (addSet) {
+      const cart = cfg.dropCart || [], have = new Set(cart.map((c) => c.id));
+      const ids = b.items.filter((it) => it.setName === addSet.dataset.addset && !have.has(it.id)).map((it) => it.id);
+      await save({ dropCart: [...cart, ...ids.map(cartEntry)] });
+      render();
       return;
     }
     const unc = e.target.closest('[data-uncart]');

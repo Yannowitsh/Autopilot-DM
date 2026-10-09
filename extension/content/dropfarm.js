@@ -225,7 +225,9 @@ async function openDropFarm(r = null) {
   // liste de courses : celle gardée (cfg.dropCart), modifiée au fil des coches
   const inCart = new Set((cfg.dropCart || []).map((c) => c.id));
   const cart = new Set(items.map((x, i) => (inCart.has(x.c.id) && x.srcs.length ? i : -1)).filter((i) => i >= 0));
-  const saveCart = () => save({ dropCart: [...cart].map((i) => ({ id: items[i].c.id, name: items[i].c.name, icon: items[i].c.icon })) });
+  // les objets de la liste qui ne tombent pas en chasse (ajoutés à la main : HDV, coffres…) ne sont pas cochables ici : gardés tels quels
+  const keepCart = (cfg.dropCart || []).filter((c) => !items.some((x) => x.c.id === c.id && x.srcs.length));
+  const saveCart = () => save({ dropCart: [...keepCart, ...[...cart].map((i) => ({ id: items[i].c.id, name: items[i].c.name, icon: items[i].c.icon }))] });
   const ov = document.createElement('div');
   ov.className = 'dm-drop-farm';
   ov.style.cssText = 'position:fixed;inset:0;z-index:2147483601;background:#000c;display:grid;justify-items:center;align-items:start;padding:4vh 16px 16px;font:13px system-ui,sans-serif;color:#eee';
