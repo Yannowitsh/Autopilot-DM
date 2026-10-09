@@ -199,6 +199,7 @@ async function weightedFight(manual = null) {
       st = props && rscDeep(rows, props.initial);
     }
     if (!st?.fighters?.p) return fallback('état du combat introuvable');
+    winUpdate(st);
     if (st.status !== 'ongoing') return;   // déjà fini : le rechargement affiche l'écran de fin
     if (st.auto) return fallback('combat déjà lancé en Auto');
     let actionId = cachedFightId(), idChecked = false;
@@ -261,6 +262,7 @@ async function weightedFight(manual = null) {
         if (hits.length) planTurn.lastEl = hits[hits.length - 1].el;
       }
       st = withFullLog(res.state);
+      winUpdate(st);
       learnCardCrits(st);
       learnCardHeals(st);
       if (res.rewards && st.status !== 'ongoing') { dropOnRewards(res.rewards, `${st.kind}|${st.logCount}`); farmOnRewards(st, res.rewards); }

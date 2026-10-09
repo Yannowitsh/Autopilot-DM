@@ -14,6 +14,9 @@ async function render() {
   $('updateVersion').textContent = upd || '';
   $('energy').textContent = s.energy != null ? `${s.energy}/${s.energyMax} (${DM.hhmm(s.energyAt)})` : '—';
   $('stats').textContent = `${s.wins || 0} / ${s.losses || 0}`;
+  const win = DM.winText(s);
+  $('winRow').hidden = !win;
+  $('win').textContent = win;
   const b = DM.bossStatus(s.bossInfo);
   const name = b.name || 'Boss';
   $('boss').textContent = b.active ? `${name} : là jusqu'à ${DM.hhmm(b.endsAt)}` : `${name} à ${DM.hhmm(b.nextAt)}`;

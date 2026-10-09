@@ -398,6 +398,7 @@ function renderUi() {
     if (ui.root.activeElement !== $('levelEvery')) $('levelEvery').value = +cfg.levelNotifyEvery || 0;
   }
   $('status').textContent = on ? (cfg.status || '—') : cfg.enabled ? 'Actif dans un autre onglet' : 'Arrêté';
+  { const w = DM.winText(cfg); $('win').style.display = w ? '' : 'none'; $('win').textContent = w ? `Victoire estimée : ${w}` : ''; }
   const tg = $('toggle');
   tg.textContent = cfg.enabled ? '■ Arrêter' : `▶ Démarrer (${DM.modeLabel(cfg)})`;
   tg.style.background = cfg.enabled ? '#a33' : '#2e7d32';

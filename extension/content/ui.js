@@ -154,6 +154,7 @@ function buildUi() {
       <div class="sec">
         <div class="head"><span>🤖 Pilote auto${DM.tip("Démarre ou arrête le pilote sur cet onglet. Il enchaîne les combats en Auto selon l’activité choisie ci-dessous. Compteur : victoires / défaites du pilote.")}</span><span class="muted" data-k="stats"></span></div>
         <div class="status" data-k="status"></div>
+        <div class="muted" data-k="win" style="display:none" data-tip="Victoire estimée du combat en cours (300 simulations de la suite du combat ; voir la popup).">—</div>
         <button data-k="toggle"></button>
         <div data-k="dropBox" class="muted" style="display:none;flex-direction:column;gap:3px;border:1px solid #6a3fa0;border-radius:6px;padding:6px">
           <div data-k="dropInfo"></div>

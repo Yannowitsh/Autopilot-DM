@@ -239,6 +239,16 @@ const DM = {
     return s.mode === 'chasse' && s.huntZone ? `/chasse?zone=${s.huntZone}` : '/aventure';
   },
 
+  // % de victoire estimé du combat (content/winrate.js) : texte de la popup et du menu 🤖, '' si rien de récent (5 min).
+  winText(s) {
+    const e = s.winEst;
+    if (!e || Date.now() - (e.at || 0) > 5 * 60000) return '';
+    const c = e.acct && s.winModel?.[e.acct]?.calib;
+    const rel = c?.n >= 5 ? ` · pronostics justes ${Math.round((c.ok / c.n) * 100)} % (${c.n})` : '';
+    if (e.done) return `${e.done === 'won' ? '✔ victoire' : '✖ défaite'}${e.first != null ? ` (estimée ${e.first} %)` : ''}${rel}`;
+    return `🎲 ${e.pct} %${e.learned ? '' : ' (apprentissage…)'}${rel}`;
+  },
+
   // Libellé court de l'activité du pilote (bouton Démarrer…).
   modeLabel(s) {
     if (s.seasonMode && !(s.mode === 'chasse' && s.huntZone)) return '🛡️ saison : choisis une zone de chasse';

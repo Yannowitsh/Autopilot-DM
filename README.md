@@ -69,6 +69,8 @@ Menu 🤖 → Activité → **Combat** : **Auto du jeu** (le bouton Auto du site
 
 **Combat lancé à la main** (Kralamoure, boss…) : le bouton **🎯 Jouer ce combat par poids** (en bas à droite de `/combat`) joue ce combat-là avec les mêmes poids, sans le pilote et sans relance à la fin ; recliquer l'arrête.
 
+**🎲 Victoire estimée** (popup → État, et menu 🤖 sous l'état du pilote), pendant un combat : part de victoires sur 300 simulations de la suite du combat. Elles partent de tes PV et boucliers, et de tes dégâts et soins par tour (appris sur tes combats, séparément pour l'Auto du jeu et l'Auto par poids ; ce combat-ci compte pour 70 % dès 2 tours joués). Côté ennemis, elles partent de leurs PV, de l'action qu'ils annoncent et de leur cycle d'actions (attaque, coup lourd, drain…, avec les dégâts réels appris pour chaque type). « Apprentissage… » tant que moins de 3 combats ont été vus. En Auto du jeu, le serveur joue tout le combat d'un coup : l'issue s'affiche dès qu'elle est connue, à côté de l'estimation de départ. **Pronostics justes** : part des estimations de départ qui ont vu juste (≥ 50 % → victoire), après 5 combats.
+
 **⏱ Chronomètre des combats** (menu 🤖, sous le bouton Démarrer) : durée moyenne d'un combat (lancement → écran de fin) et de la boucle complète (d'un lancement au suivant, avec le combat par heure), par activité et par mode de combat, pour comparer l'Auto du jeu et l'Auto par poids sur la durée. Les pauses de plus de 5 min ne comptent pas ; ↺ remet à zéro.
 
 ## Auto-équipement
