@@ -22,6 +22,11 @@ const LEVEL_MAX_DEFEATS = 5;   // défaites d'affilée (après baisse de prudenc
 const LEVEL_ALLOC_FALLBACK = '60dbf9f72590dfc5c79366a0bed9bbbc123e6de0e4';   // allocatePoints(stat, nombre) sur /personnage
 const levelEstXp = (lvl) => lvl * (400 + 8 * lvl);
 const levelChar = () => myName() || fightAcct();
+// Niveau vu dans le dernier combat terminé (combatOnEnd) : { lvl, at }. Pas lastFight() : l'Auto par poids ne le met pas à
+// jour (il gardait le niveau 200 d'une Ascension d'avant le Prestige → montée « finie » au 1er combat, 2.3.0).
+let levelSeen = null;
+// montées enregistrées par erreur (2.3.0) : moins d'une minute
+const levelHistOf = (who) => (cfg.levelHistory?.[who] || []).filter((x) => x.ms >= 60000);
 
 // Fiche légère : niveau, Prestige, points libres et coût des points de Sagesse.
 async function levelSheet() {
@@ -87,7 +92,7 @@ async function levelBestGroup(lvl, danger, say = () => {}) {
 async function levelPick(why) {
   const run = cfg.levelRun;
   if (!run?.active) return;
-  const lvl = run.lastLvl || lastFight()?.fighters?.p?.level || 1;
+  const lvl = run.lastLvl || 1;
   setStatus('Leveling : recherche du groupe le plus rentable en XP…');
   progress();
   let best = null, danger = run.danger;
@@ -128,7 +133,9 @@ async function levelNeedPick() {
 async function levelAfterWin() {
   if (!levelOn() || !isHunt()) return false;
   const run = cfg.levelRun;
-  const lvl = +lastFight()?.fighters?.p?.level || run.lastLvl || 1;
+  // niveau du combat qui vient de finir (il peut dépasser le dernier connu de 1 ou 2 niveaux, jamais de 20)
+  const seen = levelSeen && levelSeen.at > (run.startedAt || 0) && Date.now() - levelSeen.at < 120000 ? levelSeen.lvl : null;
+  const lvl = seen && Math.abs(seen - (run.lastLvl || seen)) <= 20 ? seen : run.lastLvl || 1;
   const wins = (run.wins || 0) + 1;
   const danger = wins % 5 === 0 ? Math.min(12, run.danger * 1.1) : run.danger;
   await save({ levelRun: { ...run, wins, danger, lastLvl: lvl } });
@@ -152,7 +159,11 @@ async function levelOnLevelUp(from, lvl) {
   if (every && Math.floor(lvl / every) > Math.floor(from / every) && lvl < LEVEL_MAX) {
     notify('level', `📈 **Leveling** : niveau **${lvl}** atteint (${levelChronoText()}).`);
   }
-  if (lvl >= LEVEL_MAX) await levelFinish();
+  if (lvl >= LEVEL_MAX) {   // confirmé par la fiche avant de clore la montée
+    const real = await levelSheet().then((sh) => sh.level).catch(() => null);
+    if (real >= LEVEL_MAX) await levelFinish();
+    else if (real) await save({ levelRun: { ...cfg.levelRun, lastLvl: real } });
+  }
 }
 
 const fmtDur = (ms) => { const m = Math.round(ms / 60000); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}`; };
@@ -162,7 +173,7 @@ function levelChronoText() {
 }
 // Moyennes des montées complètes depuis le niveau 1 : par Prestige { p: { n, avg } } et toutes confondues.
 function levelAverages() {
-  const h = (cfg.levelHistory?.[levelChar()] || []).filter((x) => x.fromLvl <= 1);
+  const h = levelHistOf(levelChar()).filter((x) => x.fromLvl <= 1);
   const by = {};
   for (const x of h) (by[x.prestige] ||= []).push(x.ms);
   const avg = (a) => a.reduce((s, v) => s + v, 0) / a.length;
@@ -173,7 +184,7 @@ async function levelFinish() {
   const who = levelChar(), c = cfg.levelChrono?.[who];
   const ms = c ? Date.now() - c.startedAt : null;
   const hist = { ...(cfg.levelHistory || {}) };
-  if (c) hist[who] = [...(hist[who] || []), { prestige: c.prestige, fromLvl: c.fromLvl, ms, at: Date.now() }].slice(-50);
+  if (c) hist[who] = [...levelHistOf(who), { prestige: c.prestige, fromLvl: c.fromLvl, ms, at: Date.now() }].slice(-50);
   const chrono = { ...(cfg.levelChrono || {}) };
   delete chrono[who];
   await save({ levelHistory: hist, levelChrono: chrono });
@@ -210,6 +221,7 @@ async function startLeveling() {
   const sh = await levelSheet();
   if (sh.level >= LEVEL_MAX) throw new Error(`déjà niveau ${LEVEL_MAX}`);
   const who = levelChar(), chrono = { ...(cfg.levelChrono || {}) };
+  if ((cfg.levelHistory?.[who] || []).length !== levelHistOf(who).length) await save({ levelHistory: { ...cfg.levelHistory, [who]: levelHistOf(who) } });
   // chrono : repris si c'est la même montée (même Prestige, niveau pas redescendu), sinon il repart
   const c = chrono[who];
   if (!c || c.prestige !== sh.prestige || (c.lastLvl || 0) > sh.level) chrono[who] = { prestige: sh.prestige, startedAt: Date.now(), fromLvl: sh.level, lastLvl: sh.level };

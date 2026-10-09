@@ -365,7 +365,7 @@ function renderUi() {
   }
   {
     const run = cfg.levelRun, c = cfg.levelChrono?.[levelChar()];
-    $('levelBox').style.display = run?.active || c || cfg.levelHistory?.[levelChar()]?.length ? 'flex' : 'none';
+    $('levelBox').style.display = run?.active || c || levelHistOf(levelChar()).length ? 'flex' : 'none';
     $('levelStart').textContent = run?.active ? '📈 Leveling en cours' : c ? `📈 Reprendre le leveling (niv. ${c.lastLvl || c.fromLvl})` : '📈 Leveling jusqu’au niveau 200';
     $('levelStart').disabled = !!run?.active;
     $('levelStopBtn').style.display = run?.active ? '' : 'none';
