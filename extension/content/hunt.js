@@ -38,6 +38,9 @@ async function scanZone(id) {
       name: li.querySelector('.font-bold')?.textContent.trim() || li.querySelector('img')?.alt || '',
       lvl: +(li.textContent.match(/Niveau\s*(\d+)/)?.[1] || 0) || null,
       img: li.querySelector('img')?.getAttribute('src') || null,
+      // badges du jeu (site v2) : « Archi » (title Archimonstre) et « Recherché » (title Avis de recherche) — font foi
+      // devant nos listes de noms (ex. « Ambi Guman », listé « Guman »)
+      archi: !!li.querySelector('[title="Archimonstre"]'), wanted: !!li.querySelector('[title="Avis de recherche"]'),
     })).filter((m) => m.name);
     const total = +(p.textContent.match(/Niveau total\s*(\d+)/)?.[1] || 0) || null;
     const diff = p.querySelector('.title')?.nextElementSibling?.textContent.trim() || null;   // « Facile », « Très difficile »…

@@ -83,13 +83,13 @@ async function levelBestGroup(lvl, danger, say = () => {}) {
         if (!c || Date.now() > (c.rotateAt || c.at + 3 * 60000) + 1000) { c = { at: Date.now(), ...(await scanZone(z.id)) }; levelScanCache.set(z.id, c); }
         const { groups, rotateAt } = c;
         for (const g of groups) {
-          const mons = g.monsters.map((m) => ({ name: m.name, lvl: +m.lvl || 1 }));
+          const mons = g.monsters.map((m) => ({ name: m.name, lvl: +m.lvl || 1, kind: m.archi ? 'archi' : m.wanted ? 'wanted' : targetMatch(m.name, ALL_KINDS)?.kind || null }));
           if (!mons.length) continue;
           const total = mons.reduce((t, m) => t + m.lvl, 0);
           if (total > Math.max(lvl * danger, 3)) continue;   // trop dangereux pour l'instant
-          const target = (m) => !!targetMatch(m.name, ALL_KINDS);
+          const target = (m) => !!m.kind;
           const noXp = (m) => !!cfg.levelNoXp?.[`${normName(m.name)}|${m.lvl}`];
-          const est = (m) => levelEstXp(m.lvl) * (!target(m) ? 1 / 3 : targetMatch(m.name, ALL_KINDS)?.kind === 'archi' ? 0.9 : 1);
+          const est = (m) => levelEstXp(m.lvl) * (!m.kind ? 1 / 3 : m.kind === 'archi' ? 0.9 : 1);
           const base = mons.reduce((t, m) => t + (mobXpOf(m) || (noXp(m) ? 0 : est(m))), 0);
           if (!(base > 0)) continue;
           const xp = base * groupCoef(mons.length) * xpLevelPen(lvl, mons.map((m) => m.lvl));
