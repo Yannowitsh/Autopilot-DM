@@ -8,6 +8,9 @@
 // - XP d'un groupe = Σ XP de base des monstres × bonus de groupe × perte d'écart de niveau (xpLevelPen). XP de base : celle
 //   mesurée en combat (farmModel), sinon estimée : archimonstre / avis de recherche = niveau × (400 + 8 × niveau) (exact sur
 //   701 monstres), monstre normal ≈ le tiers (médiane de 3 189 monstres) — d'où des archis et avis visés d'office ;
+// - archimonstres de grade 6 : 0 XP (jeu ; Tronkoneuz, Crognan, Boostif, Pissdane — le même Pissdane donne 11 200 XP en
+//   grade 5). Le grade n'est pas affiché sur la page de zone : un monstre vu à 0 XP (nom|niveau) est retenu
+//   (cfg.levelNoXp) et compté à 0, et un combat à 0 XP fait rechoisir un groupe tout de suite ;
 // - prudence : seuls les groupes dont la somme des niveaux ≤ ton niveau × `danger` sont pris. `danger` monte de 10 % toutes
 //   les 5 victoires d'affilée (plus haut niveau possible), baisse de 25 % à chaque défaite (et nouveau choix tout de suite) ;
 // - équipement auto forcé : Sagesse > Puissance > Vitalité ; points de caractéristiques mis en Sagesse dès qu'il y en a ;
@@ -76,7 +79,9 @@ async function levelBestGroup(lvl, danger, say = () => {}) {
           const total = mons.reduce((t, m) => t + m.lvl, 0);
           if (total > Math.max(lvl * danger, 3)) continue;   // trop dangereux pour l'instant
           const target = (m) => !!targetMatch(m.name, ALL_KINDS);
-          const base = mons.reduce((t, m) => t + (mobXpOf(m) || levelEstXp(m.lvl) * (target(m) ? 1 : 1 / 3)), 0);
+          const noXp = (m) => !!cfg.levelNoXp?.[`${normName(m.name)}|${m.lvl}`];
+          const base = mons.reduce((t, m) => t + (mobXpOf(m) || (noXp(m) ? 0 : levelEstXp(m.lvl) * (target(m) ? 1 : 1 / 3))), 0);
+          if (!(base > 0)) continue;
           const xp = base * groupCoef(mons.length) * xpLevelPen(lvl, mons.map((m) => m.lvl));
           out.push({ zone: z.id, zn: z.name, g: g.n, xp, mons, total, rotateAt, targets: mons.filter(target).map((m) => m.name) });
         }
@@ -136,12 +141,16 @@ async function levelAfterWin() {
   // niveau du combat qui vient de finir (il peut dépasser le dernier connu de 1 ou 2 niveaux, jamais de 20)
   const seen = levelSeen && levelSeen.at > (run.startedAt || 0) && Date.now() - levelSeen.at < 120000 ? levelSeen.lvl : null;
   const lvl = seen && Math.abs(seen - (run.lastLvl || seen)) <= 20 ? seen : run.lastLvl || 1;
+  // monstres à 0 XP (archis grade 6) : retenus pour ne plus les viser
+  const fresh = seen && levelSeen;
+  if (fresh?.noXp?.length) await save({ levelNoXp: { ...(cfg.levelNoXp || {}), ...Object.fromEntries(fresh.noXp.map((k) => [k, Date.now()])) } });
   const wins = (run.wins || 0) + 1;
   const danger = wins % 5 === 0 ? Math.min(12, run.danger * 1.1) : run.danger;
   await save({ levelRun: { ...run, wins, danger, lastLvl: lvl } });
   if (lvl > (run.lastLvl || 0)) await levelOnLevelUp(run.lastLvl || lvl, lvl);
   if (!levelOn()) return true;
   const rotated = (run.rotateAt && Date.now() > run.rotateAt + 2000) || Date.now() - (run.pickedAt || 0) > 4 * 60000;
+  if (fresh && fresh.xp === 0) { await levelPick('0 XP sur ce groupe (archimonstre de grade 6 ?)'); return true; }
   if (rotated) { await levelPick('groupes renouvelés'); return true; }
   return false;
 }
