@@ -244,7 +244,9 @@ async function runScan(resume) {
         if (!kinds.wanted && !kinds.archi) throw new Error('coche au moins « avis de recherche » ou « archimonstres »');
         if (!kinds.wanted) {   // archis seuls : seulement les zones qui peuvent en avoir (badge « Archi ×N » de la liste)
           const archiZones = await fetchArchiZones().catch((e) => { DM.log(`scan : badges archi illisibles (${e.message})`); return null; });
-          if (archiZones?.size) zones.splice(0, zones.length, ...zones.filter((z) => archiZones.has(z.id)));
+          const withArchi = archiZones?.size ? zones.filter((z) => archiZones.has(z.id)) : [];
+          if (withArchi.length) zones.splice(0, zones.length, ...withArchi);
+          else DM.log(`scan : aucune zone à badge « Archi » dans la plage (${archiZones?.size || 0} badges lus) → toutes les zones`);
         }
         st = {
           at: Date.now(),
