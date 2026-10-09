@@ -82,7 +82,8 @@ function fightMechanics(st, list, floor, diff = null) {
 }
 
 // ---------- Estimations (même formule que la tierlist) ----------
-const fighterStat = (f) => (k) => (+f.stats?.[k] || 0) + (f.buffs || []).reduce((s, b) => s + (b.stat === k ? +b.value || 0 : 0), 0);
+// buffs du combattant, sauf celui d'un Portail (empower : compté par le traqueur de classe sur la carte suivante)
+const fighterStat = (f) => (k) => (+f.stats?.[k] || 0) + (f.buffs || []).reduce((s, b) => s + (b.stat === k && !empowerOf(f.cards?.[b.source]) ? +b.value || 0 : 0), 0);
 // Dégâts moyens d'une carte sur une cible (résistances comprises), et ce qu'elle rend en PV au lanceur (vols, soins).
 function cardEffect(card, p, tgt) {
   // mémorisé par combattant (mêmes stats) : le plan du tour et le conseiller de deck l'appellent des milliers de fois
@@ -350,7 +351,7 @@ function planTurn(st, cand, rules) {
       const killsAll = enemies.every((f) => nh[f.id] <= 0);
       if (self > 0 && left < safety && !(killsAll && left > 0)) continue;
       const tr2 = tr.clone();
-      if (!x.weapon) tr2.cast(x.c, { tgtId: target?.id });
+      tr2.cast(x.c, { tgtId: target?.id });
       dfs([...seq, { x, target }], used | (1 << i), ap - x.ap + apGainOf(x.c), x.isDmg && !x.weapon ? x.lastEl : lastEl, count + (x.weapon ? 0 : 1),
         left, nh, shieldUp || x.shield, score + gain - SELF_W * self, tr2);
     }

@@ -311,7 +311,9 @@ function damageTest(fight, spells) {
     castMult = card ? tr.mult(card, { tgtId: L.target, tgtPct: pct0(L.target), selfPct: pct0('p') }) : 1;
     // vision spectrale déclenchée : « Vision spectrale ! Bluff inflige le double de dégâts. » juste après le lancer
     if (log[i + 1]?.t === 'mechanic' && log[i + 1].who === 'p' && /double de dégâts/.test(log[i + 1].text || '')) castMult *= 2;
-    if (card && !card.weapon) tr.cast(card, { tgtId: L.target });
+    if (card) tr.cast(card, { tgtId: L.target });
+    // Portail : son « buff » dmgPctSorts du journal n'en est pas un (compté par le traqueur sur la carte suivante)
+    if (card && empowerOf(card)) for (let j = i + 1; j < log.length && !['play', 'turn', 'round'].includes(log[j].t); j++) if (log[j].t === 'buff' && log[j].stat === 'dmgPctSorts') seen.add(j);
     const lines = card ? damageLines(card, S).filter(({ e }) => !(e.chance != null && +e.chance < 100)) : [];
     const used = new Set();
     // cible principale : celle visée ; si elle meurt, l'ennemi touché par une ligne suivante devient la cible principale

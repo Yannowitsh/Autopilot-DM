@@ -40,32 +40,47 @@ const CLASS_PASSIVES = {
   20: { name: 'Lance projetée', dmg: (s) => (s.turnDmgCasts === 0 ? 1.2 : 1), avg: 1.07 },
 };
 const classOf = (breed) => CLASS_PASSIVES[+breed] || null;
-const PASSIVE_WEAPON = new Set([2, 4, 13, 14, 15]);   // passifs qui comptent aussi l'arme (« ses sorts et son arme » ; Masques vérifié)
+// passifs qui comptent aussi l'arme (« ses sorts et son arme » ; Masques vérifié ; Portails : 1 lancer de dégâts sur 3 du
+// combat, arme comprise — 264/264 lancers de Lanthane)
+const PASSIVE_WEAPON = new Set([2, 4, 13, 14, 15, 16]);
+// Carte « Portail » (effet empower) : la prochaine carte de dégâts, arme comprise, ×(1 + v/100) puis consommé. Le journal
+// l'annonce comme un buff dmgPctSorts d'un tour, mais ce n'est pas un % sorts (118 combats de Lanthane : ×1,65 séparé).
+const empowerOf = (c) => (c?.eff || []).reduce((t, e) => (e?.k === 'empower' ? Math.max(t, +e.min || 0) : t), 0);
 
 // Traqueur : état du passif au fil du combat. cast(card, { tgtId, el }) après chaque lancer ; mult(card, ctx) avant.
 function classTracker(breed, at = Date.now()) {
   const cp = at && at < PASSIVES_SINCE ? null : classOf(breed);   // combat antérieur aux passifs : aucun
-  const s = { stacks: 0, turnCasts: 0, turnDmgCasts: 0, fightDmgCasts: 0, myTurns: 0, runes: new Set(), prey: null, preyHits: 0, bombs: 0, logged: null };
+  const s = { empower: 0, stacks: 0, turnCasts: 0, turnDmgCasts: 0, fightDmgCasts: 0, myTurns: 0, runes: new Set(), prey: null, preyHits: 0, bombs: 0, logged: null };
   return {
     cp, s,
     // l'annonce vaut pour le tour : Masques change chaque tour (« Masque Pleutre : −25 % de dégâts subis » = aucun bonus)
     turn() { s.myTurns++; s.turnCasts = 0; s.turnDmgCasts = 0; s.logged = null; },
     passiveLog(text) {
+      if (/passe par un portail/.test(text)) return;   // Portails : propre au lancer qui vient d'avoir lieu (après la ligne play)
       const m = String(text).match(/\+(\d+(?:[.,]\d+)?) ?% de dégâts(?! subis)/);
       if (m) s.logged = +m[1].replace(',', '.');
       else if (/% de dégâts subis/.test(text)) s.logged = 0;
     },
     // multiplicateur de dégâts du prochain lancer ; ctx : { tgtId, tgtPct, selfPct }
-    mult(card, ctx = {}) {
+    mult(card, ctx = {}) { return this.passive(card, ctx) * this.emp(card); },
+    emp(card) { return s.empower && isDmgCard(card) ? 1 + s.empower / 100 : 1; },   // Portail en attente
+    passive(card, ctx = {}) {
       if (s.logged != null) return 1 + s.logged / 100;   // valeur annoncée par le jeu
       if (!cp || !isDmgCard(card) || (card.weapon && !PASSIVE_WEAPON.has(+breed))) return 1;
       return cp.dmg(s, { tgtPct: 1, selfPct: 1, ...ctx });
     },
     heal() { return cp?.heal ? cp.heal(s) : 1; },
     taken() { return cp?.taken ? cp.taken(s) : 1; },
+    // à appeler pour chaque lancer, arme comprise
     cast(card, ctx = {}) {
-      if (cp?.stack) s.stacks = Math.min(cp.max || 99, s.stacks + cp.stack(card));
       const dmg = isDmgCard(card);
+      if (dmg) s.empower = 0;
+      if (empowerOf(card)) s.empower = empowerOf(card);
+      if (card.weapon) {   // l'arme ne compte que pour les passifs qui la comptent
+        if (dmg && PASSIVE_WEAPON.has(+breed)) { s.turnDmgCasts++; s.fightDmgCasts++; }
+        return;
+      }
+      if (cp?.stack) s.stacks = Math.min(cp.max || 99, s.stacks + cp.stack(card));
       s.turnCasts++;
       if (dmg) {
         s.turnDmgCasts++; s.fightDmgCasts++;
@@ -86,7 +101,7 @@ function classTrackerFromLog(st, at = Date.now()) {
   for (const L of st.log || []) {
     if (L.t === 'turn' && L.who === 'p') tr.turn();
     if (L.t === 'passive' && L.who === 'p') tr.passiveLog(L.text);
-    if (L.t === 'play' && L.who === 'p') { const c = byName.get(L.card); if (c && !c.weapon) tr.cast(c, { tgtId: L.target }); }
+    if (L.t === 'play' && L.who === 'p') { const c = byName.get(L.card); if (c) tr.cast(c, { tgtId: L.target }); }
   }
   return tr;
 }
