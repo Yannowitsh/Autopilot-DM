@@ -304,7 +304,12 @@ async function openCardWeights() {
     ov.firstElementChild.textContent = `❌ ${e.message}`;
     return;
   }
-  const WEAPON = { id: WEAPON_KEY, name: 'Arme équipée', ap: '—', eff: [] };
+  // arme : nom et icône de celle du dernier combat
+  const wc = lastFight()?.fighters?.p?.weaponCard;
+  const WEAPON = { id: WEAPON_KEY, name: wc?.name ? `Arme : ${wc.name}` : 'Arme équipée', ap: wc?.ap ?? '—', eff: [], icon: wc?.icon, iconKind: 'item' };
+  const iconOf = (c) => (c.icon ? `<img src="/img/${c.iconKind === 'item' ? 'items/' : 'spells/sort_'}${+c.icon}.png" alt="" draggable="false" style="width:32px;height:32px;object-fit:contain;flex:none">`
+    : '<span style="width:32px;flex:none"></span>');
+  const r1 = (x) => Math.round(x * 10) / 10;
   const inp = 'background:#2a231a;border:1px solid #5a4a33;border-radius:8px;color:#eee;padding:4px 6px;font:13px system-ui,sans-serif;width:64px';
   const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:5px 10px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
   ov.innerHTML = `
@@ -329,20 +334,29 @@ async function openCardWeights() {
     }
     return [...new Set(decks[view] || [])].map((id) => byId.get(id)).filter(Boolean);
   };
+  // cartes affichées + arme, de la plus prioritaire à la dernière jouée (à poids égal : par nom)
+  const sorted = () => {
+    const list = shown();
+    if (!list.length) return [];
+    return [...list, WEAPON].map((c) => ({ c, w: weightOf(c, c === WEAPON).w }))
+      .sort((a, b) => b.w - a.w || a.c.name.localeCompare(b.c.name, 'fr')).map((x) => x.c);
+  };
   const render = () => {
     $('[data-k="engine"]').textContent = cfg.fightEngine === 'weights' ? 'Auto par poids' : 'Auto du jeu';
     for (const el of ov.querySelectorAll('[data-o]')) el.value = cfg[el.dataset.o] ?? '';
     $('[data-k="tabs"]').innerHTML = decks.map((d, i) => `<button data-v="${i}" style="${btn};${view === i ? 'background:#2e6fbf' : ''}"${d.length ? '' : ' disabled'}>Deck ${i + 1}${i === active ? ' ★' : ''}</button>`).join('')
       + `<button data-v="all" style="${btn};${view === 'all' ? 'background:#2e6fbf' : ''}">Toute la collection (${all.length})</button>`;
     $('[data-k="q"]').style.display = view === 'all' ? '' : 'none';
-    const list = shown();
-    $('[data-k="list"]').innerHTML = (list.length ? [...list, WEAPON] : []).map((c) => {
+    const list = sorted();
+    $('[data-k="list"]').innerHTML = list.map((c) => {
       const weapon = c === WEAPON;
       const { w, every, own } = weightOf(c, weapon);
       const kind = weapon ? '🗡️ arme' : KIND_LABEL[cardKind(c)];
-      return `<div style="display:flex;align-items:center;gap:8px;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:5px 8px">
+      return `<div data-row="${esc(c.id)}" style="display:flex;align-items:center;gap:8px;background:#241e16;border:1px solid #3a3024;border-radius:8px;padding:4px 8px;${w > 0 ? '' : 'opacity:.55'}">
+        <span data-grip style="cursor:grab;color:#8a7d66;font-size:16px;padding:0 2px;user-select:none" title="Glisser pour changer la priorité">⠿</span>
+        ${iconOf(c)}
         <span style="flex:1;min-width:0"><b>${esc(c.name)}</b> <span style="color:#b9a98c;font-size:12px">· ${esc(c.ap)} PA · ${kind}${own ? '' : ' · défaut'}</span></span>
-        <label style="font-size:12px;color:#b9a98c">Poids <input data-w="${esc(c.id)}" type="number" min="0" max="100" value="${w}" style="${inp}"></label>
+        <label style="font-size:12px;color:#b9a98c">Poids <input data-w="${esc(c.id)}" type="number" min="0" max="100" step="0.1" value="${w}" style="${inp}"></label>
         <label style="font-size:12px;color:#b9a98c">tous les <input data-e="${esc(c.id)}" type="number" min="0" max="20" value="${every || ''}" placeholder="—" style="${inp};width:52px"> tours</label>
       </div>`;
     }).join('') || '<div style="color:#b9a98c">Aucune carte.</div>';
@@ -350,6 +364,62 @@ async function openCardWeights() {
   render();
   DM.installTips(ov);
   $('[data-k="q"]').addEventListener('input', render);
+  // Glisser-déposer : la carte déplacée prend un poids entre ses nouvelles voisines (au dixième) ; s'il n'y a pas la
+  // place, les cartes du dessous descendent de 0,1 pour garder l'ordre. Sous une carte à 0 (jamais jouée) → 0.
+  const listEl = $('[data-k="list"]');
+  let dragId = null;
+  const mark = document.createElement('div');
+  mark.style.cssText = 'height:3px;border-radius:2px;background:#f0d78c;margin:-2px 0';
+  listEl.addEventListener('mousedown', (e) => { const row = e.target.closest('[data-grip]') && e.target.closest('[data-row]'); if (row) row.draggable = true; });
+  listEl.addEventListener('dragstart', (e) => {
+    const row = e.target.closest?.('[data-row]');
+    if (!row?.draggable) return;
+    dragId = row.dataset.row;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', dragId);
+    setTimeout(() => { row.style.opacity = '.35'; }, 0);
+  });
+  const dropIndex = (y) => {
+    const rows = [...listEl.querySelectorAll('[data-row]')].filter((r) => r.dataset.row !== dragId);
+    const i = rows.findIndex((r) => { const b = r.getBoundingClientRect(); return y < b.top + b.height / 2; });
+    return { rows, i: i < 0 ? rows.length : i };
+  };
+  listEl.addEventListener('dragover', (e) => {
+    if (dragId == null) return;
+    e.preventDefault();
+    const { rows, i } = dropIndex(e.clientY);
+    if (i < rows.length) rows[i].before(mark); else rows[rows.length - 1]?.after(mark);
+  });
+  listEl.addEventListener('dragend', () => { mark.remove(); dragId = null; render(); });
+  listEl.addEventListener('drop', (e) => {
+    if (dragId == null) return;
+    e.preventDefault();
+    const { rows, i } = dropIndex(e.clientY);
+    const cardOf = (id) => (id === WEAPON_KEY ? WEAPON : byId.get(+id));
+    const wOf = (id) => weightOf(cardOf(id), id === WEAPON_KEY).w;
+    const ids = rows.map((r) => r.dataset.row);
+    const hi = i > 0 ? wOf(ids[i - 1]) : null, lo = i < ids.length ? wOf(ids[i]) : null;
+    let w;
+    if (hi == null) w = Math.min(100, (lo ?? 50) + 5);
+    else if (lo == null) w = hi > 0 ? Math.max(Math.min(1, hi / 2), hi - 5) : 0;
+    else w = hi > 0 ? r1((hi + lo) / 2) : 0;
+    w = r1(Math.max(0, Math.min(100, w)));
+    if (hi != null && hi > 0 && w >= hi) w = r1(hi - 0.1);
+    const next = { ...(cfg.cardWeights || {}) };
+    const put = (id, v) => { next[id] = { every: weightOf(cardOf(id), id === WEAPON_KEY).every, ...next[id], w: v }; };
+    put(dragId, w);
+    // place à faire en dessous (aussi tout en haut quand la 1re est déjà à 100) : chaque carte reste sous la précédente
+    let prev = w;
+    for (let k = i; k < ids.length && prev > 0; k++) {
+      const v = wOf(ids[k]);
+      if (v < prev) break;
+      prev = r1(Math.max(0, prev - 0.1));
+      put(ids[k], prev);
+    }
+    save({ cardWeights: next });
+    mark.remove(); dragId = null;
+    render();
+  });
   const setCard = (id, patch) => {
     const w = { ...(cfg.cardWeights || {}) };
     const card = id === WEAPON_KEY ? WEAPON : byId.get(+id);
@@ -359,7 +429,7 @@ async function openCardWeights() {
   };
   ov.addEventListener('change', (e) => {
     const t = e.target;
-    if (t.dataset.w) setCard(t.dataset.w, { w: Math.max(0, Math.min(100, Math.round(+t.value || 0))) });
+    if (t.dataset.w) setCard(t.dataset.w, { w: Math.max(0, Math.min(100, r1(+t.value || 0))) });
     else if (t.dataset.e) setCard(t.dataset.e, { every: Math.max(0, Math.min(20, Math.round(+t.value || 0))) });
     else if (t.dataset.o) save({ [t.dataset.o]: Math.max(0, +t.value || 0) });
     else return;
