@@ -82,7 +82,10 @@ async function optimizeBuild(opts, say) {
   const isEternal = (c) => ['worn', 'inv'].includes(c.src) && eternalKeys.has(`${normName(c.name)}|${c.fusion || 0}`);
   pool = pool.map((c) => {
     const base = c.baseEff || unfusedStats(c.eff, c.type, c.fusion || 0);
-    const f = isEternal(c) ? c.fusion : Math.min(simTier, fusionCap(c.type));
+    // au-delà de ce que la fusion permet (Dofus Rayonnant +5 : éternel, ou Rayonnant d'avant la refonte) : ton exemplaire
+    // garde son tier, on ne le simule jamais plus bas que ce plafond
+    const own = ['worn', 'inv', 'bank'].includes(c.src) && (c.fusion || 0) > fusionCap(c.type);
+    const f = isEternal(c) || own ? Math.max(c.fusion, Math.min(simTier, fusionCap(c.type))) : Math.min(simTier, fusionCap(c.type));
     return { ...c, eternal: isEternal(c), simFusion: f, realEff: withPrestige(c.eff), eff: withPrestige(fusedStats(base, c.type, f)) };
   });
   // Au tier simulé, deux exemplaires d'un même objet se valent : une seule entrée par objet — porté, sinon inventaire (le
