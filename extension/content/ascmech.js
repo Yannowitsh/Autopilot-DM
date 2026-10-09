@@ -95,7 +95,7 @@ function cardEffectRaw(card, p, tgt) {
   const S = fighterStat(p);
   const lines = damageLines(card, S);
   const critP = +card.cc > 0 ? Math.min(1, Math.max(0, (+card.cc + S('critique')) / 100)) : 0;
-  const pct = 1 + S('dmgPctSorts') / 100;   // le passif de classe est appliqué par le plan (classTracker)
+  const pct = dmgPctOf(card, S);   // le passif de classe est appliqué par le plan (classTracker)
   let dmg = 0, steal = 0;
   for (const { e, c, el, first } of lines) {
     if (e.chance != null && +e.chance < 100) continue;

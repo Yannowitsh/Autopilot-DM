@@ -60,6 +60,16 @@ function rscDeep(rows, v, depth = 0) {
   return v === '$undefined' ? undefined : v;
 }
 
+// Pioche (2026-10-09) : action { type: 'draw' }, 0 PA, une carte au hasard parmi celles du deck ni en main, ni jouées, ni
+// épuisées. drawsLeft charges sur drawsMax (selon la stat Invocations, jusqu'à 4), +1 par tour. On pioche quand la charge
+// serait perdue au tour suivant (déjà au max) ou quand il reste, après le meilleur plan, des PA pour une carte utile du paquet.
+function wantDraw(p, pool, apLeft, blocked) {
+  const left = +p.drawsLeft || 0;
+  if (!(left > 0) || blocked.has('draw') || !pool.length) return false;
+  return left >= (+p.drawsMax || 0) || pool.some((x) => x.ap <= apLeft);
+}
+const drawLabel = (p, pool) => `pioche (${(+p.drawsLeft || 0) - 1}/${+p.drawsMax || 0} restantes, ${pool.length} carte${pool.length > 1 ? 's' : ''} utile${pool.length > 1 ? 's' : ''} au paquet)`;
+
 // Prochaine action : la carte la plus lourde de la meilleure combinaison jouable, sinon fin du tour.
 // rules (Ascension) : mécaniques des boss → planTurn choisit l'ordre, le nombre de cartes et les cibles qui les respectent.
 function chooseFightAction(st, casts, blocked, rules = null) {
@@ -69,25 +79,31 @@ function chooseFightAction(st, casts, blocked, rules = null) {
   const lowHp = p.maxHp > 0 && (p.hp * 100) / p.maxHp < (+cfg.autoHealBelow || 0);
   const cards = (p.hand || []).map((uid) => p.cards?.[uid]).filter(Boolean).map((c) => ({ c, key: c.id, weapon: false }));
   if (p.weaponCard && !p.weaponUsed) cards.push({ c: p.weaponCard, key: WEAPON_KEY, weapon: true });
-  const cand = [];
-  for (const x of cards) {
+  const usable = (x) => {
     const { w, every } = weightOf(x.c, x.weapon);
     const ap = +x.c.ap || 0;
-    if (!(w > 0) || ap > p.ap || p.sealed?.includes(x.c.uid) || blocked.has(x.c.uid)) continue;
-    if (needsTarget(x.c) && !target) continue;
-    if (cardKind(x.c) === 'heal' && !lowHp && !rules) continue;   // Ascension : le plan du tour pèse le soin réel
-    if (every > 0 && casts[x.key] != null && p.turnNo - casts[x.key] < every) continue;
-    cand.push({ ...x, w, ap });
-  }
+    if (!(w > 0) || ap > p.ap || p.sealed?.includes(x.c.uid) || blocked.has(x.c.uid)) return null;
+    if (needsTarget(x.c) && !target) return null;
+    if (cardKind(x.c) === 'heal' && !lowHp && !rules) return null;   // Ascension : le plan du tour pèse le soin réel
+    if (every > 0 && casts[x.key] != null && p.turnNo - casts[x.key] < every) return null;
+    return { ...x, w, ap };
+  };
+  const cand = cards.map(usable).filter(Boolean);
+  // paquet de pioche : cartes utiles qu'on pourrait tirer
+  const out = new Set([...(p.hand || []), ...(p.played || []), ...(p.exhausted || [])]);
+  const pool = +p.drawsLeft > 0 ? Object.values(p.cards || {}).filter((c) => c?.uid && !out.has(c.uid))
+    .map((c) => usable({ c, key: c.id, weapon: false })).filter(Boolean) : [];
+  const draw = { action: { type: 'draw' }, label: drawLabel(p, pool) };
   if (rules) {
     const plan = planTurn(st, cand, rules);
     const why = plan.notes.length ? ` [${plan.notes.join(' · ')}]` : '';
+    const apLeft = p.ap - plan.plan.reduce((t, { x }) => t + x.ap - apGainOf(x.c), 0);
+    if (wantDraw(p, pool, apLeft, blocked)) return { ...draw, label: draw.label + why };
     if (!plan.pick) return { action: { type: 'end' }, label: `fin du tour${why}` };
     const tg = needsTarget(plan.pick.c) ? plan.target || target : null;
     return { action: { type: 'play', card: plan.pick.c.uid, target: tg?.id }, pick: plan.pick,
       label: `${plan.pick.c.name}${tg ? ` → ${tg.name}` : ''}${why}` };
   }
-  if (!cand.length) return { action: { type: 'end' }, label: 'fin du tour' };
   // meilleure combinaison (main de quelques cartes : on les essaie toutes) ; à égalité, la moins chère en PA
   let best = null;
   const n = Math.min(cand.length, 12);
@@ -97,6 +113,8 @@ function chooseFightAction(st, casts, blocked, rules = null) {
     if (ap > p.ap) continue;
     if (!best || w > best.w || (w === best.w && ap < best.ap)) best = { m, w, ap };
   }
+  if (wantDraw(p, pool, p.ap - (best?.ap || 0), blocked)) return draw;
+  if (!best) return { action: { type: 'end' }, label: 'fin du tour' };
   const pick = cand.filter((_, i) => best.m & (1 << i)).sort((a, b) => b.w - a.w || b.ap - a.ap)[0];
   const tgt = needsTarget(pick.c) ? target.id : undefined;
   return { action: { type: 'play', card: pick.c.uid, target: tgt }, pick, label: `${pick.c.name}${tgt ? ` → ${target.name}` : ''}` };
@@ -193,6 +211,7 @@ async function weightedFight(manual = null) {
         if (/aucun combat en cours/i.test(e.message)) return;
         DM.log(`auto par poids : « ${label} » refusé (${e.message})`);
         if (action.type === 'play') { blocked.add(action.card); continue; }
+        if (action.type === 'draw') { blocked.add('draw'); continue; }   // pioche refusée : plus de pioche ce tour
         return fallback(`fin de tour refusée (${e.message})`);
       }
       progress();

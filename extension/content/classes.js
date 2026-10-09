@@ -40,7 +40,7 @@ const CLASS_PASSIVES = {
   20: { name: 'Lance projetée', dmg: (s) => (s.turnDmgCasts === 0 ? 1.2 : 1), avg: 1.07 },
 };
 const classOf = (breed) => CLASS_PASSIVES[+breed] || null;
-const PASSIVE_WEAPON = new Set([2, 4, 13, 15]);   // passifs qui comptent aussi l'arme (« ses sorts et son arme »)
+const PASSIVE_WEAPON = new Set([2, 4, 13, 14, 15]);   // passifs qui comptent aussi l'arme (« ses sorts et son arme » ; Masques vérifié)
 
 // Traqueur : état du passif au fil du combat. cast(card, { tgtId, el }) après chaque lancer ; mult(card, ctx) avant.
 function classTracker(breed, at = Date.now()) {
@@ -48,8 +48,13 @@ function classTracker(breed, at = Date.now()) {
   const s = { stacks: 0, turnCasts: 0, turnDmgCasts: 0, fightDmgCasts: 0, myTurns: 0, runes: new Set(), prey: null, preyHits: 0, bombs: 0, logged: null };
   return {
     cp, s,
-    turn() { s.myTurns++; s.turnCasts = 0; s.turnDmgCasts = 0; },
-    passiveLog(text) { const v = +(String(text).match(/\+(\d+(?:[.,]\d+)?) ?% de dégâts/)?.[1] || '').replace(',', '.'); if (v || v === 0) s.logged = v; },
+    // l'annonce vaut pour le tour : Masques change chaque tour (« Masque Pleutre : −25 % de dégâts subis » = aucun bonus)
+    turn() { s.myTurns++; s.turnCasts = 0; s.turnDmgCasts = 0; s.logged = null; },
+    passiveLog(text) {
+      const m = String(text).match(/\+(\d+(?:[.,]\d+)?) ?% de dégâts(?! subis)/);
+      if (m) s.logged = +m[1].replace(',', '.');
+      else if (/% de dégâts subis/.test(text)) s.logged = 0;
+    },
     // multiplicateur de dégâts du prochain lancer ; ctx : { tgtId, tgtPct, selfPct }
     mult(card, ctx = {}) {
       if (s.logged != null) return 1 + s.logged / 100;   // valeur annoncée par le jeu

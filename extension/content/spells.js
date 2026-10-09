@@ -96,6 +96,7 @@ const critLinesOf = (card) => (Array.isArray(card?.crit) ? card.crit : cardCrits
 const bestEl = (statOf) => (statOf ? [1, 2, 3, 4].reduce((b, el) => (statOf(EL_STAT[el]) > statOf(EL_STAT[b]) ? el : b), 1) : 0);
 // Lignes de dégâts d'une carte : { e: ligne normale, c: ligne critique (même rang dans `crit`) ou null, el, first }.
 // Bonus fixes (Dommages…) une fois par lancer, sur la 1re ligne de dégâts — même si plusieurs lignes ont le même élément.
+// Arme : sur chaque ligne (Arc Volkorne, 4 éléments, vérifié 2026-10-09).
 function damageLines(card, statOf = null) {
   const crit = critLinesOf(card);
   const pair = Array.isArray(crit) && crit.length === (card.eff || []).length;
@@ -103,11 +104,13 @@ function damageLines(card, statOf = null) {
   (card.eff || []).forEach((e, i) => {
     if (!e || !DMG_FIXED.has(e.k)) return;
     const c = pair && crit[i]?.k === e.k ? crit[i] : null;
-    out.push({ e, c, el: e.el === 'best' ? bestEl(statOf) : Number.isInteger(e.el) ? e.el : 0, first: !out.length });
+    out.push({ e, c, el: e.el === 'best' ? bestEl(statOf) : Number.isInteger(e.el) ? e.el : 0, first: !!card.weapon || !out.length });
   });
   return out;
 }
 const SPECTRAL_PER_PO = 0.4;
+// % de dommages du lancer : % Sorts pour un sort, % Armes pour l'arme (l'arme ne profite pas du % Sorts, vérifié 2026-10-09)
+const dmgPctOf = (card, S) => 1 + S(card?.weapon ? 'dmgPctArmes' : 'dmgPctSorts') / 100;
 const PA_VALUE_PCT = 3;   // optimiseur : 1 PA = +3 % de l'objectif (voir score)
 const CHAR_STATS_KEY = 'dmCharStats';
 const LAST_FIGHT_KEY = 'dmLastFight';   // dernier état de combat reçu, par personnage (localStorage de la page)
@@ -151,7 +154,7 @@ let favActionId = null;
 // `stats` (caractéristiques du personnage) : dégâts estimés avec ses bonus, critique et vision spectrale compris.
 function spellDamage(card, stats = null) {
   const S = (k) => +stats?.[k] || 0;
-  const pct = (1 + S('dmgPctSorts') / 100);
+  const pct = dmgPctOf(card, S);
   const critP = stats && +card.cc > 0 ? Math.min(1, Math.max(0, (+card.cc + S('critique')) / 100)) : 0;
   // valeur d'un coup de base `v` (normal) / `vc` (critique) dans l'élément `el` : [normal, critique] ;
   // Dommages (+ élément, + critiques) seulement sur la 1re ligne de dégâts du sort
@@ -287,7 +290,8 @@ function damageTest(fight, spells) {
   const tr = classTracker(P.breedId, +fight.at || Date.now());
   const hpNow = Object.fromEntries(Object.values(fight.fighters).map((f) => [f.id, +f.maxHp || 0]));
   let castMult = 1;
-  const pct = () => (1 + S('dmgPctSorts') / 100) * castMult;
+  let card = null;
+  const pct = () => dmgPctOf(card, S) * castMult;
   // cartes de l'état de combat (lignes critiques comprises), sinon celles de la collection
   const byName = new Map(spells.map((sp) => [sp.name, sp.card]));
   for (const c of [...Object.values(P.cards || {}), P.weaponCard]) if (c?.name) byName.set(c.name, { ...byName.get(c.name), ...c, n: c.name });
@@ -302,9 +306,11 @@ function damageTest(fight, spells) {
     if (L.t === 'dmg' && L.who in hpNow) hpNow[L.who] -= +L.v || 0;
     if (L.t === 'heal' && L.who in hpNow) hpNow[L.who] = Math.min(+fight.fighters[L.who]?.maxHp || Infinity, hpNow[L.who] + (+L.v || 0));
     if (L.t !== 'play' || L.who !== 'p') continue;
-    const card = byName.get(L.card);
+    card = byName.get(L.card) || null;
     const pct0 = (id) => hpNow[id] / Math.max(1, +fight.fighters[id]?.maxHp || 1);
     castMult = card ? tr.mult(card, { tgtId: L.target, tgtPct: pct0(L.target), selfPct: pct0('p') }) : 1;
+    // vision spectrale déclenchée : « Vision spectrale ! Bluff inflige le double de dégâts. » juste après le lancer
+    if (log[i + 1]?.t === 'mechanic' && log[i + 1].who === 'p' && /double de dégâts/.test(log[i + 1].text || '')) castMult *= 2;
     if (card && !card.weapon) tr.cast(card, { tgtId: L.target });
     const lines = card ? damageLines(card, S).filter(({ e }) => !(e.chance != null && +e.chance < 100)) : [];
     const used = new Set();
