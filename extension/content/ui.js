@@ -31,6 +31,8 @@ async function onPlayPause() {
   try {
     const ctx = await playContext();
     if (ctx.error) { tradeToast(`▶ ${ctx.error}`, 'err'); return; }
+    seasonDetect();
+    if (seasonOn() && ctx.mode && ctx.mode !== 'chasse') { tradeToast(`▶ ${SEASON_ONLY_HUNT}`, 'err'); return; }
     if (dropOn() && ctx.mode) await dropStop('remplacé par ▶ sur une autre activité');
     if (sampleOn() && ctx.mode) await sampleStop('remplacé par ▶ sur une autre activité');
     if (levelOn() && ctx.mode) await levelStop('remplacé par ▶ sur une autre activité');
@@ -73,18 +75,18 @@ async function onGearPreset(slot, el) {
 const MENU_CSS = `
   :host { all: initial; }
   * { box-sizing: border-box; font-family: system-ui, sans-serif; }
-  .bubble { position: fixed; left: 12px; bottom: 12px; z-index: 2147483647; width: 44px; height: 44px; border-radius: 50%;
+  .bubble { position: fixed; left: 12px; bottom: calc(12px + var(--dm-lift, 0px)); z-index: 2147483647; width: 44px; height: 44px; border-radius: 50%;
     display: grid; place-items: center; font-size: 22px; cursor: pointer; user-select: none;
     background: #262a31; border: 3px solid var(--st, #666); box-shadow: 0 2px 10px rgba(0,0,0,.5); transition: transform .15s; }
   .bubble:hover { transform: scale(1.08); }
-  .bubble.play { bottom: 64px; left: 16px; width: 36px; height: 36px; font-size: 15px; border-width: 2px; color: #fff; }
+  .bubble.play { bottom: calc(64px + var(--dm-lift, 0px)); left: 16px; width: 36px; height: 36px; font-size: 15px; border-width: 2px; color: #fff; }
   .panel:not([hidden]) ~ .bubble.play, .panel:not([hidden]) ~ .bubble.gear { display: none; }
-  .bubble.gear { bottom: 64px; width: 36px; height: 36px; font-size: 16px; border-width: 2px; border-color: #8a6d3b; }
+  .bubble.gear { bottom: calc(64px + var(--dm-lift, 0px)); width: 36px; height: 36px; font-size: 16px; border-width: 2px; border-color: #8a6d3b; }
   .bubble.gear.g0 { left: 60px; } .bubble.gear.g1 { left: 104px; }
   .bubble.gear.busy { opacity: .5; cursor: progress; }
-  .bubble.fav { left: 64px; width: 36px; height: 36px; bottom: 16px; font-size: 16px; border-width: 2px; border-color: #c0485a; }
-  .panel { position: fixed; left: 12px; bottom: 64px; z-index: 2147483647; width: 290px; max-width: calc(100vw - 24px);
-    max-height: calc(100vh - 80px); overflow-y: auto; background: #1b1d22; color: #e8e6e1;
+  .bubble.fav { left: 64px; width: 36px; height: 36px; bottom: calc(16px + var(--dm-lift, 0px)); font-size: 16px; border-width: 2px; border-color: #c0485a; }
+  .panel { position: fixed; left: 12px; bottom: calc(64px + var(--dm-lift, 0px)); z-index: 2147483647; width: 290px; max-width: calc(100vw - 24px);
+    max-height: calc(100vh - 80px - var(--dm-lift, 0px)); overflow-y: auto; background: #1b1d22; color: #e8e6e1;
     border: 1px solid #3a3f48; border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.55);
     font-size: 13px; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
   .panel[hidden], .row[hidden] { display: none; }
@@ -96,6 +98,7 @@ const MENU_CSS = `
     color: #fff; background: #3a3f48; }
   button:hover:not(:disabled) { filter: brightness(1.15); }
   button:disabled { opacity: .6; cursor: default; }
+  .seg button:disabled { opacity: .3; text-decoration: line-through; cursor: not-allowed; }   /* mode saison */
   .seg { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; }
   .seg button.on { background: #2e6fbf; }
   select { width: 100%; background: #14161a; color: #e8e6e1; border: 1px solid #3a3f48; border-radius: 5px; padding: 5px; font-size: 13px; }
@@ -152,6 +155,7 @@ function buildUi() {
       <div class="sec">
         <div class="head"><span>🤖 Pilote auto${DM.tip("Démarre ou arrête le pilote sur cet onglet. Il enchaîne les combats en Auto selon l’activité choisie ci-dessous. Compteur : victoires / défaites du pilote.")}</span><span class="muted" data-k="stats"></span></div>
         <div class="status" data-k="status"></div>
+        <div class="muted" data-k="win" style="display:none" data-tip="Victoire estimée du combat en cours (300 simulations de la suite du combat ; voir la popup).">—</div>
         <button data-k="toggle"></button>
         <div data-k="dropBox" class="muted" style="display:none;flex-direction:column;gap:3px;border:1px solid #6a3fa0;border-radius:6px;padding:6px">
           <div data-k="dropInfo"></div>
@@ -180,6 +184,7 @@ function buildUi() {
           <div class="muted" data-k="times" style="display:flex;flex-direction:column;gap:3px;margin-top:4px"></div>
           <button data-k="timesReset" style="padding:2px 7px;font-size:12px;margin-top:4px" data-tip="Remet le chronomètre à zéro.">↺ Remettre à zéro</button>
         </details>
+        <button data-k="settings" style="padding:2px 7px;font-size:12px" data-tip="Ouvre les réglages de l’extension dans un onglet (notifications Discord, délais, rechargements, modules…), comme la popup de l’icône de l’extension. Utile sur téléphone.">⚙️ Réglages de l’extension</button>
       </div>
       <div class="sec">
         <div class="head"><span>🗺️ Activité${DM.tip("Aventure : étapes du Chemin.\nChasse : refait en boucle un groupe d’une zone.\nAscension : étages de boss (niveau 200).\nÀ droite : ta dernière énergie connue.")}</span><span class="muted" data-k="energy"></span></div>
@@ -188,6 +193,7 @@ function buildUi() {
           <button data-mode="chasse">Chasse</button>
           <button data-mode="ascension" data-tip="Étages de boss, débloqué au niveau 200">Ascension</button>
         </div>
+        <label class="muted" style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" data-k="season"> 🛡️ Mode saison (chasse uniquement, jamais de boss)${DM.tip("Saison Héroïque : une défaite contre un boss tue le perso de saison (mort définitive). Coché, le pilote ne fait que de la chasse (monstres, jamais de boss) : Aventure et Ascension refusées, boss de chasse auto désactivé, énergie ignorée (combats gratuits). Une défaite en chasse ne tue pas le perso.")}</label>
         <div data-k="zoneBox">
           <div class="muted" style="margin-bottom:4px">Zone${DM.tip("Zone farmée en mode Chasse (zones à ton niveau). Par défaut le pilote attaque le groupe le plus dur ; si tu attaques toi-même un groupe, c’est celui-là qui est relancé.")}</div>
           <div class="row"><select data-k="zone"></select><button data-k="reload" data-tip="Recharger la liste des zones depuis le jeu.">↻</button></div>
@@ -316,8 +322,16 @@ function buildUi() {
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setOpen(false); });
 
   $('toggle').addEventListener('click', () => send({ type: 'toggle', fromPage: true }).catch(() => {}));
+  $('settings').addEventListener('click', () => send({ type: 'openSettings' }).catch(() => {}));
+  $('season').addEventListener('change', async () => {
+    const on = $('season').checked;
+    await save(on ? { seasonMode: true, mode: 'chasse' } : { seasonMode: false });
+    renderUi();
+    if (on && !cfg.huntZones?.length) await loadZones();
+  });
   for (const b of root.querySelectorAll('[data-mode]')) {
     b.addEventListener('click', async () => {
+      if (seasonOn() && b.dataset.mode !== 'chasse') { tradeToast(SEASON_ONLY_HUNT, 'err'); return; }
       await save({ mode: b.dataset.mode });
       renderUi();
       if (b.dataset.mode === 'chasse' && !cfg.huntZones?.length) await loadZones();

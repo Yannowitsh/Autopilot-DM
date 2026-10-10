@@ -70,12 +70,48 @@ function wantDraw(p, pool, apLeft, blocked) {
 }
 const drawLabel = (p, pool) => `pioche (${(+p.drawsLeft || 0) - 1}/${+p.drawsMax || 0} restantes, ${pool.length} carte${pool.length > 1 ? 's' : ''} utile${pool.length > 1 ? 's' : ''} au paquet)`;
 
+// Coup final : les cartes de dégâts jouables (sans buff, bouclier, soin ni gain de PA) tuent-elles tous les ennemis ce
+// tour ? Ennemis du moins au plus de PV (bouclier compris) : pour chacun, la combinaison de cartes restantes la moins chère
+// en PA qui le tue. Dégâts moyens estimés (cardEffect : stats, buffs, résistances et malus de la cible) × KILL_MARGIN, par
+// prudence (jets bas, pas de coup critique) ; passif de classe et dégâts de zone sur les autres ennemis ignorés (bonus).
+// Renvoie la première carte à jouer et sa cible, ou null (le choix par poids reprend : buffs compris).
+const KILL_MARGIN = 0.85;
+function lethalPlan(st, cand, reflected) {
+  const p = st.fighters.p;
+  const foes = Object.values(st.fighters).filter((f) => f.team !== p.team && f.alive && f.id !== 'p');
+  const hits = cand.filter((x) => cardKind(x.c) === 'dmg' && !apGainOf(x.c));
+  if (!foes.length || !hits.length || hits.length > 10) return null;
+  let ap = +p.ap || 0, left = hits, first = null;
+  for (const f of foes.sort((a, b) => a.hp - b.hp)) {
+    const need = (+f.hp || 0) + shieldSum(f);
+    const refl = reflected.get(f.id);   // Reflet : la part de l'élément renvoyé ne compte pas
+    const dm = left.map((x) => cardEffect(x.c, p, f).dmg * KILL_MARGIN * (1 - reflFrac(x.c, refl)));
+    let best = null;
+    for (let m = 1; m < 1 << left.length; m++) {
+      let d = 0, a = 0;
+      for (let i = 0; i < left.length; i++) if (m & (1 << i)) { d += dm[i]; a += left[i].ap; }
+      if (d >= need && a <= ap && (!best || a < best.a || (a === best.a && d < best.d))) best = { m, a, d };
+    }
+    if (!best) return null;
+    if (!first) {   // la plus grosse carte de la combinaison, sur l'ennemi le plus faible
+      const i = left.map((_, k) => k).filter((k) => best.m & (1 << k)).sort((u, v) => dm[v] - dm[u])[0];
+      first = { x: left[i], tgt: f };
+    }
+    ap -= best.a;
+    left = left.filter((_, k) => !(best.m & (1 << k)));
+  }
+  return first;
+}
+
 // Prochaine action : la carte la plus lourde de la meilleure combinaison jouable, sinon fin du tour.
 // rules (Ascension) : mécaniques des boss → planTurn choisit l'ordre, le nombre de cartes et les cibles qui les respectent.
 function chooseFightAction(st, casts, blocked, rules = null) {
   const p = st.fighters.p;
-  const target = Object.values(st.fighters).filter((f) => f.team !== p.team && f.alive && f.id !== 'p')
-    .sort((a, b) => a.hp - b.hp)[0];
+  const foes = Object.values(st.fighters).filter((f) => f.team !== p.team && f.alive && f.id !== 'p').sort((a, b) => a.hp - b.hp);
+  // cible d'une carte : l'ennemi le plus faible qui ne renvoie pas (Reflet) l'élément de toute la carte
+  const reflected = reflectNow(st);
+  const targetFor = (c) => foes.find((f) => reflFrac(c, reflected.get(f.id)) < 1) || null;
+  const target = foes[0];
   const lowHp = p.maxHp > 0 && (p.hp * 100) / p.maxHp < (+cfg.autoHealBelow || 0);
   const cards = (p.hand || []).map((uid) => p.cards?.[uid]).filter(Boolean).map((c) => ({ c, key: c.id, weapon: false }));
   if (p.weaponCard && !p.weaponUsed) cards.push({ c: p.weaponCard, key: WEAPON_KEY, weapon: true });
@@ -83,7 +119,7 @@ function chooseFightAction(st, casts, blocked, rules = null) {
     const { w, every } = weightOf(x.c, x.weapon);
     const ap = +x.c.ap || 0;
     if (!(w > 0) || ap > p.ap || p.sealed?.includes(x.c.uid) || blocked.has(x.c.uid)) return null;
-    if (needsTarget(x.c) && !target) return null;
+    if (needsTarget(x.c) && !targetFor(x.c)) return null;
     if (cardKind(x.c) === 'heal' && !lowHp && !rules) return null;   // Ascension : le plan du tour pèse le soin réel
     if (every > 0 && casts[x.key] != null && p.turnNo - casts[x.key] < every) return null;
     return { ...x, w, ap };
@@ -104,6 +140,9 @@ function chooseFightAction(st, casts, blocked, rules = null) {
     return { action: { type: 'play', card: plan.pick.c.uid, target: tg?.id }, pick: plan.pick,
       label: `${plan.pick.c.name}${tg ? ` → ${tg.name}` : ''}${why}` };
   }
+  // coup final possible sans buff : on ne joue que les dégâts (PA et temps gagnés), cible choisie par le plan
+  const fin = lethalPlan(st, cand, reflected);
+  if (fin) return { action: { type: 'play', card: fin.x.c.uid, target: fin.tgt.id }, pick: fin.x, label: `${fin.x.c.name} → ${fin.tgt.name} (coup final, sans buff)` };
   // meilleure combinaison (main de quelques cartes : on les essaie toutes) ; à égalité, la moins chère en PA
   let best = null;
   const n = Math.min(cand.length, 12);
@@ -116,12 +155,12 @@ function chooseFightAction(st, casts, blocked, rules = null) {
   if (wantDraw(p, pool, p.ap - (best?.ap || 0), blocked)) return draw;
   if (!best) return { action: { type: 'end' }, label: 'fin du tour' };
   const pick = cand.filter((_, i) => best.m & (1 << i)).sort((a, b) => b.w - a.w || b.ap - a.ap)[0];
-  const tgt = needsTarget(pick.c) ? target.id : undefined;
-  return { action: { type: 'play', card: pick.c.uid, target: tgt }, pick, label: `${pick.c.name}${tgt ? ` → ${target.name}` : ''}` };
+  const tg = needsTarget(pick.c) ? targetFor(pick.c) : null;
+  return { action: { type: 'play', card: pick.c.uid, target: tg?.id }, pick, label: `${pick.c.name}${tg ? ` → ${tg.name}` : ''}` };
 }
 
 // useGameAuto : sur cette page, on laisse l'Auto du jeu (état illisible, combat déjà en Auto, erreur…).
-let weightedBusy = false, useGameAuto = false;
+let weightedBusy = false, useGameAuto = false, weightedDoneAt = 0;
 // État de départ du combat, capté par netwatch dans la réponse de lancement : évite de recharger /combat.
 let fightInit = null;
 window.addEventListener('message', (e) => {
@@ -158,12 +197,14 @@ async function weightedFight(manual = null) {
     // des cartes ont pu être jouées depuis le lancement)
     let st = !manual && fightInit && Date.now() - fightInit.at < 60000 && fightInit.st?.status === 'ongoing' ? fightInit.st : null;
     fightInit = null;
+    const fromInit = !!st;   // état de lancement : winrate.js l'a déjà estimé (message dm-fight-init)
     if (!st) {
       const { flight } = await fetchFlight('/combat');
       const { rows, props } = rscProps(flight, (x) => 'initial' in x && 'charId' in x);
       st = props && rscDeep(rows, props.initial);
     }
     if (!st?.fighters?.p) return fallback('état du combat introuvable');
+    if (!fromInit) winUpdate(st);
     if (st.status !== 'ongoing') return;   // déjà fini : le rechargement affiche l'écran de fin
     if (st.auto) return fallback('combat déjà lancé en Auto');
     let actionId = cachedFightId(), idChecked = false;
@@ -226,6 +267,7 @@ async function weightedFight(manual = null) {
         if (hits.length) planTurn.lastEl = hits[hits.length - 1].el;
       }
       st = withFullLog(res.state);
+      winUpdate(st);
       learnCardCrits(st);
       learnCardHeals(st);
       if (res.rewards && st.status !== 'ongoing') { dropOnRewards(res.rewards, `${st.kind}|${st.logCount}`); farmOnRewards(st, res.rewards); }
@@ -236,6 +278,7 @@ async function weightedFight(manual = null) {
     fallback(e.message);
   } finally {
     weightedBusy = false;
+    weightedDoneAt = Date.now();   // l'anti-blocage laisse la page se recharger d'elle-même (voir stuckCheck)
     // la page n'a rien vu de nos actions : on la recharge, elle affiche l'écran de fin (ou l'état à jour)
     if (reload && (manual || isOwner())) location.reload();
   }

@@ -2,6 +2,7 @@
 // Les fichiers content/*.js et content.js partagent la même portée globale (monde isolé), chargés dans l’ordre du manifest.
 
 // ---------- Boucle ----------
+let seasonWaitAt = 0;   // mode saison : début de l'attente d'une zone de chasse (leveling, farm de drop…)
 async function step() {
   const path = location.pathname;
 
@@ -16,6 +17,20 @@ async function step() {
   if (path.startsWith('/connexion')) {
     await save({ enabled: false, paused: false, status: 'Arrêté : déconnecté' });
     notify('errors', '🔒 Déconnecté de DofusMasters : pilote auto arrêté.');
+    return;
+  }
+
+  // Mode saison : jamais d'Aventure (étapes de boss) ni d'Ascension, seulement la chasse d'une zone choisie.
+  // Leveling / farm de drop / échantillonnage qui cherchent encore leur zone : on attend (2 min au plus).
+  if (seasonOn() && !isHunt() && cfg.mode === 'chasse' && (levelOn() || dropOn() || sampleOn()) && Date.now() - (seasonWaitAt ||= Date.now()) < 120000) {
+    setStatus('Mode saison : recherche d’une zone de chasse…');
+    return progress();
+  }
+  if (isHunt()) seasonWaitAt = 0;
+  if (seasonOn() && !isHunt()) {
+    seasonWaitAt = 0;
+    await save({ enabled: false, paused: false, botFight: false,
+      status: `Arrêté : ${SEASON_ONLY_HUNT}${cfg.mode === 'chasse' ? ' — choisis une zone' : ''}` });
     return;
   }
 
@@ -297,7 +312,7 @@ async function step() {
 
 // Autre page : on revient à l'aventure / à la zone de chasse, sauf pendant une pause énergie (l'utilisateur peut naviguer).
 async function goHome() {
-  if (cfg.pauseReason === 'energy') return progress();
+  if (cfg.pauseReason === 'energy' && !seasonOn()) return progress();
   setStatus(isHunt() ? 'Retour à la zone de chasse…' : isAsc() ? 'Retour à l’Ascension…' : 'Retour à l’aventure…');
   await sleep(humanDelay());
   if (isOwner()) location.assign(home());

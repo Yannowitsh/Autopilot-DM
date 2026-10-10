@@ -1,6 +1,6 @@
 # Autopilot-DM
 
-Extension Chrome : enchaîne l'Aventure ou la chasse, résout la vérification de présence, surveille l'énergie, échange des objets entre deux comptes via l'HDV et envoie des alertes sur Discord.
+Extension Chrome et Firefox (aussi sur Android) : enchaîne l'Aventure ou la chasse, résout la vérification de présence, surveille l'énergie, échange des objets entre deux comptes via l'HDV et envoie des alertes sur Discord.
 
 ## Installation
 
@@ -22,6 +22,35 @@ En secours, tu peux aussi double-cliquer **`mettre-a-jour.bat`** dans le dossier
 
 Tes réglages (webhook Discord, objets verrouillés, file d'échange…) sont conservés : ils sont stockés dans Chrome, pas dans le dossier.
 
+## Version Firefox / Android
+
+La même extension tourne sur **Firefox** (ordinateur et Android, version 142 ou plus). Chrome sur Android et Brave n'acceptent pas les extensions.
+
+1. Sur le téléphone, installe **Firefox** depuis le Play Store.
+2. Télécharge le fichier **`.xpi`** de la [dernière version](https://github.com/Yannowitsh/Autopilot-DM/releases/latest).
+3. Firefox → **Paramètres** → **À propos de Firefox** → touche 5 fois le logo Firefox (menu de débogage), reviens dans **Paramètres** → **Installer le module depuis un fichier** → choisis le `.xpi`.
+4. Sur le site du jeu, menu **⋮** → **Extensions** → **Autopilot-DM** ouvre la popup. Si elle affiche « ⚠️ L'extension n'a pas encore accès au site du jeu », touche **🔓 Autoriser l'accès**.
+
+Les réglages de l'extension (notifications Discord, délais, rechargements, modules…) s'ouvrent aussi dans un onglet depuis le menu 🤖 en jeu, bouton **⚙️ Réglages de l'extension**, ou depuis **Modules complémentaires** → **Autopilot-DM** → **Paramètres** (Firefox) / clic droit sur l'icône → **Options** (Chrome).
+
+Firefox installe ensuite les nouvelles versions tout seul (le bouton **⬇️ Installer** ouvre la page de la dernière version).
+
+Sur téléphone, garde Firefox au premier plan et le téléphone branché : tant que le pilote tourne, l'extension garde l'écran allumé ; en veille ou en arrière-plan, Android gèle la page et le farm s'arrête. L'échange entre deux comptes n'est pas disponible sur Firefox.
+
+Sur téléphone, **📈 Rentabilité des zones** affiche une carte par groupe (zone et ▶ en haut, XP et kamas dessous) ; touche une carte pour voir ses détails (combats, moyenne brute, durée type).
+
+Les fichiers `.xpi` sont fabriqués par GitHub Actions (`.github/workflows/firefox.yml`) : signés par Mozilla pour chaque nouvelle version de `main` (secrets du dépôt `AMO_JWT_ISSUER` et `AMO_JWT_SECRET`, clé d'API de [addons.mozilla.org](https://addons.mozilla.org/developers/addon/api/key/)), et une préversion de test « test-&lt;branche&gt; » pour chaque push sur une autre branche.
+
+## Mode saison (saison Héroïque)
+
+Pendant une saison Héroïque, une défaite contre un **boss** tue définitivement le perso de saison ; une défaite contre des monstres de chasse ne coûte rien. Le mode **🛡️ Mode saison** s'active **tout seul** dans chaque onglet où tu joues ton perso de saison (le jeu l'indique dans chaque page) : sa case est alors cochée et grisée. Un autre onglet ou une fenêtre privée sur ton perso principal n'est pas concerné et garde l'Aventure et l'Ascension. Tu peux aussi le cocher à la main (menu 🤖 → Activité, ou popup → Réglages) : il s'applique alors à tous les onglets. Avec le mode saison :
+
+- le pilote ne fait **que de la chasse** (zone choisie) : Aventure (étapes de boss) et Ascension sont grisées, et le pilote s'arrête avec un message s'il n'est pas en chasse ; le bouton **▶** refuse les pages Aventure et Ascension ;
+- le boss de chasse automatique n'est jamais tenté ;
+- l'énergie n'est plus surveillée (combats gratuits en saison).
+
+Le farm de drop, le 📈 Leveling et l'échantillonnage passent par la chasse : ils restent disponibles et ne font que des chasses (le pilote attend qu'ils aient choisi leur zone). Une pause énergie en cours est levée dès que le mode saison s'active.
+
 ## Farm de drop
 
 Dans l'optimiseur, avec **Chercher dans le bestiaire** (et **Drops de monstres uniquement**, coché par défaut : pas d'objets « bonus de victoire » ni de boss), le bouton **🐉 Aller dropper** (aussi dans la bulle ❤️ Favoris) liste tous les objets du build (à looter ou déjà possédés, pour monter leur tier) et tes objets favoris — les exemplaires que tu as déjà (inventaire + porté) sont affichés et déduits du tier voulu : coche ceux à farmer (rien n'est coché par défaut ; les « objets bonus de victoire » d'une zone sont farmables aussi, chance non publiée), ils passent dans la **liste de courses** où tu choisis le tier voulu pour chacun (T1 = 1 exemplaire, T2 = 3, T3 = 9, T4 = 27, T5 Rayonnant = 81) : la fenêtre affiche ta meilleure chance et le nombre de combats estimé. **Fusion auto** (cochée par défaut, dans la liste de courses) : pendant le farm (toutes les 5 min, entre deux combats) et à la fin, 3 exemplaires d'un objet de la liste → tier suivant, jusqu'au tier voulu — seulement les objets de la liste, jamais les autres ; bouton **⚡ Fusionner la liste** pour le faire tout de suite. La liste de courses est gardée et se trouve dans la bulle **❤️ Favoris** (avec tes builds et objets favoris ; 🛒 + sur un favori pour l'y ajouter), même après l'arrêt du farm. **Lancer le farm** passe le pilote en mode Chasse : il scanne toutes les zones utiles et attaque le groupe qui contient le plus de monstres lâchant un objet voulu (scan refait à chaque changement de zone), compte les objets reçus en fin de combat et change de zone quand celle-ci n'a plus rien à donner ou plus de groupe utile. 5 défaites d'affilée dans une zone : elle est abandonnée (notification) et on passe à la suivante. Arrêt + notification Discord quand tout est droppé, ou quand plus aucune zone n'a de groupe utile (avec la raison). Le suivi s'affiche dans le menu 🤖 (■ Arrêter le farm) ; le mode de combat est celui choisi (Auto du jeu / par poids).
@@ -38,9 +67,11 @@ Dans la popup de l'extension (icône en haut à droite de Chrome), bloc **Module
 
 Menu 🤖 → Activité → **Combat** : **Auto du jeu** (le bouton Auto du site) ou **Auto par poids** : le pilote joue lui-même les cartes, sans animation, avec une courte pause aléatoire entre deux actions (réglable).
 
-**🎯 Poids des cartes** (menu 🤖, ou bouton en bas à droite de la page `/deck`) règle chaque carte, deck par deck ou dans toute la collection (avec recherche), et l'arme : à chaque action, le pilote garde la combinaison de cartes jouables qui tient dans tes PA avec le plus gros total de poids, et joue la plus lourde en premier. Poids **0** = jamais jouée ; **tous les N tours** = au plus une fois tous les N tours (pour les buffs qui durent). Les soins ne sont joués que sous un seuil de PV. Cible : l'ennemi qui a le moins de PV. Par défaut : gain de PA 100, buffs 90 (relancés à la fin de leur durée), soins 80, dégâts selon leurs dégâts de base par PA, arme 30. En cas de souci (état illisible, réponse inattendue), le combat repasse sur l'Auto du jeu.
+**🎯 Poids des cartes** (menu 🤖, ou bouton en bas à droite de la page `/deck`) règle chaque carte, deck par deck ou dans toute la collection (avec recherche), et l'arme : à chaque action, le pilote garde la combinaison de cartes jouables qui tient dans tes PA avec le plus gros total de poids, et joue la plus lourde en premier. Poids **0** = jamais jouée ; **tous les N tours** = au plus une fois tous les N tours (pour les buffs qui durent). Les soins ne sont joués que sous un seuil de PV. **Coup final** : quand les cartes de dégâts en main (et l'arme) suffisent à tuer tous les ennemis ce tour, sans buff, le pilote ne joue qu'elles, sur les bonnes cibles (pas de buff, bouclier ni soin inutiles : PA et temps gagnés) ; l'estimation est prudente (dégâts moyens × 0,85, résistances et malus de la cible compris). Cible : l'ennemi qui a le moins de PV. **Reflet** (Obsidiantre, Hell Mina…) : chaque tour, le boss annonce un élément qui ne le blesse pas et dont 50 % des dégâts te reviennent ; le pilote (et le plan de tour de l'Ascension) ne le frappe pas avec un sort de cet élément ce tour-là. Par défaut : gain de PA 100, buffs 90 (relancés à la fin de leur durée), soins 80, dégâts selon leurs dégâts de base par PA, arme 30. En cas de souci (état illisible, réponse inattendue), le combat repasse sur l'Auto du jeu.
 
 **Combat lancé à la main** (Kralamoure, boss…) : le bouton **🎯 Jouer ce combat par poids** (en bas à droite de `/combat`) joue ce combat-là avec les mêmes poids, sans le pilote et sans relance à la fin ; recliquer l'arrête.
+
+**🎲 Victoire estimée** (popup → État, et menu 🤖 sous l'état du pilote), pendant un combat : part de victoires sur 300 simulations de la suite du combat. Elles partent de tes PV et boucliers, et de tes dégâts et soins par tour (appris sur tes combats, séparément pour l'Auto du jeu et l'Auto par poids ; ce combat-ci compte pour 70 % dès 2 tours joués). Côté ennemis, elles partent de leurs PV, de l'action qu'ils annoncent et de leur cycle d'actions (attaque, coup lourd, drain…, avec les dégâts réels appris pour chaque type). « Apprentissage… » tant que moins de 3 combats ont été vus. En Auto du jeu, le serveur joue tout le combat d'un coup : l'issue s'affiche dès qu'elle est connue, à côté de l'estimation de départ. **Pronostics justes** : part des estimations de départ qui ont vu juste (≥ 50 % → victoire), après 5 combats.
 
 **⏱ Chronomètre des combats** (menu 🤖, sous le bouton Démarrer) : durée moyenne d'un combat (lancement → écran de fin) et de la boucle complète (d'un lancement au suivant, avec le combat par heure), par activité et par mode de combat, pour comparer l'Auto du jeu et l'Auto par poids sur la durée. Les pauses de plus de 5 min ne comptent pas ; ↺ remet à zéro.
 

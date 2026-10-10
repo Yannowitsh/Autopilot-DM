@@ -105,8 +105,9 @@ function cardEffectRaw(card, p, tgt) {
     const avg = (x) => ((+x.min || 0) + (+(x.max ?? x.min) || 0)) / 2;
     const fixed = first ? S('dommages') + S(EL_DMG[el]) : 0;
     const v = ((1 - critP) * (avg(e) * mult + fixed) + critP * ((c ? avg(c) : avg(e) * CRIT_MULT) * mult + fixed + (first ? S('dommagesCritiques') : 0))) * pct;
-    const rp = tgt ? Math.min(+tgt.resCap || 100, (+tgt.stats?.[EL_RES_PCT[el]] || 0) + (+tgt.stats?.resPctAll || 0)) : 0;
-    const rf = tgt ? +tgt.stats?.[EL_RES[el]] || 0 : 0;
+    const T = tgt && fighterStat(tgt);   // stats de la cible, malus compris (Proie de l'Ouginak : −20 % de résistance)
+    const rp = tgt ? Math.min(+tgt.resCap || 100, T(EL_RES_PCT[el]) + T('resPctAll')) : 0;
+    const rf = tgt ? T(EL_RES[el]) : 0;
     const d = Math.max(0, (v - rf) * (1 - rp / 100));
     dmg += d;
     if (e.k === 'steal') steal += d * STEAL_HEAL_PART;
@@ -182,6 +183,8 @@ function planTurn(st, cand, rules) {
   if (shieldRule && !shieldUp0) notes.push(`Peau dure ${shieldRule.pass} %`);
   const mirrored = new Set(has('mirror').filter((r) => round >= r.from && round <= r.to).map((r) => r.boss));
   if (mirrored.size) notes.push(`Miroir : ne pas frapper ${[...mirrored].map((id) => st.fighters[id]?.name).join(', ')}`);
+  const reflected = reflectNow(st);
+  for (const [id, el] of reflected) if (st.fighters[id]?.alive) notes.push(`Reflet : pas de ${EL_NAMES[el]} sur ${st.fighters[id].name}`);
   const apRule = has('apExact').find((r) => r.turn === round);
   if (apRule) notes.push(`finir à ${apRule.ap} PA`);
   // Échange de vie : boss à ménager avant son tour… sauf si on peut l'abattre d'ici là (plus d'échange, ni de ses
@@ -190,7 +193,7 @@ function planTurn(st, cand, rules) {
   // Bouclier d'un boss (sa « garde », souvent pour 1 tour) : il absorbe chaque coup sauf la part de notre Perforation
   // (0,05 % par point de Fuite + Tacle, 25 % au plus : ~10 % vérifié à l'étage 36). Ce qu'il absorbe est perdu s'il expire
   // avant d'être cassé : dans la recherche, seuls les dégâts qui atteignent ses PV comptent.
-  const enemyShield = (f) => (f.shields || []).reduce((t, x) => t + (+x.value || +x.v || +x.amount || 0), 0);
+  const enemyShield = shieldSum;
   const perfo = Math.min(0.25, ((fighterStat(p)('fuite') || 0) + (fighterStat(p)('tacle') || 0)) * 0.0005);
   const ehpOf = (f) => (+f.hp || 0) + enemyShield(f);
   // dégâts d qui atteignent les PV de f, bouclier restant sh : [vers les PV, bouclier après]
@@ -282,7 +285,7 @@ function planTurn(st, cand, rules) {
       if (x.isDmg || needsTarget(x.c)) {
         // cible : vivante, pas sous Miroir, et pas à ménager (Échange de vie) si le coup la fait passer sous nos PV %
         const myPct = hp / maxHp;
-        const ok = enemies.filter((f) => nh[f.id] > 0 && !mirrored.has(f.id)).filter((f) => {
+        const ok = enemies.filter((f) => nh[f.id] > 0 && !mirrored.has(f.id) && reflFrac(x.c, reflected.get(f.id)) < 1).filter((f) => {
           if (!swapProt.has(f.id)) return true;
           return (nh[f.id] - cardEffect(x.c, p, f).dmg) / (+f.maxHp || 1) >= myPct + 0.05;
         });
@@ -302,7 +305,9 @@ function planTurn(st, cand, rules) {
         const cm = tr.mult(x.c, { tgtId: target.id, tgtPct: nh[target.id] / Math.max(1, +target.maxHp || 1), selfPct: hp / maxHp });   // passif de classe
         const hit = (f, part) => {
           const e = cardEffect(x.c, p, f);
-          const d = e.dmg * part * pass * cm;
+          const rf = reflFrac(x.c, reflected.get(f.id));   // Reflet : la part de l'élément renvoyé ne le blesse pas, 50 % nous revient
+          const d = e.dmg * part * pass * cm * (1 - rf);
+          self += e.dmg * part * pass * cm * rf * REFLECT_BACK;
           if (mirrored.has(f.id)) { self += d; return e; }   // Miroir : le coup nous revient
           const before = nh[f.id];
           const [toHp, shLeft] = throughShield(d, nh[`s:${f.id}`] || 0);
@@ -369,6 +374,38 @@ const floorOf = (label) => +(label || '').match(/étage (\d+)/i)?.[1] || null;
 // Le combat ne liste pas les mécaniques actives, mais le journal les annonce quand elles se déclenchent (t: 'mechanic').
 // On garde ces observations par étage : au prochain essai (ou quand on atteint l'étage d'un ami), elles complètent les
 // règles du bestiaire (mécanique manquante, tour exact du Miroir / des PA comptés / de l'Échange de vie).
+// Reflet (Obsidiantre, Hell Mina…) : chaque tour, un élément annoncé à l'avance ne blesse pas le boss et 50 % de ces
+// dégâts nous sont renvoyés. Journal : « ce tour, les dégâts Eau lui sont renvoyés (tour suivant : Air) » en début de tour,
+// « Reflet : X renvoie les dégâts Feu ! ». Suivi rejoué ligne à ligne : cur = Map id du boss → élément (indice EL_STAT).
+const EL_NAMES = ['Neutre', 'Terre', 'Feu', 'Eau', 'Air'];
+const REFLECT_BACK = 0.5;
+function reflectTracker() {
+  const cur = new Map(), next = new Map();
+  const el = (s) => EL_NAMES.indexOf(s);
+  return {
+    cur,
+    line(L) {
+      // nouveau tour : seul l'élément annoncé reste renvoyé (sans annonce, le Reflet s'arrête jusqu'au prochain message)
+      if (L.t === 'round') { cur.clear(); for (const [id, e] of next) cur.set(id, e); next.clear(); return; }
+      if (L.t !== 'mechanic' || !L.who) return;
+      const t = L.text || '';
+      const m = t.match(/dégâts (Neutre|Terre|Feu|Eau|Air) lui sont renvoyés/) || t.match(/renvoie les dégâts (Neutre|Terre|Feu|Eau|Air)/);
+      if (m) cur.set(L.who, el(m[1]));
+      const n = t.match(/tour suivant : (Neutre|Terre|Feu|Eau|Air)/);
+      if (n) next.set(L.who, el(n[1]));
+    },
+  };
+}
+// Bouclier total d'un combattant (format des boucliers selon les versions du jeu : value, v ou amount).
+const shieldSum = (f) => (f.shields || []).reduce((t, x) => t + (+x.value || +x.v || +x.amount || 0), 0);
+const reflectNow = (st) => { const r = reflectTracker(); for (const L of st.log || []) r.line(L); return r.cur; };
+// Part des lignes de dégâts d'une carte dans l'élément renvoyé (0 : pas concernée, 1 : entièrement renvoyée).
+function reflFrac(card, el) {
+  if (el == null || el < 0) return 0;
+  const lines = (card?.eff || []).filter((e) => e && DMG_FIXED.has(e.k) && Number.isInteger(e.el));
+  return lines.length ? lines.filter((e) => e.el === el).length / lines.length : 0;
+}
+
 const MECH_TEXTS = [
   [/vous vole \d+ PA/i, 'Vol de PA'],
   [/soins vous blessent|soins sont divisés/i, 'Malédiction des soins'],
@@ -381,6 +418,8 @@ const MECH_TEXTS = [
   [/peau dure|sans bouclier/i, 'Peau dure'],
   [/perd patience|t.achève/i, 'Rage'],
   [/pulvérise .* d.un seul coup/i, 'PA comptés|Rage'],
+  [/Reflet|lui sont renvoyés|renvoie les dégâts/i, 'Reflet'],
+  [/Métamorphose/i, 'Métamorphose'],   // +20 % de résistances (buff, compté) et un gardien invoqué (nouvel ennemi)
 ];
 // [{ monsterId, bossName, name (ou null : texte inconnu), round, text }]
 function observedMechanics(st) {

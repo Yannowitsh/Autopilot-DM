@@ -267,10 +267,16 @@ async function equipGearPreset(slot) {
 // `ifStale` : seulement si la dernière synchro a plus de LOCK_SYNC_MS. Une seule synchro à la fois par profil de navigateur
 // (Web Locks : les onglets d'un même compte ne se marchent pas dessus ; la navigation privée a les siens).
 // → { want: Set des clés à protéger, locked, unlocked } ; null si rien n'a été fait (personnage inconnu, synchro récente).
+// Firefox : le LockManager est celui de la page, qui refuse la promesse du content script (« Permission denied to access
+// property "then" ») → file d'attente propre à l'onglet (les autres onglets sont écartés par syncAt / ifStale).
+let lockChain = Promise.resolve();
 function syncLocks(opts = {}) {
   const asked = Date.now();
   const run = () => doSyncLocks({ ...opts, asked });
-  return navigator.locks?.request ? navigator.locks.request('dm-item-locks', run) : run();
+  if (navigator.locks?.request && !DM.IS_FIREFOX) return navigator.locks.request('dm-item-locks', run);
+  const p = lockChain.then(run, run);
+  lockChain = p.catch(() => {});
+  return p;
 }
 
 async function doSyncLocks({ unlock, asked = 0, ifStale = false, force = false, reload = false }) {

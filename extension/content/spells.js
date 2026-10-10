@@ -128,7 +128,7 @@ window.addEventListener('message', (e) => {
     if (!st?.fighters?.p?.stats || !st.log?.some((L) => L.t === 'play' && L.who === 'p')) return;
     const fighters = Object.fromEntries(Object.entries(st.fighters).map(([id, f]) => [id,
       { id, name: f.name, kind: f.kind, team: f.team, level: f.level, maxHp: f.maxHp, stats: f.stats, resCap: f.resCap, buffs: f.buffs,
-        ...(id === 'p' ? { cards: f.cards, weaponCard: f.weaponCard, basePa: f.basePa } : {}) }]));
+        ...(id === 'p' ? { cards: f.cards, weaponCard: f.weaponCard, basePa: f.basePa, breedId: f.breedId } : {}) }]));
     const all = JSON.parse(localStorage.getItem(LAST_FIGHT_KEY) || '{}');
     all[fightAcct()] = { at: Date.now(), kind: st.kind, status: st.status, fighters, log: st.log, logFrom: st.logFrom || 0 };
     localStorage.setItem(LAST_FIGHT_KEY, JSON.stringify(all));
@@ -284,6 +284,18 @@ function damageTest(fight, spells) {
     if (old >= 0) buffs.splice(old, 1);
     buffs.push({ stat: B.stat, v, from: pTurn, turns: +B.turns || 1 });
   };
+  // malus posés sur les ennemis (Proie de l'Ouginak : « buff » resPctAll −20 sur la cible, 3 tours) : { id: [{ stat, v, left }] },
+  // décomptés aux tours de l'ennemi ; relancé pendant qu'il dure, il est rafraîchi (pas cumulé)
+  const foeBuffs = {};
+  const addFoeBuff = (k, B) => {
+    if (seen.has(k) || B.who === 'p' || !B.stat || fight.fighters[B.who]?.team === P.team) return;
+    seen.add(k);
+    const v = +B.v || 0, list = (foeBuffs[B.who] ||= []);
+    const old = list.findIndex((b) => b.stat === B.stat && b.v === v);
+    if (old >= 0) list.splice(old, 1);
+    list.push({ stat: B.stat, v, left: +B.turns || 1 });
+  };
+  const foeStat = (id, k) => (foeBuffs[id] || []).reduce((s, b) => s + (b.stat === k ? b.v : 0), 0);
   let pTurn = 0;
   const S = (k) => (+stats[k] || 0) + buffs.reduce((s, b) => s + (b.stat === k && pTurn < b.from + b.turns ? b.v : 0), 0);
   // passif de classe (classes.js) rejoué au fil du journal ; PV des combattants suivis (Sram, Sacrieur…)
@@ -297,10 +309,13 @@ function damageTest(fight, spells) {
   for (const c of [...Object.values(P.cards || {}), P.weaponCard]) if (c?.name) byName.set(c.name, { ...byName.get(c.name), ...c, n: c.name });
   const rows = [];
   const log = fight.log;
+  const refl = reflectTracker();   // Reflet : élément renvoyé par chaque boss, tour par tour
   for (let i = 0; i < log.length; i++) {
     const L = log[i];
+    refl.line(L);
     if (L.t === 'turn' && L.who === 'p') pTurn++;
-    if (L.t === 'buff') addBuff(i, L);
+    if (L.t === 'buff') { addBuff(i, L); addFoeBuff(i, L); }
+    if (L.t === 'turn' && foeBuffs[L.who]) foeBuffs[L.who] = foeBuffs[L.who].filter((b) => --b.left > 0);
     if (L.t === 'turn' && L.who === 'p') tr.turn();
     if (L.t === 'passive' && L.who === 'p') tr.passiveLog(L.text);
     if (L.t === 'dmg' && L.who in hpNow) hpNow[L.who] -= +L.v || 0;
@@ -320,7 +335,7 @@ function damageTest(fight, spells) {
     let primary = L.target, primaryDead = false, killLine = -1, lastLine = -1;
     for (let j = i + 1; j < log.length && !['play', 'turn', 'round'].includes(log[j].t); j++) {
       const D = log[j];
-      if (D.t === 'buff') addBuff(j, D);   // vol de stats en cours de sort
+      if (D.t === 'buff') { addBuff(j, D); addFoeBuff(j, D); }   // vol de stats, malus posé par le sort
       if (D.t === 'death' && D.who === primary) { primaryDead = true; killLine = lastLine; }
       if (D.t !== 'dmg') continue;
       const tg = fight.fighters[D.who];
@@ -339,7 +354,8 @@ function damageTest(fight, spells) {
       const row = { card: L.card, ap: card?.ap, target: tg.name, el: D.el, v: (+D.v || 0) + (+D.absorbed || 0), crit, fatal, buffed,
         secondary, pos: li >= 0 ? `${li + 1}/${lines.length}` : null, base: src ? `${src.min}-${src.max ?? src.min}${crit ? ' (crit)' : ''}`
           : ln ? `${ln.e.min}-${ln.e.max ?? ln.e.min} ×${CRIT_MULT} (crit inconnu)` : null };
-      if (ln) {
+      if (refl.cur.get(D.who) === D.el) row.reflected = true;   // élément renvoyé : il ne le blesse pas (pas d'estimation)
+      else if (ln) {
         const e = ln.e, n = e.k === 'poison' ? Math.max(1, +(e.turns || e.dur) || 1) : 1;
         const mult = 1 + (S(EL_STAT[D.el]) + S('puissance')) / 100;
         const fixed = ln.first ? S('dommages') + S(EL_DMG[D.el]) + (crit ? S('dommagesCritiques') : 0) : 0;
@@ -348,8 +364,9 @@ function damageTest(fight, spells) {
         const s2 = crit && ln.c ? ln.c : e;
         const zf = secondary && e.zone ? ZONE_FALLOFF : 1;   // zone : les autres cibles prennent 60 %
         row.lo = val(s2.min) * n * zf; row.hi = val(s2.max ?? s2.min) * n * zf;
-        const rp = Math.min(+tg.resCap || 100, (+tg.stats?.[EL_RES_PCT[D.el]] || 0) + (+tg.stats?.resPctAll || 0));
-        const rf = +tg.stats?.[EL_RES[D.el]] || 0;
+        const rp = Math.min(+tg.resCap || 100, (+tg.stats?.[EL_RES_PCT[D.el]] || 0) + (+tg.stats?.resPctAll || 0)
+          + foeStat(D.who, EL_RES_PCT[D.el]) + foeStat(D.who, 'resPctAll'));
+        const rf = (+tg.stats?.[EL_RES[D.el]] || 0) + foeStat(D.who, EL_RES[D.el]);
         const adj = (x) => Math.max(0, (x - rf) * (1 - rp / 100));
         row.rp = rp; row.rf = rf; row.loR = adj(row.lo); row.hiR = adj(row.hi);
         row.ratio = row.v / ((row.loR + row.hiR) / 2 || 1);

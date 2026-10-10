@@ -6,6 +6,11 @@ const DM = {
   REPO: 'Yannowitsh/Autopilot-DM',
   get UPDATE_MANIFEST() { return `https://raw.githubusercontent.com/${DM.REPO}/main/extension/manifest.json`; },
   get REPO_URL() { return `https://github.com/${DM.REPO}`; },
+  // Firefox (ordinateur ou Android) : pas de mise à jour par dossier (File System Access) ni d'échange entre comptes.
+  get IS_FIREFOX() { return chrome.runtime.getURL('').startsWith('moz-extension:'); },
+  get IS_MOBILE() { return /Android|Mobi/i.test(navigator.userAgent); },
+  // Firefox : la version signée (.xpi) est publiée dans les releases GitHub ; Firefox la met aussi à jour tout seul.
+  get RELEASES_URL() { return `https://github.com/${DM.REPO}/releases/latest`; },
   // « 1.32.0 » > « 1.31.4 » ?
   isNewer(a, b) {
     const pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number);
@@ -53,6 +58,7 @@ const DM = {
     wantedMinPerGroup: 1, // avis de recherche : nb minimum de monstres recherchés dans le même groupe
     bossPreAlertMin: 0,  // pré-alerte N minutes avant (0 = désactivé)
     bossAuto: true,      // pilote actif : tente le boss de chasse dans un nouvel onglet à son apparition, puis reprend le farm
+    seasonMode: false,   // saison Héroïque : chasse uniquement, jamais de boss (une défaite contre un boss tue le perso)
     sellKeepAbove: true, // Autosell : garde les objets d'un niveau supérieur au personnage
     sellKeepRarities: [4, 5], // Autosell : raretés jamais vendues (indices de DM.RARITIES)
     mode: 'aventure',    // 'aventure' (Chemin), 'chasse' (groupe le plus dur d'une zone en boucle) ou 'ascension' (niv. 200)
@@ -233,8 +239,19 @@ const DM = {
     return s.mode === 'chasse' && s.huntZone ? `/chasse?zone=${s.huntZone}` : '/aventure';
   },
 
+  // % de victoire estimé du combat (content/winrate.js) : texte de la popup et du menu 🤖, '' si rien de récent (5 min).
+  winText(s) {
+    const e = s.winEst;
+    if (!e || Date.now() - (e.at || 0) > 5 * 60000) return '';
+    const c = e.acct && s.winModel?.[e.acct]?.calib;
+    const rel = c?.n >= 5 ? ` · pronostics justes ${Math.round((c.ok / c.n) * 100)} % (${c.n})` : '';
+    if (e.done) return `${e.done === 'won' ? '✔ victoire' : '✖ défaite'}${e.first != null ? ` (estimée ${e.first} %)` : ''}${rel}`;
+    return `🎲 ${e.pct} %${e.learned ? '' : ' (apprentissage…)'}${rel}`;
+  },
+
   // Libellé court de l'activité du pilote (bouton Démarrer…).
   modeLabel(s) {
+    if ((s.seasonMode || s.seasonPilot) && !(s.mode === 'chasse' && s.huntZone)) return '🛡️ saison : choisis une zone de chasse';
     if (s.mode === 'ascension') return 'ascension';
     return s.mode === 'chasse' && s.huntZone ? `chasse : ${s.huntZoneName || 'zone ' + s.huntZone}${s.huntGroup ? ` · G${s.huntGroup}` : ''}` : 'aventure';
   },
@@ -273,7 +290,9 @@ const DM = {
       const name = a.querySelector('.font-bold')?.textContent.trim() || `Zone ${id}`;
       const region = a.querySelector('.text-dim')?.textContent.trim() || '';
       const lvl = a.textContent.match(/Niveau\s*(\d+)\s*–\s*(\d+)/);
-      zones.push({ id, name, region, lvlMin: lvl ? +lvl[1] : null, lvlMax: lvl ? +lvl[2] : null, label: lvl ? `${name} (${lvl[1]}–${lvl[2]})` : name });
+      const req = a.textContent.match(/Niveau\s*(\d+)\s*requis/);   // zone verrouillée : niveau du perso requis
+      zones.push({ id, name, region, lvlMin: lvl ? +lvl[1] : null, lvlMax: lvl ? +lvl[2] : null, lvlReq: req ? +req[1] : null,
+        label: lvl ? `${name} (${lvl[1]}–${lvl[2]})` : name });
     }
     if (!zones.length) throw new Error('aucune zone trouvée');
     if (!all) await chrome.storage.local.set({ huntZones: zones });

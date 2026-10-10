@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <style>
     :root { --bg: #1b1d22; --panel: #262a31; --text: #e8e6e1; --muted: #9aa0a8; --on: #2e7d32; --pause: #b07400; --off: #555; }
-    body { margin: 0; width: 320px; background: var(--bg); color: var(--text); font: 13px system-ui, sans-serif; }
+    body { margin: 0; width: 320px; max-width: 100%; background: var(--bg); color: var(--text); font: 13px system-ui, sans-serif; }
     main { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
     h1 { font-size: 15px; margin: 0; }
     .panel { background: var(--panel); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
@@ -19,6 +19,8 @@
     input, select { background: #14161a; color: var(--text); border: 1px solid #3a3f48; border-radius: 4px; padding: 4px; }
     .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
     #msg { min-height: 1em; }
+    /* Firefox Android : la popup s'ouvre en plein écran, boutons plus faciles à toucher */
+    @media (pointer: coarse) { body { width: auto; font-size: 15px; } button { padding: 12px; } input[type=number] { width: 72px; } }
   </style>
 </head>
 <body>
@@ -31,11 +33,16 @@
       <button id="openRepo" data-tip="Ouvre la page GitHub de l’extension (code, README, historique des versions).">GitHub</button>
     </div>
   </div>
+  <div id="hostPerm" class="panel" hidden style="border-color:#8a2b2b">
+    <div>⚠️ L’extension n’a pas encore accès au site du jeu.</div>
+    <button id="grantHost" data-tip="Firefox demande d’autoriser l’accès à dofusmasters.houk.fr (et Discord, GitHub pour les alertes et les mises à jour). Sans ça, le pilote ne peut pas tourner.">🔓 Autoriser l’accès</button>
+  </div>
   <button id="toggle" data-tip="Démarre ou arrête le pilote sur l’onglet du jeu actif (ou en ouvre un). Le pilote enchaîne les combats en Auto selon le mode choisi dans les réglages.">…</button>
 
   <div class="panel">
     <div class="row"><span class="muted">État<span class="dm-i" data-tip="Ce que le pilote fait en ce moment (combat, pause énergie, attente…).">i</span></span><span id="status">—</span></div>
     <div class="row"><span class="muted">Énergie<span class="dm-i" data-tip="Dernière énergie lue en jeu, et l’heure de cette lecture. Chaque combat lancé par le pilote en consomme.">i</span></span><span id="energy">—</span></div>
+    <div class="row" id="winRow" hidden><span class="muted">Victoire estimée<span class="dm-i" data-tip="Combat en cours : part de victoires sur 300 simulations de la suite du combat (tes dégâts et soins par tour appris sur tes combats, l’action annoncée et le cycle d’actions de chaque ennemi). En Auto du jeu, le serveur joue tout le combat d’un coup : l’issue s’affiche dès le lancement, avec l’estimation de départ. « Pronostics justes » : estimations de départ qui ont vu juste (≥ 50 % → victoire).">i</span></span><span id="win" style="text-align:right">—</span></div>
     <div class="row"><span class="muted">Victoires / défaites<span class="dm-i" data-tip="Combats lancés par le pilote depuis la dernière remise à zéro. Les combats faits à la main ne comptent pas.">i</span></span><span id="stats">—</span></div>
     <div class="row"><span class="muted">Boss de chasse<span class="dm-i" data-tip="Le boss de zone apparaît à heures fixes et reste quelques minutes : présent maintenant, ou heure de sa prochaine apparition.">i</span></span><span id="boss">—</span></div>
     <div class="btns">
@@ -67,6 +74,7 @@
       <option value="chasse">Chasse auto</option>
       <option value="ascension">Ascension (niv. 200)</option>
     </select></label>
+    <label><span>🛡️ Mode saison<span class="dm-i" data-tip="Saison Héroïque : une défaite contre un boss tue le perso de saison (mort définitive). Coché, le pilote ne fait que de la chasse (monstres, jamais de boss) : Aventure et Ascension refusées, boss de chasse auto désactivé, énergie ignorée (combats gratuits). Une défaite en chasse ne tue pas le perso.">i</span></span> <input type="checkbox" id="seasonMode"></label>
     <label id="zoneRow"><span>Zone<span class="dm-i" data-tip="Zone de chasse farmée en mode Chasse. La liste montre les zones à ton niveau ; ↻ la recharge.">i</span></span> <span style="display:flex;gap:4px;min-width:0">
       <select id="huntZone" style="max-width:190px"></select>
       <button id="reloadZones" data-tip="Recharger la liste des zones de chasse depuis le jeu." style="padding:2px 6px">↻</button>

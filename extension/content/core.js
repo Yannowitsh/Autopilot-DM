@@ -53,6 +53,7 @@ function shutdown() {
   quiet(() => clearInterval(ticker));
   quiet(() => clearInterval(aliveTimer));
   quiet(() => clearInterval(eqTimer));
+  quiet(() => wakeLock?.release());
   quiet(() => clearInterval(lockTimer));
   quiet(() => eqAsk?.host.remove());
   quiet(() => domObserver.disconnect());
@@ -90,6 +91,41 @@ const SEMI_AUTO = /^Auto$/;              // jamais « Auto AFK −50 % » ni « 
 const HUNT_RETRY = /^(Refaire ce combat|Réessayer ce groupe)$/;
 const isHunt = () => cfg.mode === 'chasse' && !!cfg.huntZone;
 const isAsc = () => cfg.mode === 'ascension';
+// Mode saison (saison Héroïque) : une défaite contre un boss tue le perso de saison → le pilote ne fait que de la chasse.
+// Actif si la case est cochée (seasonMode, réglage commun) ou si le perso joué dans CET onglet est un perso de saison :
+// deux fenêtres (normale et privée) partagent le même stockage, chacune peut jouer un perso différent.
+const seasonOn = () => !!cfg.seasonMode || seasonTab === true;
+const SEASON_ONLY_HUNT = 'mode saison : seule la chasse est autorisée (les boss tuent le perso de saison)';
+// Perso de saison joué ? Le jeu l'écrit dans les données de chaque page (en-tête : "seasonChar":true|false) : dans les
+// scripts du chargement de la page, puis dans les réponses du jeu (navigations, actions) lues par netwatch.js
+// (<html data-dm-season-char>), sans requête de plus. L'onglet du pilote publie la valeur de son perso (seasonPilot) :
+// l'arrière-plan s'en sert (boss de chasse auto), la popup l'affiche.
+let seasonTab = null, seasonScripts;
+function seasonDetect() {
+  if (seasonScripts === undefined) {   // scripts du chargement : lus une fois (la navigation côté client ne les change pas)
+    seasonScripts = null;
+    for (const s of document.scripts) {
+      const m = s.textContent.match(/seasonChar\\?":(true|false)/);
+      if (m) { seasonScripts = m[1] === 'true'; break; }
+    }
+  }
+  const attr = document.documentElement.dataset.dmSeasonChar;
+  const on = attr ? attr === 'true' : seasonScripts;
+  if (on != null && on !== seasonTab) {
+    seasonTab = on;
+    let told = null;   // dernier perso annoncé dans cet onglet (sessionStorage : survit aux rechargements du pilote)
+    try { told = sessionStorage.getItem('dmSeasonTab'); sessionStorage.setItem('dmSeasonTab', String(on)); } catch { /* bloqué */ }
+    if (told !== String(on) && (on || told === 'true')) {
+      DM.log(on ? 'perso de saison détecté : mode saison (chasse uniquement)' : 'perso principal : mode saison automatique levé');
+      tradeToast(on ? '🛡️ Perso de saison détecté : mode saison activé (chasse uniquement, jamais de boss)'
+        : '🛡️ Perso principal : mode saison automatique levé', 'ok');
+    }
+    renderUi();
+  }
+  if (isOwner() && seasonTab != null && !!cfg.seasonPilot !== seasonTab) save({ seasonPilot: seasonTab });
+  // 2.6.0 – 2.8.1 : la détection cochait la case commune (seasonAuto) → on la décoche, la détection est par onglet
+  if (cfg.seasonAuto != null) save({ seasonAuto: null, ...(cfg.seasonAuto ? { seasonMode: false } : {}) });
+}
 const maxRetries = () => (isHunt() ? (cfg.dropRun?.active ? DROP_MAX_DEFEATS - 1 : cfg.sampleRun?.active ? SAMPLE_MAX_DEFEATS - 1 : cfg.levelRun?.active ? LEVEL_MAX_DEFEATS : Math.max(0, Math.round(+cfg.huntRetries || 0))) : MAX_PATH_RETRIES);
 // Fin d'un combat d'Ascension : boutons propres aux étages (« Suivant en auto » / « Réessayer en auto » existent aussi).
 const ASC_END = /^(Étage suivant|Réessayer l.étage|Voir l.Ascension)$/;

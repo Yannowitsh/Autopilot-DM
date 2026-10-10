@@ -1,4 +1,5 @@
-importScripts('shared.js');
+// Chrome : service worker (shared.js importé ici). Firefox : page d'arrière-plan, shared.js est déjà chargé par le manifest.
+if (typeof importScripts === 'function') importScripts('shared.js');
 
 const BOSS_REFRESH_MS = 10 * 60000;
 
@@ -33,8 +34,10 @@ async function refreshBoss() {
 async function updateBadge() {
   const s = await DM.getAll();
   const text = !s.enabled ? '' : s.paused ? 'II' : 'ON';
-  await chrome.action.setBadgeText({ text });
-  await chrome.action.setBadgeBackgroundColor({ color: s.paused ? '#d18b00' : '#2e9e44' });
+  try {   // Firefox Android : pas de badge sur l'icône
+    await chrome.action.setBadgeText({ text });
+    await chrome.action.setBadgeBackgroundColor({ color: s.paused ? '#d18b00' : '#2e9e44' });
+  } catch { /* badge indisponible */ }
 }
 
 async function bossCheck() {
@@ -72,7 +75,7 @@ async function bossAutoCheck(st, now) {
     return;
   }
   if (run?.phase === 'fighting' && now - run.startedAt > BOSS_FIGHT_MAX_MS) return bossFinish('abandonné (délai dépassé)');
-  if (run || !BOSS_AUTO_ENABLED || !s.enabled || s.bossAuto === false || !st.active) return;
+  if (run || !BOSS_AUTO_ENABLED || !s.enabled || s.bossAuto === false || s.seasonMode || s.seasonPilot || !st.active) return;   // saison : un boss tue le perso
   if (s.bossTriedFor === st.spawnAt || st.endsAt - now < BOSS_MIN_LEFT_MS) return;
   await chrome.storage.local.set({
     bossTriedFor: st.spawnAt,   // un seul essai par apparition
@@ -429,7 +432,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return true;
       }
       case 'reloadExtension': setTimeout(() => chrome.runtime.reload(), 100); return true;
-      case 'openUpdate': await chrome.tabs.create({ url: chrome.runtime.getURL('update.html') }); return true;
+      case 'openSettings': await chrome.tabs.create({ url: chrome.runtime.getURL('popup.html') }); return true;   // menu 🤖 (téléphone)
+      case 'openUpdate': await chrome.tabs.create({ url: DM.IS_FIREFOX ? DM.RELEASES_URL : chrome.runtime.getURL('update.html') }); return true;
       case 'bossGo': return bossGo(sender.tab?.id);
       case 'bossDone': return bossFinish(msg.result);
       case 'buyEnergy': return buyStart(sender.tab?.id);

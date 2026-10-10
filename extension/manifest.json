@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Autopilot-DM",
-  "version": "2.4.1",
+  "version": "2.8.3",
   "description": "Enchaîne automatiquement les étapes de l’Aventure ou la chasse (groupe le plus dur d’une zone), résout la vérification de présence, surveille l’énergie, échange des objets entre deux comptes via l’HDV et alerte sur Discord (défaite, énergie basse, boss de chasse).",
   "permissions": ["storage", "alarms"],
   "incognito": "spanning",
@@ -15,7 +15,20 @@
     "https://*.workers.dev/*"
   ],
   "optional_host_permissions": ["https://*/*"],
-  "background": { "service_worker": "background.js" },
+  "background": {
+    "service_worker": "background.js",
+    "scripts": ["shared.js", "background.js"]
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "autopilot-dm@yannowitsh",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": { "required": ["none"] },
+      "update_url": "https://github.com/Yannowitsh/Autopilot-DM/releases/latest/download/updates.json"
+    },
+    "gecko_android": { "strict_min_version": "142.0" }
+  },
+  "options_ui": { "page": "popup.html", "open_in_tab": true },
   "action": {
     "default_popup": "popup.html",
     "default_title": "Autopilot-DM"
@@ -62,6 +75,7 @@
         "content/weights.js",
         "content/ascmech.js",
         "content/ascdeck.js",
+        "content/winrate.js",
         "content/ui.js",
         "content/ui-menus.js",
         "content.js"

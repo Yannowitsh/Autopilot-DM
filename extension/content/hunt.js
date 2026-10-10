@@ -31,6 +31,10 @@ async function scanZone(id) {
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const html = await r.text();
   const doc = new DOMParser().parseFromString(html, 'text/html');
+  // zone au-dessus du niveau du perso (« Zone réservée aux joueurs de niveau 30 et plus ») : ses groupes ne sont pas
+  // attaquables → aucun groupe pour le leveling, le farm de drop, le scan…
+  const req = doc.body?.textContent.match(/Zone réservée aux joueurs de niveau (\d+)/);
+  if (req) throw Object.assign(new Error(`zone réservée au niveau ${req[1]}`), { empty: true, lvlReq: +req[1] });
   const groups = [];
   for (const p of groupCards(doc)) {
     const n = groupNumber(p);
@@ -121,7 +125,7 @@ function notifyFound(f) {
 const CARD_CSS = `
   :host { all: initial; }
   * { box-sizing: border-box; font-family: system-ui, sans-serif; }
-  .stack { position: fixed; left: 12px; bottom: 64px; z-index: 2147483646; display: flex; flex-direction: column-reverse; gap: 8px;
+  .stack { position: fixed; left: 12px; bottom: calc(64px + var(--dm-lift, 0px)); z-index: 2147483646; display: flex; flex-direction: column-reverse; gap: 8px;
     width: 300px; max-width: calc(100vw - 24px); }
   .card { background: #1b1d22; color: #e8e6e1; border: 1px solid #e0b040; border-radius: 10px; padding: 10px;
     box-shadow: 0 0 18px rgba(224,176,64,.35), 0 6px 24px rgba(0,0,0,.55); font-size: 12px; animation: pop .25s ease-out; }
@@ -606,6 +610,7 @@ async function openFarmStats() {
   const fmt = (n) => (n == null || !isFinite(n) ? '—' : Math.round(n).toLocaleString('fr-FR'));
   const ov = document.createElement('div');
   ov.className = 'dm-picker';
+  ov.classList.add('dm-fs');
   ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:#000a;display:grid;justify-items:center;align-items:start;padding:4vh 16px 16px;font:13px system-ui,sans-serif;color:#eee';
   const close = () => { ov.remove(); document.removeEventListener('keydown', onKey, true); };
   const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
@@ -613,7 +618,32 @@ async function openFarmStats() {
   ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
   const btn = 'border:1px solid #5a4a33;border-radius:8px;padding:4px 9px;color:#fff;cursor:pointer;font:600 12px system-ui,sans-serif;background:#2a231a';
   const inp = 'background:#241e16;color:#eee;border:1px solid #5a4a33;border-radius:6px;padding:3px 6px;font:12px system-ui,sans-serif';
-  ov.innerHTML = `<div style="width:min(900px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
+  // Téléphone (écran étroit) : une carte par groupe (zone et ▶ en haut, les 4 valeurs dessous), détails au toucher,
+  // bulles du pilote masquées et panneau au-dessus de la barre de navigation du jeu (--dm-lift).
+  const css = `<style>
+    .dm-fs .box { box-sizing: border-box; min-width: 0; }
+    .dm-fs .rk { display: none; }
+    .dm-fs tr.dt td { white-space: pre-line; color: #b9a98c; font-size: 11px; padding: 4px 6px 8px; border-bottom: 1px solid #2a231a; }
+    html:has(.dm-fs) #dm-pilot-ui { display: none !important; }
+    @media (max-width: 640px) {
+      .dm-fs { padding: 8px !important; }
+      .dm-fs .box { max-height: calc(100dvh - 16px - var(--dm-lift, 0px)) !important; padding: 10px !important; }
+      .dm-fs [data-k="cur"] { margin-left: 0 !important; }
+      .dm-fs table, .dm-fs tbody { display: block; }
+      .dm-fs tr.hd, .dm-fs tr.r td.i { display: none; }
+      .dm-fs .rk { display: inline; color: #8a7d66; }
+      .dm-fs tr.r { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px 8px; padding: 8px 2px; border-bottom: 1px solid #2a231a; }
+      .dm-fs tr.r td { display: block; padding: 0 !important; border: 0 !important; }
+      .dm-fs td.z { grid-column: 1 / 4; font-weight: 600; }
+      .dm-fs td.go { grid-column: 4; grid-row: 1 / 3; justify-self: end; align-self: center; }
+      .dm-fs td.cb { grid-column: 1 / 4; font-size: 11px; color: #8a7d66; }
+      .dm-fs td.cb::before { content: 'Combats : '; }
+      .dm-fs td.v::before { content: attr(data-l); display: block; font-size: 10px; color: #8a7d66; }
+      .dm-fs td.go button { padding: 8px 14px !important; font-size: 14px !important; }
+      .dm-fs tr.dt { display: block; }
+      .dm-fs tr.dt td { display: block; }
+    }</style>`;
+  ov.innerHTML = `${css}<div class="box" style="width:min(900px,100%);max-height:90vh;display:flex;flex-direction:column;gap:10px;background:#1d1812;border:1px solid #5a4a33;border-radius:14px;padding:14px;box-shadow:0 10px 40px #000">
     <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:15px">📈 Rentabilité des zones${DM.tip('Chaque victoire en chasse est enregistrée (XP, kamas, objets lâchés au prix de revente marchand), ramenée à 0 de Sagesse puis remise à ta Sagesse actuelle : changer d’équipement ne fausse pas le classement. Ton bonus d’XP personnel (compte Discord lié ×1,1, événements) est appris sur tes derniers combats, et la perte d’XP quand tu dépasses de plus de 10 niveaux le plus haut monstre du groupe (−4 % par niveau, ×0,1 au moins) est comptée à ton niveau, ou à celui choisi dans « XP à mon niveau ».&#10;Drops : revente au marchand (10 K × niveau, 2 000 K au plus ; anciens combats ramenés à ce prix). Le bestiaire ne publie pas de chance pour la plupart des objets lâchés (bonus de victoire) : ceux-là ne dépendent pas de ta Prospection et restent tels que mesurés.&#10;Le nombre de monstres compte : un n° de groupe change de composition à chaque renouvellement (2 monstres puis 6…). Pour chaque composition vue sous ce n° (combats + dernier scan), on calcule ce qu’elle rapporte monstre par monstre — XP de base × bonus de groupe appris en jeu, drops du bestiaire recalés sur tes drops réels, kamas par niveau de monstre — puis on fait la moyenne. La moyenne brute est en info-bulle.&#10;≈ : groupe jamais combattu (composition du dernier scan seulement ; XP si chaque monstre a déjà été combattu à ce niveau).&#10;Combats : les tiens, + ceux reçus par la synchro (en bleu). /min : avec TA durée réelle entre deux combats.&#10;▶ envoie le pilote farmer ce groupe en mode chasse.')}</b>
       <button data-a="x" style="${btn};background:transparent">✕</button></div>
     <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:12px">
@@ -667,7 +697,7 @@ async function openFarmStats() {
       .sort((a, b) => (b[prefs.sort] || 0) - (a[prefs.sort] || 0)).slice(0, 150);
     const th = 'text-align:left;padding:4px 6px;color:#b9a98c;border-bottom:1px solid #3a3024;position:sticky;top:0;background:#1d1812';
     const td = 'padding:4px 6px;border-bottom:1px solid #2a231a';
-    $('[data-k="tbl"]').innerHTML = shown.length ? `<tr><th style="${th}">#</th><th style="${th}">Zone · groupe</th><th style="${th}">Combats</th><th style="${th}">XP / combat</th><th style="${th}">XP / min</th><th style="${th}">Kamas + drops / combat</th><th style="${th}">/ min</th><th style="${th}"></th></tr>`
+    $('[data-k="tbl"]').innerHTML = shown.length ? `<tr class="hd"><th style="${th}">#</th><th style="${th}">Zone · groupe</th><th style="${th}">Combats</th><th style="${th}">XP / combat</th><th style="${th}">XP / min</th><th style="${th}">Kamas + drops / combat</th><th style="${th}">/ min</th><th style="${th}"></th></tr>`
       + shown.map((r, i) => {
         const e = r.estOnly ? '≈ ' : '';
         const tip = [r.meas && `${r.meas.mine} combat(s) à toi${r.meas.n > r.meas.mine ? ` + ${r.meas.n - r.meas.mine} partagé(s)` : ''}, dernier ${new Date(r.meas.last).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}`,
@@ -676,11 +706,11 @@ async function openFarmStats() {
           r.pen < 1 && `écart de niveau : ×${r.pen.toFixed(2)} de l’XP à ton niveau (déjà compté)`,
           r.dur && `durée type ${Math.round(r.dur / 1000)} s`,
           r.now && `groupe du dernier scan : ${r.now.mons.join(', ')} → ≈ ${fmt(r.now.xp)} XP, ${fmt(r.now.val)} K`].filter(Boolean).join('\n');
-        return `<tr title="${esc(tip)}" style="${r.estOnly ? 'color:#b9a98c;font-style:italic' : ''}"><td style="${td}">${i + 1}</td>
-          <td style="${td}">${esc(r.name)}${zoneLvl(r.z) != null ? ` <span style="color:#8a7d66">niv. ${bz[r.z][1]}–${bz[r.z][2]}</span>` : ''} · G${r.g}</td>
-          <td style="${td}">${r.meas ? `${r.meas.mine}${r.meas.n > r.meas.mine ? ` <span style="color:#7fb2ff">+${r.meas.n - r.meas.mine}</span>` : ''}` : '—'}</td><td style="${td}">${e}${fmt(r.xp)}</td><td style="${td}">${e}${fmt(r.xpMin)}</td>
-          <td style="${td}">${e}${fmt(r.val)}</td><td style="${td}">${e}${fmt(r.valMin)}</td>
-          <td style="${td}"><button data-farm="${i}" style="${btn};background:#2e7d32" title="Farmer ce groupe (mode chasse, pilote démarré)">▶</button></td></tr>`;
+        return `<tr class="r" title="${esc(tip)}" style="${r.estOnly ? 'color:#b9a98c;font-style:italic' : ''}"><td class="i" style="${td}">${i + 1}</td>
+          <td class="z" style="${td}"><span class="rk">${i + 1}. </span>${esc(r.name)}${zoneLvl(r.z) != null ? ` <span style="color:#8a7d66;font-weight:400">niv. ${bz[r.z][1]}–${bz[r.z][2]}</span>` : ''} · G${r.g}</td>
+          <td class="cb" style="${td}">${r.meas ? `${r.meas.mine}${r.meas.n > r.meas.mine ? ` <span style="color:#7fb2ff">+${r.meas.n - r.meas.mine}</span>` : ''}` : '—'}</td><td class="v" data-l="XP / combat" style="${td}">${e}${fmt(r.xp)}</td><td class="v" data-l="XP / min" style="${td}">${e}${fmt(r.xpMin)}</td>
+          <td class="v" data-l="Kamas + drops" style="${td}">${e}${fmt(r.val)}</td><td class="v" data-l="K / min" style="${td}">${e}${fmt(r.valMin)}</td>
+          <td class="go" style="${td}"><button data-farm="${i}" style="${btn};background:#2e7d32" title="Farmer ce groupe (mode chasse, pilote démarré)">▶</button></td></tr>`;
       }).join('')
       : '<tr><td style="color:#b9a98c;padding:8px">Rien à classer : gagne des combats en chasse (ils sont enregistrés automatiquement), ou lance un scan des zones et coche « estimations ».</td></tr>';
     $('[data-k="foot"]').textContent = `${log.length} combat(s) enregistré(s)${shared.length ? ` + ${shared.length} partagé(s)` : ''} · ton bonus d’XP ×${myMult.toFixed(2)} (×2 de base, Discord, événements…)${dropCal !== 1 ? ` · drops du bestiaire × ${dropCal.toFixed(2)} (recalage sur les mesures)` : ''}${cycle ? ` · durée type d’un combat ${Math.round(cycle / 1000)} s` : ''}`
@@ -712,6 +742,12 @@ async function openFarmStats() {
       return render();
     }
     const go = e.target.closest('[data-farm]');
+    const row = !go && e.target.closest('tr.r');
+    if (row) {   // détails du groupe (info-bulle, introuvable au doigt) : affichés / masqués sous la ligne
+      if (row.nextElementSibling?.classList.contains('dt')) row.nextElementSibling.remove();
+      else row.insertAdjacentHTML('afterend', `<tr class="dt"><td colspan="8">${esc(row.title)}</td></tr>`);
+      return;
+    }
     if (!go) return;
     const r = shown[+go.dataset.farm];
     if (!r) return;

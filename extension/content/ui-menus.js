@@ -315,7 +315,25 @@ function renderFuse() {
   }
 }
 
+// Téléphone : la barre de navigation du jeu, fixée en bas de l'écran, passerait sous les bulles et le menu →
+// on les remonte de sa hauteur (variable CSS --dm-lift sur <html>, héritée par les shadow roots). 0 sur ordinateur.
+let liftAt = 0;
+function updateLift() {
+  if (!DM.IS_MOBILE || Date.now() - liftAt < 2000) return;
+  liftAt = Date.now();
+  let lift = 0;
+  for (let el = document.elementFromPoint(innerWidth / 2, innerHeight - 4); el && el !== document.body; el = el.parentElement) {
+    if (!/fixed|sticky/.test(getComputedStyle(el).position)) continue;
+    const r = el.getBoundingClientRect();
+    if (r.bottom >= innerHeight - 2 && r.height < innerHeight / 4) lift = Math.round(innerHeight - r.top);
+    break;
+  }
+  const v = `${lift}px`;
+  if (document.documentElement.style.getPropertyValue('--dm-lift') !== v) document.documentElement.style.setProperty('--dm-lift', v);
+}
+
 function renderUi() {
+  updateLift();
   if (dead || !document.body) return;
   if (!ui || !ui.host.isConnected) ui = buildUi();   // le site peut remplacer le <body>
   const mine = cfg.ownerTabId === myTabId;
@@ -380,12 +398,18 @@ function renderUi() {
     if (ui.root.activeElement !== $('levelEvery')) $('levelEvery').value = +cfg.levelNotifyEvery || 0;
   }
   $('status').textContent = on ? (cfg.status || '—') : cfg.enabled ? 'Actif dans un autre onglet' : 'Arrêté';
+  { const w = DM.winText(cfg); $('win').style.display = w ? '' : 'none'; $('win').textContent = w ? `Victoire estimée : ${w}` : ''; }
   const tg = $('toggle');
   tg.textContent = cfg.enabled ? '■ Arrêter' : `▶ Démarrer (${DM.modeLabel(cfg)})`;
   tg.style.background = cfg.enabled ? '#a33' : '#2e7d32';
   $('energy').textContent = cfg.energy != null ? `⚡ ${cfg.energy}/${cfg.energyMax}` : '';
 
-  for (const b of ui.root.querySelectorAll('[data-mode]')) b.classList.toggle('on', b.dataset.mode === cfg.mode);
+  for (const b of ui.root.querySelectorAll('[data-mode]')) {
+    b.classList.toggle('on', b.dataset.mode === cfg.mode);
+    b.disabled = seasonOn() && b.dataset.mode !== 'chasse';   // saison : Aventure / Ascension (boss) interdites
+  }
+  $('season').checked = seasonOn();
+  $('season').disabled = seasonTab === true;   // perso de saison : toujours protégé
   for (const b of ui.root.querySelectorAll('[data-engine]')) b.classList.toggle('on', b.dataset.engine === (cfg.fightEngine || 'game'));
   // modules désactivés dans la popup : leurs sections du menu sont masquées
   for (const el of ui.root.querySelectorAll('[data-mod]')) {
