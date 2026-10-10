@@ -37,6 +37,8 @@ Firefox installe ensuite les nouvelles versions tout seul (le bouton **⬇️ In
 
 Sur téléphone, garde Firefox au premier plan et le téléphone branché : tant que le pilote tourne, l'extension garde l'écran allumé ; en veille ou en arrière-plan, Android gèle la page et le farm s'arrête. L'échange entre deux comptes n'est pas disponible sur Firefox.
 
+Sur téléphone, **📈 Rentabilité des zones** affiche une carte par groupe (zone et ▶ en haut, XP et kamas dessous) ; touche une carte pour voir ses détails (combats, moyenne brute, durée type).
+
 Les fichiers `.xpi` sont fabriqués par GitHub Actions (`.github/workflows/firefox.yml`) : signés par Mozilla pour chaque nouvelle version de `main` (secrets du dépôt `AMO_JWT_ISSUER` et `AMO_JWT_SECRET`, clé d'API de [addons.mozilla.org](https://addons.mozilla.org/developers/addon/api/key/)), et une préversion de test « test-&lt;branche&gt; » pour chaque push sur une autre branche.
 
 ## Mode saison (saison Héroïque)
